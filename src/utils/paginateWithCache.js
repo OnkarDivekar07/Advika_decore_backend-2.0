@@ -12,6 +12,7 @@ const paginateWithCache = async ({
   cache = true, // NEW flag to enable/disable caching
   searchableFields = [], // e.g., ['name', 'description']
   filterableFields = [], // e.g., ['category', 'brand']
+  formatter, // optional (item) => transformedItem
 }) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
@@ -75,8 +76,10 @@ const paginateWithCache = async ({
     }),
   ]);
 
+  const formattedData = formatter ? data.map(formatter) : data;
+
   const result = {
-    data,
+    data: formattedData,
     meta: {
       timestamp: new Date(),
       total,
