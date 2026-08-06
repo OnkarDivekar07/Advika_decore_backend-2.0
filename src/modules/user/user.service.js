@@ -54,7 +54,7 @@ exports.getUserProfile = async (userId) => {
   });
 
   if (!user) {
-    throw new CustomError('User not found',404);
+    throw new customError('User not found', 404);
   }
 
   return user;

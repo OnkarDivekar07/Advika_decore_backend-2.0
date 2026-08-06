@@ -23,18 +23,18 @@ describe('otp.service', () => {
       mockTwilioCreate.mockReset().mockResolvedValue({ sid: 'SM123' });
     });
 
-    it('stores a 6-digit OTP in Redis with a 5 minute TTL, keyed by phone', async () => {
+    it('stores a 6-digit OTP in Redis with a 5 minute TTL, keyed by the normalized (bare 10-digit) phone', async () => {
       await otpService.sendOtpService('+919876543210');
 
       expect(mockRedis.set).toHaveBeenCalledTimes(1);
       const [key, otp, mode, ttl] = mockRedis.set.mock.calls[0];
-      expect(key).toBe('otp:+919876543210');
+      expect(key).toBe('otp:9876543210');
       expect(otp).toMatch(/^\d{6}$/);
       expect(mode).toBe('EX');
       expect(ttl).toBe(300);
     });
 
-    it('sends the same OTP that was stored via Twilio, to the given phone', async () => {
+    it('sends the same OTP that was stored via Twilio, to the raw phone (Twilio needs the E.164 form, not the normalized one)', async () => {
       await otpService.sendOtpService('+919876543210');
 
       const storedOtp = mockRedis.set.mock.calls[0][1];
@@ -53,6 +53,16 @@ describe('otp.service', () => {
       mockUser.findUnique.mockReset();
       mockUser.create.mockReset();
       generateToken.mockClear();
+    });
+
+    it('looks the OTP up under the same normalized key sendOtpService wrote it under', async () => {
+      mockRedis.get.mockResolvedValue(null);
+
+      await expect(
+        otpService.verifyOtpService('+91 9876543210', '123456')
+      ).rejects.toMatchObject({ statusCode: 404 });
+
+      expect(mockRedis.get).toHaveBeenCalledWith('otp:9876543210');
     });
 
     it('rejects with 404 when no OTP was ever sent (or it expired)', async () => {
@@ -76,11 +86,11 @@ describe('otp.service', () => {
       expect(mockRedis.del).not.toHaveBeenCalled();
     });
 
-    it('logs in an existing user on a correct OTP and consumes it', async () => {
+    it('logs in an existing user (looked up by the normalized, DB-format phone) on a correct OTP and consumes it', async () => {
       mockRedis.get.mockResolvedValue('123456');
       mockUser.findUnique.mockResolvedValue({
         id: 'user_1',
-        phone: '+919876543210',
+        phone: '9876543210',
         role: 'customer',
       });
 
@@ -89,22 +99,25 @@ describe('otp.service', () => {
         '123456'
       );
 
-      expect(mockRedis.del).toHaveBeenCalledWith('otp:+919876543210');
+      expect(mockUser.findUnique).toHaveBeenCalledWith({
+        where: { phone: '9876543210' },
+      });
+      expect(mockRedis.del).toHaveBeenCalledWith('otp:9876543210');
       expect(mockUser.create).not.toHaveBeenCalled();
       expect(generateToken).toHaveBeenCalledWith('user_1', 'customer');
       expect(result).toEqual({
         token: 'signed-jwt-token',
-        user: { id: 'user_1', phone: '+919876543210', role: 'customer' },
+        user: { id: 'user_1', phone: '9876543210', role: 'customer' },
         success: true,
       });
     });
 
-    it('registers a new customer on first-time verification', async () => {
+    it('registers a new customer (stored under the normalized phone) on first-time verification', async () => {
       mockRedis.get.mockResolvedValue('123456');
       mockUser.findUnique.mockResolvedValue(null);
       mockUser.create.mockResolvedValue({
         id: 'user_new',
-        phone: '+919876543210',
+        phone: '9876543210',
         role: 'customer',
       });
 
@@ -115,7 +128,8 @@ describe('otp.service', () => {
 
       expect(mockUser.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          phone: '+919876543210',
+          phone: '9876543210',
+          email: '9876543210@advika.fake',
           role: 'customer',
         }),
       });

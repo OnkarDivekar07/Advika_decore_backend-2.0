@@ -1,0 +1,164 @@
+const express = require('express');
+const request = require('supertest');
+
+jest.mock('@middlewares/authenticate', () =>
+  jest.fn((req, res, next) => {
+    req.user = { userId: 'user_1', role: 'customer' };
+    next();
+  })
+);
+jest.mock('@modules/user/user.service');
+
+const userService = require('@modules/user/user.service');
+const userRoutes = require('@modules/user/user.routes');
+const responseMiddleware = require('@middlewares/responseMiddleware');
+const errorHandler = require('@middlewares/errorHandler');
+
+const buildApp = () => {
+  const app = express();
+  app.use(express.json());
+  app.use(responseMiddleware);
+  app.use('/api/user', userRoutes);
+  app.use(errorHandler);
+  return app;
+};
+
+const app = buildApp();
+
+const validAddress = {
+  name: 'Jane Doe',
+  phone: '9876543210',
+  pincode: '411001',
+  city: 'Pune',
+  state: 'Maharashtra',
+  houseArea: '221B Baker St',
+};
+
+describe('POST /api/user/address', () => {
+  it('422s on a missing required field', async () => {
+    const { name, ...rest } = validAddress;
+    const res = await request(app).post('/api/user/address').send(rest);
+
+    expect(res.status).toBe(422);
+    expect(userService.createAddress).not.toHaveBeenCalled();
+  });
+
+  it('422s on an invalid Indian pincode', async () => {
+    const res = await request(app)
+      .post('/api/user/address')
+      .send({ ...validAddress, pincode: '123' });
+
+    expect(res.status).toBe(422);
+  });
+
+  it('creates the address, scoped to the authenticated user', async () => {
+    userService.createAddress.mockResolvedValue({ id: 'addr1', ...validAddress });
+
+    const res = await request(app)
+      .post('/api/user/address')
+      .send(validAddress);
+
+    expect(res.status).toBe(200);
+    expect(userService.createAddress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ...validAddress,
+        user: { connect: { id: 'user_1' } },
+      })
+    );
+  });
+});
+
+describe('GET /api/user/addresses', () => {
+  it("returns the authenticated user's addresses", async () => {
+    userService.getAddressesByUserId.mockResolvedValue([{ id: 'addr1' }]);
+
+    const res = await request(app).get('/api/user/addresses');
+
+    expect(res.status).toBe(200);
+    expect(userService.getAddressesByUserId).toHaveBeenCalledWith('user_1');
+    expect(res.body.data).toEqual([{ id: 'addr1' }]);
+  });
+});
+
+describe('PUT /api/user/:id', () => {
+  it('422s an invalid pincode on update', async () => {
+    const res = await request(app)
+      .put('/api/user/addr1')
+      .send({ pincode: 'not-a-pincode' });
+
+    expect(res.status).toBe(422);
+    expect(userService.updateAddressById).not.toHaveBeenCalled();
+  });
+
+  it('updates the address for the authenticated user', async () => {
+    userService.updateAddressById.mockResolvedValue({ id: 'addr1', city: 'Mumbai' });
+
+    const res = await request(app)
+      .put('/api/user/addr1')
+      .send({ city: 'Mumbai' });
+
+    expect(res.status).toBe(200);
+    expect(userService.updateAddressById).toHaveBeenCalledWith(
+      'addr1',
+      'user_1',
+      { city: 'Mumbai' }
+    );
+  });
+
+  it('propagates a 403 when the address belongs to someone else', async () => {
+    const CustomError = require('@utils/customError');
+    userService.updateAddressById.mockRejectedValue(
+      new CustomError('Address not found or unauthorized', 403)
+    );
+
+    const res = await request(app)
+      .put('/api/user/addr1')
+      .send({ city: 'Mumbai' });
+
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('DELETE /api/user/:id', () => {
+  it('deletes the address for the authenticated user', async () => {
+    userService.deleteAddressById.mockResolvedValue({ id: 'addr1' });
+
+    const res = await request(app).delete('/api/user/addr1');
+
+    expect(res.status).toBe(200);
+    expect(userService.deleteAddressById).toHaveBeenCalledWith(
+      'addr1',
+      'user_1'
+    );
+  });
+});
+
+describe('GET /api/user/profile', () => {
+  it("returns the authenticated user's profile", async () => {
+    userService.getUserProfile.mockResolvedValue({
+      id: 'user_1',
+      name: 'Jane',
+      email: 'jane@x.com',
+    });
+
+    const res = await request(app).get('/api/user/profile');
+
+    expect(res.status).toBe(200);
+    expect(userService.getUserProfile).toHaveBeenCalledWith('user_1');
+    expect(res.body.data).toEqual({
+      id: 'user_1',
+      name: 'Jane',
+      email: 'jane@x.com',
+    });
+  });
+
+  it('404s when the profile lookup fails', async () => {
+    const CustomError = require('@utils/customError');
+    userService.getUserProfile.mockRejectedValue(
+      new CustomError('User not found', 404)
+    );
+
+    const res = await request(app).get('/api/user/profile');
+    expect(res.status).toBe(404);
+  });
+});
