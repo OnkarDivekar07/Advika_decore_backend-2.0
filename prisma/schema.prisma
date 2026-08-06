@@ -1,0 +1,154 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum OrderStatus {
+  draft
+  pending
+  confirmed
+  shipped
+  delivered
+  cancelled
+  returned
+}
+
+
+enum PaymentStatus {
+  pending
+  paid
+  failed
+  refunded
+  cod_pending
+}
+
+model User {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  email     String   @unique
+  password  String
+  role      String   // 'admin' or 'customer'
+  phone     String   @unique
+  createdAt DateTime @default(now())
+
+  // Relations
+  orders         Order[]
+  carts          Cart[]
+  reviews        Review[]
+  contactQueries ContactQuery[]
+  addresses      Address[]
+}
+
+
+model Product {
+  id          String     @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  category    String[]
+  brand       String
+  price       Float
+  stock       Int
+  images      String[]   // Array of image URLs
+  description String
+  createdAt   DateTime   @default(now())
+  isNewArrival Boolean @default(false)
+  isDeleted   Boolean?  @default(false)
+  // Relations
+  carts       Cart[]     // One product can be in many cart items
+  reviews     Review[]   // One product can have many reviews
+  orderItems  OrderItem[]
+}
+
+model Order {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  total      Float
+  addressId  String
+  address    Address   @relation(fields: [addressId], references: [id])
+  payment_order_id String? @unique
+  payment_id String?   // Razorpay payment id (pay_xxx) that actually paid this order, set by the webhook
+  status     OrderStatus    // e.g. 'pending', 'shipped', 'delivered', 'cancelled'
+  paymentStatus PaymentStatus  @default(pending) // 'pending', 'paid', etc.
+  orderItems  OrderItem[]
+  createdAt  DateTime  @default(now())
+}
+
+
+model Cart {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id])
+  quantity   Int
+}
+
+model Review {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id])
+  rating     Int      // e.g. 1 to 5
+  comment    String
+  createdAt  DateTime @default(now())
+}
+
+model ContactQuery {
+  id      String   @id @default(auto()) @map("_id") @db.ObjectId
+  name    String
+  email   String
+  message String
+
+  userId  String?     // Optional, since not all queries may be by registered users
+  user    User?       @relation(fields: [userId], references: [id])
+}
+
+model OrderItem {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  orderId   String
+  productId String
+  quantity  Int
+  price     Float
+
+  order     Order    @relation(fields: [orderId], references: [id])
+  product   Product  @relation(fields: [productId], references: [id])
+}
+
+
+model Banner {
+  id        String   @id @map("_id") @default(auto()) @db.ObjectId
+  imageUrl  String
+  linkUrl   String?
+  createdAt DateTime @default(now())
+}
+
+model Address {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  name      String
+  phone     String
+  pincode   String
+  city      String
+  houseArea String
+  state     String
+  landmark  String?
+  createdAt DateTime @default(now())
+
+  orders    Order[]
+}
+
+
+

@@ -1,0 +1,57 @@
+{
+  "name": "backend-2.0",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "pm2-runtime start ecosystem.config.js --env production",
+    "dev": "nodemon server.js",
+    "seed": "node prisma/seed.js",
+    "format": "prettier --write .",
+    "test": "jest --runInBand",
+    "test:watch": "jest --runInBand --watch",
+    "test:coverage": "jest --runInBand --coverage"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.839.0",
+    "@prisma/client": "^6.10.1",
+    "@sentry/node": "^8.55.0",
+    "bcrypt": "^6.0.0",
+    "body-parser": "^2.2.0",
+    "bullmq": "^5.56.0",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
+    "dotenv": "^17.0.0",
+    "express": "^5.1.0",
+    "express-validator": "^7.2.1",
+    "helmet": "^8.1.0",
+    "ioredis": "^5.6.1",
+    "jsonwebtoken": "^9.0.2",
+    "module-alias": "^2.2.3",
+    "mongodb": "^6.17.0",
+    "mongoose": "^8.16.1",
+    "morgan": "^1.10.0",
+    "multer": "^2.0.1",
+    "pm2": "^5.4.3",
+    "razorpay": "^2.9.6",
+    "sharp": "^0.34.2",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1",
+    "twilio": "^5.7.1",
+    "winston": "^3.17.0"
+  },
+  "_moduleAliases": {
+    "@modules": "src/modules",
+    "@middlewares": "src/middlewares",
+    "@utils": "src/utils",
+    "@routes": "src/routes",
+    "@config": "src/config"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.10",
+    "prettier": "^3.6.2",
+    "prisma": "^6.10.1",
+    "supertest": "^7.0.0"
+  }
+}
