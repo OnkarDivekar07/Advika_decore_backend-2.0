@@ -151,4 +151,39 @@ model Address {
 }
 
 
+// --- Shipping module (Ekart Logistics) ---
+// No formal Prisma relation to Order is declared here on purpose, so
+// adding this doesn't require touching the existing Order model — orderId
+// is a plain reference, resolved manually in shipping.service.js.
+
+enum ShipmentStatus {
+  CREATED
+  PICKED_UP
+  IN_TRANSIT
+  OUT_FOR_DELIVERY
+  DELIVERED
+  DELIVERY_FAILED
+  RTO_INITIATED
+  RTO_DELIVERED
+  CANCELLED
+}
+
+model Shipment {
+  id                 String         @id @default(auto()) @map("_id") @db.ObjectId
+  orderId            String         @unique // references Order.id
+  trackingId         String?        @unique // Ekart tracking ID / AWB number, set once Ekart returns one
+  awbNumber          String?
+  courierPartner     String         @default("Ekart")
+  status             ShipmentStatus @default(CREATED)
+  paymentMode        String         // 'COD' | 'PREPAID', copied from the order at creation time
+  codAmount          Float          @default(0)
+  pickupLocationCode String?
+  lastLocation       String?
+  lastSyncedAt       DateTime?
+  raw                Json?          // last raw payload received from Ekart, kept for debugging
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+}
+
+
 
