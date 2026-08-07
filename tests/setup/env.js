@@ -26,3 +26,10 @@ process.env.TWILIO_PHONE = '+10000000000';
 process.env.AWS_ACCESS_KEY_ID = 'dummy_access_key';
 process.env.AWS_SECRET_ACCESS_KEY = 'dummy_secret_key';
 process.env.BUCKET_NAME = 'dummy-bucket';
+
+process.env.EKART_API_KEY = 'dummy_ekart_api_key';
+process.env.EKART_BASE_URL = 'https://api.ekartlogistics.com';
+process.env.EKART_MERCHANT_ID = 'dummy_merchant_id';
+process.env.EKART_PICKUP_LOCATION_CODE = 'dummy_pickup_location';
+process.env.EKART_PICKUP_PINCODE = '400001';
+process.env.EKART_WEBHOOK_SECRET = 'dummy_ekart_webhook_secret';
