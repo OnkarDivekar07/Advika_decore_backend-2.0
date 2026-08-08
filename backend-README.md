@@ -1,6 +1,6 @@
 # Advika E-Commerce — Backend (backend 2.0)
 
-REST API server powering the Advika e-commerce platform. Built with **Node.js, Express 5, Prisma (MongoDB), Redis/BullMQ, Twilio, Razorpay and AWS S3**.
+REST API server powering the Advika e-commerce platform. Built with **Node.js, Express 5, Prisma (MongoDB), Redis/BullMQ, MSG91, Razorpay and AWS S3**.
 
 ---
 
@@ -15,7 +15,7 @@ REST API server powering the Advika e-commerce platform. Built with **Node.js, E
 | Auth             | JWT (jsonwebtoken), bcrypt password hashing    |
 | File storage     | AWS S3 (`@aws-sdk/client-s3`)                 |
 | Image processing | sharp                                          |
-| SMS / OTP        | Twilio                                        |
+| SMS / OTP        | MSG91                                        |
 | Payments         | Razorpay                                       |
 | API docs         | Swagger (swagger-jsdoc + swagger-ui-express)  |
 | Validation       | express-validator                              |
@@ -63,8 +63,8 @@ Each module (`src/modules/<name>`) follows the same pattern: `*.routes.js → *.
 
 - Node.js 18+
 - A MongoDB database (Atlas or self-hosted) — Prisma is configured for the `mongodb` provider
-- A running Redis instance (used for OTP storage and BullMQ job queues)
-- Twilio account (for OTP SMS)
+- A running Redis instance (used by BullMQ job queues)
+- MSG91 account (for OTP SMS)
 - Razorpay account (for payments)
 - AWS S3 bucket + IAM credentials (for product/banner image uploads)
 
@@ -87,10 +87,9 @@ JWT_SECRET=your_jwt_secret_key
 # Redis (used by BullMQ queues and otp/redisClient)
 REDIS_URL=redis://127.0.0.1:6379
 
-# Twilio (OTP SMS)
-TWILIO_SID=your_twilio_account_sid
-TWILIO_AUTH_TOKEN=your_twilio_auth_token
-TWILIO_PHONE=+1xxxxxxxxxx
+# MSG91 (OTP SMS)
+MSG91_AUTH_KEY=your_msg91_auth_key
+MSG91_TEMPLATE_ID=your_msg91_otp_template_id
 
 # Razorpay
 RAZORPAY_KEY_ID=your_razorpay_key_id
@@ -169,7 +168,7 @@ Full request/response schemas are documented via Swagger at `/api-docs` once the
 
 - JWT-based auth via the `authenticate` middleware (expects a bearer token).
 - `authorizeAdminOnly` middleware restricts routes to users with `role: "admin"` in the database.
-- OTP login (`/api/otp`) is the primary customer sign-in flow; OTPs are stored in Redis with a 5-minute expiry and delivered via Twilio SMS.
+- OTP login (`/api/otp`) is the primary customer sign-in flow; OTPs are stored in Redis with a 5-minute expiry and delivered via MSG91 SMS.
 
 ---
 

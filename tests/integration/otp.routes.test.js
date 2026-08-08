@@ -5,7 +5,7 @@ const mockRedis = { incr: jest.fn(), expire: jest.fn() };
 jest.mock('@config/redis', () => mockRedis);
 
 // Explicit factory (rather than automock) so requiring this test file never
-// pulls in the real otp.service.js — and with it, real Redis/Twilio/Prisma
+// pulls in the real otp.service.js — and with it, real Redis/Prisma
 // client construction that would otherwise try to open connections.
 jest.mock('@modules/otp/otp.service', () => ({
   sendOtpService: jest.fn(),

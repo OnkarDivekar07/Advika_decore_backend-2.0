@@ -1,39 +1,110 @@
-const redis = require('@config/redis');
 const prisma = require('@config/prisma');
-const twilio = require('twilio');
 const generateToken = require('@utils/generateToken');
 const CustomError = require('@utils/customError');
 const formatNumber = require('@utils/formatNumber');
 
-const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH_TOKEN);
+const MSG91_SEND_OTP_URL = 'https://control.msg91.com/api/v5/otp';
+const MSG91_VERIFY_OTP_URL = 'https://control.msg91.com/api/v5/otp/verify';
+
+const getMsg91Config = () => {
+  const authKey = process.env.MSG91_AUTH_KEY;
+  const templateId = process.env.MSG91_TEMPLATE_ID;
+
+  if (!authKey || !templateId) {
+    throw new Error(
+      'MSG91 is not configured. Set MSG91_AUTH_KEY and MSG91_TEMPLATE_ID.'
+    );
+  }
+
+  return { authKey, templateId };
+};
+
+const toIndianE164 = (phone) => `91${formatNumber(phone)}`;
+
+const parseMsg91Response = async (response) => {
+  const text = await response.text();
+  let data;
+
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { message: text };
+  }
+
+  return { data, text };
+};
 
 exports.sendOtpService = async (phone) => {
- const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  // Normalize to the DB's bare 10-digit format so the Redis key here and
-  // the one verifyOtpService looks up under always match, and so it lines
-  // up with how the phone is stored/looked-up in Postgres/Mongo below.
-  const normalizedPhone = formatNumber(phone);
-  const key = `otp:${normalizedPhone}`;
+  const { authKey, templateId } = getMsg91Config();
+  const mobile = toIndianE164(phone);
 
-  await redis.set(key, otp, 'EX', 300); // EX 300 = expires in 5 min
+  const url = new URL(MSG91_SEND_OTP_URL);
+  url.searchParams.set('template_id', templateId);
+  url.searchParams.set('mobile', mobile);
+  url.searchParams.set('authkey', authKey);
 
-  await client.messages.create({
-    body: `Your Advika OTP is ${otp}. Do not share it with anyone.`,
-    from: process.env.TWILIO_PHONE,
-    // Twilio needs the full E.164 number (with country code) the client
-    // sent, not the normalized/DB form — deliberately using raw `phone`.
-    to: phone,
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    });
+  } catch (error) {
+    throw new CustomError(`MSG91 OTP service unavailable: ${error.message}`, 502);
+  }
+
+  const { data } = await parseMsg91Response(response);
+
+  if (!response.ok || data.type !== 'success') {
+    const message =
+      data.message || data.error || 'MSG91 failed to send OTP';
+    throw new CustomError(`Unable to send OTP: ${message}`, 502);
+  }
 };
 
 exports.verifyOtpService = async (phone, otp) => {
+  const { authKey } = getMsg91Config();
+  const mobile = toIndianE164(phone);
+
+  const url = new URL(MSG91_VERIFY_OTP_URL);
+  url.searchParams.set('otp', otp);
+  url.searchParams.set('mobile', mobile);
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        authkey: authKey,
+      },
+    });
+  } catch (error) {
+    throw new CustomError(
+      `MSG91 OTP verification service unavailable: ${error.message}`,
+      502
+    );
+  }
+
+  const { data } = await parseMsg91Response(response);
+  const verified = response.ok && data.type === 'success';
+
+  if (!verified) {
+    const message = data.message || data.error || 'Invalid OTP';
+    const normalizedMessage = /expired/i.test(message)
+      ? 'OTP not found or expired'
+      : 'Invalid OTP';
+
+    throw new CustomError(normalizedMessage, /expired/i.test(message) ? 404 : 400);
+  }
+
   const normalizedPhone = formatNumber(phone);
-  const key = `otp:${normalizedPhone}`;
-  const storedOtp = await redis.get(key);
-  if (!storedOtp) throw new CustomError('OTP not found or expired', 404);
-  if (storedOtp !== otp) throw new CustomError('Invalid OTP', 400);
-  await redis.del(key); // delete used OTP
-  let user = await prisma.user.findUnique({ where: { phone: normalizedPhone } });
+  let user = await prisma.user.findUnique({
+    where: { phone: normalizedPhone },
+  });
+
   if (!user) {
     user = await prisma.user.create({
       data: {
