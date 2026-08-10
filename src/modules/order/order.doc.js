@@ -20,6 +20,12 @@
  *                 type: string
  *                 format: uuid
  *                 description: The ID of the selected shipping address
+ *               couponCode:
+ *                 type: string
+ *                 description: >
+ *                   Optional coupon code to apply. Re-validated server-side
+ *                   against the live cart — no coupon system exists yet, so
+ *                   any non-empty value currently fails with 404.
  *     responses:
  *       201:
  *         description: Draft order created or updated successfully

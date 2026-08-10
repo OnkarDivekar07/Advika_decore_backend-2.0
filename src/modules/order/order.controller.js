@@ -6,7 +6,7 @@ exports.createDraftOrder = async (req, res, next) => {
   try {
     const userId = req.user.userId;
 
-    const { selectedAddressId } = req.body;
+    const { selectedAddressId, couponCode } = req.body;
   
     if (!userId) {
       throw new CustomError('Unauthorized access. User ID missing.', 401);
@@ -27,6 +27,7 @@ exports.createDraftOrder = async (req, res, next) => {
     const order = await orderService.createDraftOrderService(
       userId,
       selectedAddressId,
+      couponCode || null,
     );
 
     return res.sendResponse({

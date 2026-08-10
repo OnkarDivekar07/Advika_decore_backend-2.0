@@ -10,6 +10,7 @@ module.exports = {
     '^@utils/(.*)$': '<rootDir>/src/utils/$1',
     '^@routes/(.*)$': '<rootDir>/src/routes/$1',
     '^@config/(.*)$': '<rootDir>/src/config/$1',
+    '^@constants/(.*)$': '<rootDir>/src/constants/$1',
   },
 
   // Populate required env vars before any test file (and the modules it

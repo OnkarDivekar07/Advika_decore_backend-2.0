@@ -83,6 +83,24 @@ const mockPrisma = {
       data.forEach((d) => db.carts.push({ id: genId(), ...d }));
       return { count: data.length };
     }),
+    upsert: jest.fn(async ({ where, update, create, include }) => {
+      const { userId, productId } = where.userId_productId;
+      const existing = db.carts.find(
+        (c) => c.userId === userId && c.productId === productId
+      );
+      let row;
+      if (existing) {
+        Object.assign(existing, update);
+        row = existing;
+      } else {
+        row = { id: genId(), ...create };
+        db.carts.push(row);
+      }
+      return {
+        ...row,
+        ...(include?.product ? { product: db.products[row.productId] } : {}),
+      };
+    }),
   },
   address: {
     findUnique: jest.fn(async ({ where }) => db.addresses[where.id] || null),
@@ -173,6 +191,7 @@ const mockPrisma = {
     }),
   },
   product: {
+    findUnique: jest.fn(async ({ where }) => db.products[where.id] || null),
     updateMany: jest.fn(async ({ where, data }) => {
       const product = db.products[where.id];
       let count = 0;
@@ -294,13 +313,23 @@ describe('checkout flow — Cash on Delivery', () => {
   });
 
   it('409s a COD order whose cart no longer has enough stock, without touching the cart', async () => {
-    const product = seedProduct({ price: 500, stock: 1 });
+    // Enough stock to get 2 units into the cart in the first place — the
+    // cart itself now guards against adding more than is in stock (see
+    // cart.service's assertProductAvailable), so this test instead models
+    // stock being depleted by someone else *after* the item is already in
+    // the cart but *before* checkout, which is the race the order/payment
+    // layer's own stock guard (inventory.service) still has to catch.
+    const product = seedProduct({ price: 500, stock: 2 });
     const address = seedAddress('user_1');
 
     await request(app)
       .post('/api/cart')
       .set('x-user-id', 'user_1')
       .send({ cartItems: [{ productId: product.id, quantity: 2 }] });
+
+    // Someone else's order (or a stock correction) eats into the supply
+    // between add-to-cart and checkout.
+    db.products[product.id].stock = 1;
 
     const draftRes = await request(app)
       .post('/api/order')

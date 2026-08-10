@@ -74,6 +74,26 @@ describe('product.service', () => {
     });
   });
 
+  describe('getProductsByIds', () => {
+    it('returns an empty array without querying prisma when given no ids', async () => {
+      const result = await productService.getProductsByIds([]);
+
+      expect(result).toEqual([]);
+      expect(mockPrisma.product.findMany).not.toHaveBeenCalled();
+    });
+
+    it('queries only non-deleted products matching the given ids', async () => {
+      mockPrisma.product.findMany.mockResolvedValue([{ id: 'p1' }, { id: 'p2' }]);
+
+      const result = await productService.getProductsByIds(['p1', 'p2', 'p_deleted']);
+
+      expect(mockPrisma.product.findMany).toHaveBeenCalledWith({
+        where: { id: { in: ['p1', 'p2', 'p_deleted'] }, isDeleted: false },
+      });
+      expect(result).toEqual([{ id: 'p1' }, { id: 'p2' }]);
+    });
+  });
+
   describe('getRelatedProducts', () => {
     it('404s when the source product does not exist', async () => {
       mockPrisma.product.findUnique.mockResolvedValue(null);

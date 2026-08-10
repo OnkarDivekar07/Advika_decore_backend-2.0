@@ -19,6 +19,7 @@ jest.mock('@middlewares/authenticate', () =>
 jest.mock('@modules/product/product.service', () => ({
   getAllProducts: jest.fn(),
   getProductById: jest.fn(),
+  getProductsByIds: jest.fn(),
   getRelatedProducts: jest.fn(),
   queueProductCreation: jest.fn(),
   queueProductUpdate: jest.fn(),
@@ -86,6 +87,54 @@ describe('GET /api/products/:id (public)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.name).toBe('Trail Runner');
+  });
+});
+
+describe('GET /api/products/batch (public)', () => {
+  it('422s when ids is missing', async () => {
+    const res = await request(app).get('/api/products/batch');
+
+    expect(res.status).toBe(422);
+    expect(productService.getProductsByIds).not.toHaveBeenCalled();
+  });
+
+  it('422s when ids is an empty string', async () => {
+    const res = await request(app).get('/api/products/batch').query({ ids: '' });
+
+    expect(res.status).toBe(422);
+  });
+
+  it('422s when more than 50 ids are requested', async () => {
+    const tooMany = Array.from({ length: 51 }, (_, i) => `prod_${i}`).join(',');
+
+    const res = await request(app).get('/api/products/batch').query({ ids: tooMany });
+
+    expect(res.status).toBe(422);
+    expect(productService.getProductsByIds).not.toHaveBeenCalled();
+  });
+
+  it('dedupes ids before calling the service', async () => {
+    productService.getProductsByIds.mockResolvedValue([]);
+
+    await request(app)
+      .get('/api/products/batch')
+      .query({ ids: 'prod_1,prod_2,prod_1' });
+
+    expect(productService.getProductsByIds).toHaveBeenCalledWith(['prod_1', 'prod_2']);
+  });
+
+  it('200s with the matching products, silently omitting unavailable ids', async () => {
+    productService.getProductsByIds.mockResolvedValue([
+      { id: 'prod_1', name: 'Trail Runner', price: 2999, stock: 4 },
+    ]);
+
+    const res = await request(app)
+      .get('/api/products/batch')
+      .query({ ids: 'prod_1,prod_deleted' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].id).toBe('prod_1');
   });
 });
 

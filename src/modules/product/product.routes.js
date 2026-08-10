@@ -4,6 +4,7 @@ const router = express.Router();
 const {
   getAllProducts,
   getProductById,
+  getProductsByIds,
   getRelatedProducts,
   createProduct,
   updateProduct,
@@ -18,6 +19,7 @@ const validateRequest = require('@middlewares/validateRequest');
 const {
   validateCreateProduct,
   validateUpdateProduct,
+  validateGetProductsByIds,
 } = require('./product.validation');
 
 // Public Routes
@@ -28,6 +30,16 @@ const {
  * @access  Public
  */
 router.get('/', getAllProducts);
+
+/**
+ * @route   GET /api/products/batch
+ * @desc    Get multiple products by id (used to revalidate a guest cart's
+ *          price/stock/availability against live data)
+ * @access  Public
+ *
+ * Registered ahead of /:id so "batch" is never swallowed as an id param.
+ */
+router.get('/batch', validateGetProductsByIds, validateRequest, getProductsByIds);
 
 /**
  * @route   GET /api/products/:id

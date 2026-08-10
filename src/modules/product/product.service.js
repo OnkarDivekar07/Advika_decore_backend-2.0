@@ -33,6 +33,27 @@ const getProductById = async (id) => {
   return product;
 };
 
+// GET /api/products/batch — bulk lookup by id, public. Only reason this
+// exists is so the frontend can revalidate a *guest* cart (localStorage
+// only, no backend cart row) against live price/stock/availability without
+// one request per line item. Soft-deleted products are silently dropped
+// rather than returned with a flag: any id in the request that doesn't
+// come back in the response is exactly the "no longer available" signal
+// the frontend needs, and it's the same convention cart.service's
+// assertProductAvailable already uses (missing/deleted => unavailable).
+const getProductsByIds = async (ids) => {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return [];
+  }
+
+  return prisma.product.findMany({
+    where: {
+      id: { in: ids },
+      isDeleted: false,
+    },
+  });
+};
+
 const getRelatedProducts = async (productId) => {
   // Fetch the product and ensure it exists
   const product = await prisma.product.findUnique({
@@ -118,6 +139,7 @@ const queueProductUpdate = async (productId, updateData, images) => {
 module.exports = {
   getAllProducts,
   getProductById,
+  getProductsByIds,
   getRelatedProducts,
   queueProductCreation,
   deleteProduct,

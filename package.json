@@ -44,7 +44,8 @@
     "@middlewares": "src/middlewares",
     "@utils": "src/utils",
     "@routes": "src/routes",
-    "@config": "src/config"
+    "@config": "src/config",
+    "@constants": "src/constants"
   },
   "devDependencies": {
     "jest": "^29.7.0",

@@ -73,7 +73,26 @@ model Order {
   id         String    @id @default(auto()) @map("_id") @db.ObjectId
   userId     String
   user       User      @relation(fields: [userId], references: [id])
+  // `total` remains the grand total (subtotal + deliveryCharge) and is
+  // what payment.controller.js/shipping.service.js actually charge —
+  // unchanged in meaning, just no longer equal to the item sum alone.
   total      Float
+  // Breakdown fields, added alongside `total` rather than replacing it so
+  // existing orders (which predate this rule) keep working: both are
+  // optional and simply absent on old records. See
+  // src/constants/pricing.js for how they're derived.
+  subtotal       Float?
+  deliveryCharge Float?
+  // Discount/coupon placeholder architecture: both fields are optional so
+  // existing orders (predating this) keep working unchanged. `discount` is
+  // always 0 today (see calculateDiscount in src/constants/pricing.js — no
+  // Coupon model/admin management exists yet), but `total` is already wired
+  // as subtotal + deliveryCharge - discount everywhere it's computed, so a
+  // real coupon system can be dropped in later by making calculateDiscount
+  // do real work, without touching how `total` itself is derived or spent
+  // (payment.controller.js, shipping.service.js, etc. only ever read `total`).
+  discount       Float?  @default(0)
+  couponCode     String?
   addressId  String
   address    Address   @relation(fields: [addressId], references: [id])
   payment_order_id String? @unique
@@ -92,6 +111,13 @@ model Cart {
   productId  String
   product    Product  @relation(fields: [productId], references: [id])
   quantity   Int
+  updatedAt  DateTime @updatedAt
+
+  // One row per (user, product) — makes "add to cart" an upsert instead of
+  // insert-then-hope, and makes it structurally impossible for the same
+  // product to appear twice in one user's cart (which duplicate createMany
+  // calls, retries, or double-taps could otherwise produce).
+  @@unique([userId, productId])
 }
 
 model Review {

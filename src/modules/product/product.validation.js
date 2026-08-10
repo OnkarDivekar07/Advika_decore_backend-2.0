@@ -1,4 +1,38 @@
-const { body } = require('express-validator');
+const { body, query } = require('express-validator');
+
+// Upper bound on how many ids a single batch lookup can request. This is a
+// public, unauthenticated endpoint (see GET /api/products/batch), so it
+// needs its own sanity ceiling independent of anything cart-side — a
+// generous cap for a real cart (which is itself capped by
+// cart.validation's MAX_CART_QUANTITY only on quantity, not line-item
+// count) while still blocking an obviously abusive query string.
+const MAX_BATCH_IDS = 50;
+
+// For GET /api/products/batch (getProductsByIds) — used by the frontend to
+// revalidate a guest (localStorage-only) cart's prices/stock/availability
+// against live product data, since a guest cart has no backend row for
+// cart.service's assertProductAvailable to guard.
+exports.validateGetProductsByIds = [
+  query('ids')
+    .exists({ checkFalsy: true })
+    .withMessage('ids is required')
+    .isString()
+    .withMessage('ids must be a comma-separated string of product ids')
+    .customSanitizer((value) =>
+      Array.from(new Set(value.split(',').map((id) => id.trim()).filter(Boolean)))
+    )
+    .custom((ids) => {
+      if (ids.length === 0) {
+        throw new Error('ids must contain at least one product id');
+      }
+      if (ids.length > MAX_BATCH_IDS) {
+        throw new Error(`ids cannot contain more than ${MAX_BATCH_IDS} product ids`);
+      }
+      return true;
+    }),
+];
+
+exports.MAX_BATCH_IDS = MAX_BATCH_IDS;
 
 exports.validateCreateProduct = [
   body('name')

@@ -236,6 +236,49 @@
 
 /**
  * @swagger
+ * /api/products/batch:
+ *   get:
+ *     summary: Get multiple products by id
+ *     description: >
+ *       Bulk lookup used by the frontend to revalidate a guest
+ *       (localStorage-only) cart's price/stock/availability against live
+ *       product data in one call. Ids that don't match a live, non-deleted
+ *       product are simply omitted from the response rather than erroring.
+ *     tags:
+ *       - Products
+ *     parameters:
+ *       - in: query
+ *         name: ids
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Comma-separated product ids (max 50, deduped server-side)
+ *         example: 64f1c2...,64f1c3...
+ *     responses:
+ *       200:
+ *         description: Matching, currently-available products
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                   example: Products fetched successfully
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Product'
+ *       422:
+ *         description: ids missing, empty, or over the 50-id cap
+ *       500:
+ *         description: Server error
+ */
+
+/**
+ * @swagger
  * /api/products/{id}:
  *   get:
  *     summary: Get a product by ID

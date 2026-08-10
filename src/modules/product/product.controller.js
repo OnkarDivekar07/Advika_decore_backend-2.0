@@ -74,6 +74,21 @@ exports.getProductById = async (req, res, next) => {
   }
 };
 
+// GET /api/products/batch?ids=a,b,c — see product.validation's
+// validateGetProductsByIds for the sanitizing/capping of req.query.ids into
+// a deduped array; this just forwards it.
+exports.getProductsByIds = async (req, res, next) => {
+  try {
+    const result = await productService.getProductsByIds(req.query.ids);
+    res.sendResponse({
+      message: 'Products fetched successfully',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.getRelatedProducts = async (req, res, next) => {
   try {
     const result = await productService.getRelatedProducts(req.params.id);

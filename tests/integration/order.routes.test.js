@@ -114,7 +114,8 @@ describe('POST /api/order', () => {
     );
     expect(orderService.createDraftOrderService).toHaveBeenCalledWith(
       'user_1',
-      VALID_ADDRESS_ID
+      VALID_ADDRESS_ID,
+      null
     );
     expect(res.body.data).toEqual({
       id: VALID_ORDER_ID,
@@ -138,6 +139,41 @@ describe('POST /api/order', () => {
 
     expect(res.status).toBe(404);
     expect(res.body.message).toBe('No items found in cart');
+  });
+
+  // Discount/coupon placeholder architecture — see order.service.js /
+  // src/constants/pricing.js. Only shape-validated at this layer; a code
+  // that's the wrong *type* here should never even reach the service.
+  it('passes an optional couponCode through to the service unchanged', async () => {
+    mockAddress.findUnique.mockResolvedValue({
+      id: VALID_ADDRESS_ID,
+      userId: 'user_1',
+    });
+    orderService.createDraftOrderService.mockResolvedValue({
+      id: VALID_ORDER_ID,
+      status: 'draft',
+      total: 999,
+    });
+
+    const res = await request(app)
+      .post('/api/order')
+      .send({ selectedAddressId: VALID_ADDRESS_ID, couponCode: 'SAVE10' });
+
+    expect(res.status).toBe(201);
+    expect(orderService.createDraftOrderService).toHaveBeenCalledWith(
+      'user_1',
+      VALID_ADDRESS_ID,
+      'SAVE10'
+    );
+  });
+
+  it('422s when couponCode is not a string', async () => {
+    const res = await request(app)
+      .post('/api/order')
+      .send({ selectedAddressId: VALID_ADDRESS_ID, couponCode: 12345 });
+
+    expect(res.status).toBe(422);
+    expect(orderService.createDraftOrderService).not.toHaveBeenCalled();
   });
 });
 
