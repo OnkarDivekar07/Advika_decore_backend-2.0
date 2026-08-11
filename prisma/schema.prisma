@@ -169,11 +169,27 @@ model Address {
   pincode   String
   city      String
   houseArea String
-  state     String
-  landmark  String?
-  createdAt DateTime @default(now())
+  // Locality / sector / colony — distinct from `houseArea` (house no.,
+  // building, street). Optional at the schema level so pre-existing
+  // addresses (created before this field existed) keep working unchanged;
+  // enforced as required for new/edited addresses at the validation layer
+  // (see user.validation.js).
+  area                 String?
+  state                String
+  landmark             String?
+  // Free-text note for the delivery agent (e.g. "leave with security",
+  // "call before delivery"). Always optional.
+  deliveryInstructions String?
+  // Exactly one address per user has this set to true at any time — this
+  // invariant is enforced in user.service.js (createAddress/updateAddressById/
+  // setDefaultAddressById/deleteAddressById), never left to the client.
+  isDefault            Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   orders    Order[]
+
+  @@index([userId])
 }
 
 

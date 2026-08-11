@@ -80,6 +80,24 @@ exports.deleteAddress = async (req, res, next) => {
   }
 };
 
+// @desc    Mark a delivery address as the default for the logged-in user
+// @route   PATCH /api/user/address/:id/default
+// @access  User
+exports.setDefaultAddress = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.userId;
+    const address = await userService.setDefaultAddressById(id, userId);
+
+    res.sendResponse({
+      message: 'Default address updated successfully',
+      data: address,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 
 
 

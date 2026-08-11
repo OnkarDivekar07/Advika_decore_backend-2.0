@@ -25,18 +25,31 @@ const buildApp = () => {
 
 const app = buildApp();
 
+// Phone is E.164 ("+91" + 10 digits, first digit 6-9) — matching what the
+// frontend actually sends (src/utils/phoneValidation.js's toE164) and the
+// otp module's own validator, not the looser shape the old
+// `.isMobilePhone()` check used to accept.
 const validAddress = {
   name: 'Jane Doe',
-  phone: '9876543210',
+  phone: '+919876543210',
   pincode: '411001',
   city: 'Pune',
   state: 'Maharashtra',
   houseArea: '221B Baker St',
+  area: 'Kothrud',
 };
 
 describe('POST /api/user/address', () => {
   it('422s on a missing required field', async () => {
     const { name, ...rest } = validAddress;
+    const res = await request(app).post('/api/user/address').send(rest);
+
+    expect(res.status).toBe(422);
+    expect(userService.createAddress).not.toHaveBeenCalled();
+  });
+
+  it('422s on a missing area', async () => {
+    const { area, ...rest } = validAddress;
     const res = await request(app).post('/api/user/address').send(rest);
 
     expect(res.status).toBe(422);
@@ -51,8 +64,32 @@ describe('POST /api/user/address', () => {
     expect(res.status).toBe(422);
   });
 
+  it('422s on an Indian pincode starting with 0', async () => {
+    const res = await request(app)
+      .post('/api/user/address')
+      .send({ ...validAddress, pincode: '011001' });
+
+    expect(res.status).toBe(422);
+  });
+
+  it('422s on a phone number missing the +91 country code', async () => {
+    const res = await request(app)
+      .post('/api/user/address')
+      .send({ ...validAddress, phone: '9876543210' });
+
+    expect(res.status).toBe(422);
+  });
+
+  it('422s on a phone number with an invalid first digit', async () => {
+    const res = await request(app)
+      .post('/api/user/address')
+      .send({ ...validAddress, phone: '+915876543210' });
+
+    expect(res.status).toBe(422);
+  });
+
   it('creates the address, scoped to the authenticated user', async () => {
-    userService.createAddress.mockResolvedValue({ id: 'addr1', ...validAddress });
+    userService.createAddress.mockResolvedValue({ id: 'addr1', ...validAddress, isDefault: true });
 
     const res = await request(app)
       .post('/api/user/address')
@@ -130,6 +167,43 @@ describe('DELETE /api/user/address/:id', () => {
       'addr1',
       'user_1'
     );
+  });
+
+  it('propagates a 409 when the address is linked to past orders', async () => {
+    const CustomError = require('@utils/customError');
+    userService.deleteAddressById.mockRejectedValue(
+      new CustomError(
+        'This address is linked to past orders and cannot be deleted. You can add a new address instead.',
+        409
+      )
+    );
+
+    const res = await request(app).delete('/api/user/address/addr1');
+
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('PATCH /api/user/address/:id/default', () => {
+  it('marks the address as default for the authenticated user', async () => {
+    userService.setDefaultAddressById.mockResolvedValue({ id: 'addr1', isDefault: true });
+
+    const res = await request(app).patch('/api/user/address/addr1/default');
+
+    expect(res.status).toBe(200);
+    expect(userService.setDefaultAddressById).toHaveBeenCalledWith('addr1', 'user_1');
+    expect(res.body.data).toEqual({ id: 'addr1', isDefault: true });
+  });
+
+  it('propagates a 403 when the address belongs to someone else', async () => {
+    const CustomError = require('@utils/customError');
+    userService.setDefaultAddressById.mockRejectedValue(
+      new CustomError('Address not found or unauthorized', 403)
+    );
+
+    const res = await request(app).patch('/api/user/address/addr1/default');
+
+    expect(res.status).toBe(403);
   });
 });
 

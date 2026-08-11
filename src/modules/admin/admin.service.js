@@ -58,9 +58,11 @@ exports.getAllUsersWithStats = (req) => {
       addresses: {
         select: {
           houseArea: true,
+          area: true,
           city: true,
           state: true,
           pincode: true,
+          isDefault: true,
         },
       },
       orders: {

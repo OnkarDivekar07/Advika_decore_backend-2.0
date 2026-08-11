@@ -6,6 +6,7 @@ const {
   getAddresses,
   updateAddress,
   deleteAddress,
+  setDefaultAddress,
   getUserProfile
 } = require('./user.controller');
 
@@ -13,6 +14,7 @@ const authenticate = require('@middlewares/authenticate');
 const {
   createAddressValidator,
   updateAddressValidator,
+  addressIdParamValidator,
 } = require('./user.validation');
 
 const validateRequest = require('@middlewares/validateRequest');
@@ -46,7 +48,14 @@ router.put('/address/:id', updateAddressValidator, validateRequest, updateAddres
  * @desc    Delete a delivery address by ID
  * @access  User
  */
-router.delete('/address/:id', deleteAddress);
+router.delete('/address/:id', addressIdParamValidator, validateRequest, deleteAddress);
+
+/**
+ * @route   PATCH /api/user/address/:id/default
+ * @desc    Mark a delivery address as the default for the logged-in user
+ * @access  User
+ */
+router.patch('/address/:id/default', addressIdParamValidator, validateRequest, setDefaultAddress);
 
 
 router.get('/profile',getUserProfile)

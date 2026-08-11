@@ -113,11 +113,17 @@ exports.createShipmentForOrder = async (orderId) => {
     consignee: {
       name: order.address.name,
       phone: order.address.phone,
-      address: order.address.houseArea,
+      // `area` postdates some existing addresses (schema-optional — see
+      // prisma/schema.prisma), so it's appended only when present rather
+      // than assumed to always be there.
+      address: order.address.area
+        ? `${order.address.houseArea}, ${order.address.area}`
+        : order.address.houseArea,
       landmark: order.address.landmark || undefined,
       city: order.address.city,
       state: order.address.state,
       pincode: order.address.pincode,
+      instructions: order.address.deliveryInstructions || undefined,
     },
     items: order.orderItems.map((item) => ({
       sku: item.productId,

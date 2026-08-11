@@ -65,11 +65,28 @@
  *         houseArea:
  *           type: string
  *           example: "Flat No. 101, Lotus Apartments"
+ *         area:
+ *           type: string
+ *           minLength: 2
+ *           example: "Kothrud"
+ *           description: Locality / area / sector, distinct from houseArea.
  *         landmark:
  *           type: string
  *           minLength: 2
  *           example: "Near Big Bazaar"
  *           description: Optional field. Minimum 2 characters if provided.
+ *         deliveryInstructions:
+ *           type: string
+ *           maxLength: 200
+ *           example: "Leave with the security guard if unavailable"
+ *           description: Optional note for the delivery agent.
+ *         isDefault:
+ *           type: boolean
+ *           example: false
+ *           description: >
+ *             Optional. Set true to make this the default address. The
+ *             first address a user creates always becomes their default
+ *             regardless of this value.
  *
  *     AddressResponse:
  *       type: object
@@ -107,9 +124,18 @@
  *             houseArea:
  *               type: string
  *               example: "Flat No. 101, Lotus Apartments"
+ *             area:
+ *               type: string
+ *               example: "Kothrud"
  *             landmark:
  *               type: string
  *               example: "Near Big Bazaar"
+ *             deliveryInstructions:
+ *               type: string
+ *               example: "Leave with the security guard if unavailable"
+ *             isDefault:
+ *               type: boolean
+ *               example: true
  *             createdAt:
  *               type: string
  *               format: date-time
@@ -208,6 +234,39 @@
  *         description: Forbidden (not your address)
  *       404:
  *         description: Address not found
+ *       409:
+ *         description: Address is linked to one or more past orders and cannot be deleted
+ */
+
+/**
+ * @swagger
+ * /api/user/address/{id}/default:
+ *   patch:
+ *     summary: Mark a delivery address as the default for the logged-in user
+ *     description: >
+ *       Atomically clears isDefault on every other address this user owns
+ *       and sets it on this one, so exactly one address is ever default.
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: The ID of the address to make default
+ *     responses:
+ *       200:
+ *         description: Default address updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AddressResponse'
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden (not your address)
  */
 
 
