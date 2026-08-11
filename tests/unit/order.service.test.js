@@ -7,15 +7,17 @@ const mockOrder = {
 };
 const mockOrderItem = { deleteMany: jest.fn(), create: jest.fn() };
 const mockAddress = { findUnique: jest.fn() };
+const mockProduct = { findUnique: jest.fn() };
 const mockPrisma = {
   cart: mockCart,
   order: mockOrder,
   orderItem: mockOrderItem,
   address: mockAddress,
+  product: mockProduct,
   // Interactive-transaction style, matching cart.service / the rest of the
   // codebase.
   $transaction: jest.fn((cb) =>
-    cb({ cart: mockCart, order: mockOrder, orderItem: mockOrderItem })
+    cb({ cart: mockCart, order: mockOrder, orderItem: mockOrderItem, product: mockProduct })
   ),
 };
 jest.mock('@config/prisma', () => mockPrisma);
@@ -51,6 +53,7 @@ beforeEach(() => {
   mockOrderItem.deleteMany.mockReset();
   mockOrderItem.create.mockReset();
   mockAddress.findUnique.mockReset();
+  mockProduct.findUnique.mockReset();
   mockPrisma.$transaction.mockClear();
 });
 
@@ -220,5 +223,316 @@ describe('createDraftOrderService', () => {
       expect(mockOrder.create).not.toHaveBeenCalled();
       expect(mockOrder.update).not.toHaveBeenCalled();
     });
+  });
+
+  // Buy Now — see checkout-architecture.md §3.2 step 5 / §4.4. Must go
+  // through the exact same server-side price/stock re-validation the cart
+  // path gets above, not trust whatever the client claims the product/price
+  // is, and must never touch the cart table.
+  describe('buyNowItem', () => {
+    const buyNowProduct = (overrides = {}) => ({
+      id: 'prod_9',
+      name: 'Wireless Mouse',
+      price: 999,
+      stock: 5,
+      isDeleted: false,
+      ...overrides,
+    });
+
+    it('builds the draft order from the product instead of reading the cart', async () => {
+      mockProduct.findUnique.mockResolvedValue(buyNowProduct());
+      mockOrder.findFirst.mockResolvedValue(null);
+      mockOrder.create.mockResolvedValue({ id: 'order_1' });
+      mockOrder.findUnique.mockResolvedValue({ id: 'order_1', total: 999 });
+
+      await orderService.createDraftOrderService('user_1', null, null, {
+        productId: 'prod_9',
+        quantity: 1,
+      });
+
+      expect(mockCart.findMany).not.toHaveBeenCalled();
+      expect(mockProduct.findUnique).toHaveBeenCalledWith({ where: { id: 'prod_9' } });
+      expect(mockOrderItem.create).toHaveBeenCalledTimes(1);
+      expect(mockOrderItem.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ productId: 'prod_9', quantity: 1, price: 999 }),
+        })
+      );
+      expect(mockOrder.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ total: 999, subtotal: 999 }) })
+      );
+    });
+
+    it('409s when the buy-now product no longer exists', async () => {
+      mockProduct.findUnique.mockResolvedValue(null);
+
+      await expect(
+        orderService.createDraftOrderService('user_1', null, null, {
+          productId: 'prod_ghost',
+          quantity: 1,
+        })
+      ).rejects.toMatchObject({ statusCode: 409 });
+      expect(mockOrder.create).not.toHaveBeenCalled();
+    });
+
+    it('409s when the buy-now product has been soft-deleted', async () => {
+      mockProduct.findUnique.mockResolvedValue(buyNowProduct({ isDeleted: true }));
+
+      await expect(
+        orderService.createDraftOrderService('user_1', null, null, {
+          productId: 'prod_9',
+          quantity: 1,
+        })
+      ).rejects.toMatchObject({ statusCode: 409 });
+      expect(mockOrder.create).not.toHaveBeenCalled();
+    });
+
+    it('409s with a structured insufficientStock payload when the requested quantity exceeds live stock', async () => {
+      mockProduct.findUnique.mockResolvedValue(buyNowProduct({ stock: 1 }));
+
+      await expect(
+        orderService.createDraftOrderService('user_1', null, null, {
+          productId: 'prod_9',
+          quantity: 3,
+        })
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        errors: {
+          insufficientStock: [
+            {
+              productId: 'prod_9',
+              name: 'Wireless Mouse',
+              requestedQuantity: 3,
+              availableStock: 1,
+            },
+          ],
+        },
+      });
+      expect(mockOrder.create).not.toHaveBeenCalled();
+    });
+
+    it('prices from the live product record, ignoring any price the caller might claim', async () => {
+      mockProduct.findUnique.mockResolvedValue(buyNowProduct({ price: 2500 }));
+      mockOrder.findFirst.mockResolvedValue(null);
+      mockOrder.create.mockResolvedValue({ id: 'order_1' });
+      mockOrder.findUnique.mockResolvedValue({ id: 'order_1', total: 2500 });
+
+      await orderService.createDraftOrderService('user_1', null, null, {
+        productId: 'prod_9',
+        // A client can only ever send productId/quantity — there is no price
+        // field on buyNowItem in the first place, so this is asserting the
+        // absence of one rather than a value being overridden.
+        quantity: 1,
+      });
+
+      expect(mockOrderItem.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ price: 2500 }) })
+      );
+    });
+  });
+});
+
+// Price/stock conflict detection — this is the guard that runs right
+// before anything irreversible happens (COD placement, Razorpay order
+// creation — see payment.service.js / payment.controller.js), comparing an
+// already-priced OrderItem snapshot against live Product data.
+describe('detectOrderConflicts', () => {
+  beforeEach(() => {
+    mockProduct.findUnique.mockReset();
+  });
+
+  const orderedItem = (overrides = {}) => ({
+    productId: 'prod_1',
+    quantity: 2,
+    price: 999,
+    ...overrides,
+  });
+
+  it('returns no conflicts when price and stock still match live product data', async () => {
+    mockProduct.findUnique.mockResolvedValue({
+      id: 'prod_1',
+      name: 'Running Shoe',
+      price: 999,
+      stock: 5,
+      isDeleted: false,
+    });
+
+    const conflicts = await orderService.detectOrderConflicts([orderedItem()]);
+
+    expect(conflicts).toEqual([]);
+  });
+
+  it('flags a price_changed conflict when the live price no longer matches the snapshotted price', async () => {
+    mockProduct.findUnique.mockResolvedValue({
+      id: 'prod_1',
+      name: 'Running Shoe',
+      price: 1199,
+      stock: 5,
+      isDeleted: false,
+    });
+
+    const conflicts = await orderService.detectOrderConflicts([orderedItem({ price: 999 })]);
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({
+        productId: 'prod_1',
+        type: 'price_changed',
+        orderedPrice: 999,
+        currentPrice: 1199,
+      }),
+    ]);
+  });
+
+  it('flags an insufficient_stock conflict when the ordered quantity exceeds live stock', async () => {
+    mockProduct.findUnique.mockResolvedValue({
+      id: 'prod_1',
+      name: 'Running Shoe',
+      price: 999,
+      stock: 1,
+      isDeleted: false,
+    });
+
+    const conflicts = await orderService.detectOrderConflicts([orderedItem({ quantity: 2 })]);
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({
+        productId: 'prod_1',
+        type: 'insufficient_stock',
+        requestedQuantity: 2,
+        availableStock: 1,
+      }),
+    ]);
+  });
+
+  it('can flag both a price change and a stock shortfall on the same item', async () => {
+    mockProduct.findUnique.mockResolvedValue({
+      id: 'prod_1',
+      name: 'Running Shoe',
+      price: 1199,
+      stock: 1,
+      isDeleted: false,
+    });
+
+    const conflicts = await orderService.detectOrderConflicts([orderedItem({ price: 999, quantity: 2 })]);
+
+    expect(conflicts).toHaveLength(2);
+    expect(conflicts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'price_changed' }),
+        expect.objectContaining({ type: 'insufficient_stock' }),
+      ])
+    );
+  });
+
+  it('flags an unavailable conflict (and skips the price/stock checks) when the product is missing', async () => {
+    mockProduct.findUnique.mockResolvedValue(null);
+
+    const conflicts = await orderService.detectOrderConflicts([orderedItem()]);
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({ productId: 'prod_1', type: 'unavailable' }),
+    ]);
+  });
+
+  it('flags an unavailable conflict when the product has since been soft-deleted', async () => {
+    mockProduct.findUnique.mockResolvedValue({
+      id: 'prod_1',
+      name: 'Running Shoe',
+      price: 999,
+      stock: 5,
+      isDeleted: true,
+    });
+
+    const conflicts = await orderService.detectOrderConflicts([orderedItem()]);
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({ productId: 'prod_1', type: 'unavailable' }),
+    ]);
+  });
+
+  it('checks every line item independently and only reports the ones that actually conflict', async () => {
+    mockProduct.findUnique.mockImplementation(async ({ where }) => {
+      if (where.id === 'prod_1') {
+        return { id: 'prod_1', name: 'Running Shoe', price: 999, stock: 5, isDeleted: false };
+      }
+      if (where.id === 'prod_2') {
+        return { id: 'prod_2', name: 'Cap', price: 599, stock: 5, isDeleted: false }; // was 499 -> drifted
+      }
+      return null;
+    });
+
+    const conflicts = await orderService.detectOrderConflicts([
+      orderedItem({ productId: 'prod_1', price: 999 }),
+      orderedItem({ productId: 'prod_2', price: 499 }),
+    ]);
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({ productId: 'prod_2', type: 'price_changed' }),
+    ]);
+  });
+
+  it('reads through the provided transaction client rather than the top-level prisma client when one is passed', async () => {
+    const txProduct = { findUnique: jest.fn().mockResolvedValue({
+      id: 'prod_1', name: 'Running Shoe', price: 999, stock: 5, isDeleted: false,
+    }) };
+    const tx = { product: txProduct };
+
+    await orderService.detectOrderConflicts([orderedItem()], tx);
+
+    expect(txProduct.findUnique).toHaveBeenCalledWith({ where: { id: 'prod_1' } });
+    expect(mockProduct.findUnique).not.toHaveBeenCalled();
+  });
+});
+
+describe('detectAddressConflict', () => {
+  beforeEach(() => {
+    mockAddress.findUnique.mockReset();
+  });
+
+  it('returns no conflicts when the address still exists and belongs to the user', async () => {
+    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1' });
+
+    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+
+    expect(conflicts).toEqual([]);
+  });
+
+  it('flags an address_unavailable conflict when the address has been deleted', async () => {
+    mockAddress.findUnique.mockResolvedValue(null);
+
+    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({ type: 'address_unavailable' }),
+    ]);
+  });
+
+  it('flags an address_unavailable conflict when the address now belongs to a different user', async () => {
+    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'someone_else' });
+
+    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({ type: 'address_unavailable' }),
+    ]);
+  });
+
+  it('flags an address_unavailable conflict without querying when no addressId is given', async () => {
+    const conflicts = await orderService.detectAddressConflict(null, 'user_1');
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({ type: 'address_unavailable' }),
+    ]);
+    expect(mockAddress.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('reads through the provided transaction client rather than the top-level prisma client when one is passed', async () => {
+    const txAddress = { findUnique: jest.fn().mockResolvedValue({ id: 'addr_1', userId: 'user_1' }) };
+    const tx = { address: txAddress };
+
+    await orderService.detectAddressConflict('addr_1', 'user_1', tx);
+
+    expect(txAddress.findUnique).toHaveBeenCalledWith({ where: { id: 'addr_1' } });
+    expect(mockAddress.findUnique).not.toHaveBeenCalled();
   });
 });

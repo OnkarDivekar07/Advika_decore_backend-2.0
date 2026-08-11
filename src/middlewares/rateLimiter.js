@@ -1,5 +1,6 @@
 const redis = require('@config/redis');
 const CustomError = require('@utils/customError');
+const normalizePhone = require('@utils/formatNumber');
 
 /**
  * Factory for phone-keyed rate limiters. Each call site gets its own
@@ -19,8 +20,20 @@ const createRateLimiter = ({
   message = 'Too many requests. Please try again later.',
 }) => {
   return async (req, res, next) => {
-    const phone = req.body.phone;
-    const key = `${prefix}:${phone}`;
+    // This middleware runs *before* validateSendOtp/validateVerifyOtp, so
+    // req.body.phone hasn't been trimmed/format-checked yet. Keying
+    // directly on the raw string lets the same underlying number dodge
+    // the limit just by varying formatting the OTP validators still
+    // accept — "+919999999999" vs "+91 9999999999" (verify allows an
+    // optional space), or incidental leading/trailing whitespace (send's
+    // own .trim() sanitizer hasn't run yet either) — each variant gets
+    // its own bucket, multiplying the effective attempt budget on a
+    // brute-force-sensitive endpoint. normalizePhone() collapses every
+    // representation of the same number down to the same bare 10 digits
+    // this app stores/looks users up by, so the limit is actually per
+    // phone number rather than per exact string.
+    const normalized = normalizePhone(String(req.body.phone || ''));
+    const key = `${prefix}:${normalized || 'invalid'}`;
 
     const count = await redis.incr(key);
     if (count === 1) await redis.expire(key, windowSeconds);

@@ -3,7 +3,9 @@ const crypto = require("crypto");
 const prisma = require('@config/prisma');
 const customError=  require('@utils/customError')
 const inventoryService = require('@modules/inventory/inventory.service');
+const orderService = require('@modules/order/order.service');
 const cartQueue = require('../../jobs/queues/clearCartQueue');
+const notificationQueue = require('../../jobs/queues/notificationQueue');
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -38,6 +40,40 @@ exports.createRazorpayOrder = async ({ amount, currency = "INR", receipt, order_
 };
 
 
+
+/**
+ * Looks up a previously-created Razorpay order by id. Used by createOrderid
+ * to decide whether an existing (not-yet-paid) Razorpay order can be reused
+ * for a retry instead of minting a new one — see the reuse-or-reconcile
+ * comment there for why that matters. Returns null (rather than throwing)
+ * on any failure — an unrecognized/expired id, a network blip talking to
+ * Razorpay, etc. — so callers can just fall through to creating a fresh
+ * order instead of having to special-case this.
+ */
+exports.fetchRazorpayOrder = async (razorpayOrderId) => {
+  try {
+    return await razorpay.orders.fetch(razorpayOrderId);
+  } catch (err) {
+    return null;
+  }
+};
+
+/**
+ * Lists the payment attempts made against a Razorpay order. Used to find a
+ * `captured` payment when a Razorpay order comes back `status: "paid"` but
+ * our own Order record hasn't been reconciled yet (the client never made it
+ * back to call /verify, and the webhook hasn't landed yet either) — see
+ * createOrderid. Returns [] on failure rather than throwing, same reasoning
+ * as fetchRazorpayOrder above.
+ */
+exports.fetchOrderPayments = async (razorpayOrderId) => {
+  try {
+    const result = await razorpay.orders.fetchPayments(razorpayOrderId);
+    return result?.items ?? [];
+  } catch (err) {
+    return [];
+  }
+};
 
 exports.verifyRazorpaySignature = (order_id, payment_id, signature) => {
   const generatedSignature = crypto
@@ -108,6 +144,10 @@ exports.updateOrderAfterPayment = async (order_id, payment_id) => {
     // The cart is only cleared once payment is actually confirmed — this is
     // the first point in the /verify flow where that's true.
     await cartQueue.add('clear-cart', { userId: order.userId });
+    // Same "only the call that actually flipped it" guard — a duplicate
+    // /verify call or a race with the webhook can't queue a second
+    // confirmation SMS for the same order.
+    await notificationQueue.add('order-confirmation', { orderId: order.id });
   }
 
   // count === 0 means either this exact call raced a previous one and lost,
@@ -195,6 +235,7 @@ exports.handleRazorpayWebhookEvent = async (event) => {
           // order to paid clears the cart, so a duplicate webhook delivery
           // can't queue redundant clear jobs.
           await cartQueue.add('clear-cart', { userId: order.userId });
+          await notificationQueue.add('order-confirmation', { orderId: order.id });
         }
       }
       break;
@@ -245,13 +286,36 @@ exports.handleCODOrder = async (orderId, userId) => {
       return { success: true, order, alreadyProcessed: true };
     }
 
-    // 2. Reserve stock before confirming. No money has moved yet for COD, so
+    // 2. Catch a stale draft before reserving anything for it. No money has
+    // moved yet for COD, so a price/stock drift or a deleted delivery
+    // address since the draft order was created (or last refreshed) is
+    // still safe to refuse outright — this is what stops a customer from
+    // being charged a price that's since changed (or an order being
+    // confirmed with nowhere to actually ship it), and gives a clear
+    // "here's exactly what changed" 409 instead of a generic stock-shortfall
+    // error, or a crash later in shipping.service.js, with no useful message.
+    const conflicts = [
+      ...(await orderService.detectAddressConflict(order.addressId, userId, tx)),
+      ...(await orderService.detectOrderConflicts(order.orderItems, tx)),
+    ];
+    if (conflicts.length > 0) {
+      throw new customError(
+        'Some items in your order have changed since it was created. Please refresh your order before placing it.',
+        409,
+        { conflicts }
+      );
+    }
+
+    // 3. Reserve stock before confirming. No money has moved yet for COD, so
     // unlike a paid order, we can simply refuse the order outright if stock
     // isn't there — the whole transaction (this decrement included) rolls
-    // back on throw, so nothing is left half-applied.
+    // back on throw, so nothing is left half-applied. This is a final
+    // atomic guard against a race the conflict check above can't fully
+    // close on its own (another request consuming the same stock between
+    // the check above and this decrement).
     await inventoryService.decrementStockForOrder(order.orderItems, tx);
 
-    // 3. Update the order with COD details
+    // 4. Update the order with COD details
     const updatedOrder = await tx.order.update({
       where: { id: orderId },
       data: {
@@ -266,6 +330,7 @@ exports.handleCODOrder = async (orderId, userId) => {
     // would risk clearing it even if the transaction above rolled back; this
     // line only runs once that has committed successfully.
     await cartQueue.add('clear-cart', { userId });
+    await notificationQueue.add('order-confirmation', { orderId: updatedOrder.id });
 
     return { success: true, order: updatedOrder, alreadyProcessed: false };
   });

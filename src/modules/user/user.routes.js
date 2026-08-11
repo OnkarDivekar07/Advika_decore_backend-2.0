@@ -39,14 +39,14 @@ router.get('/addresses', getAddresses);
  * @desc    Update a delivery address by ID
  * @access  User
  */
-router.put('/:id', updateAddressValidator, validateRequest, updateAddress);
+router.put('/address/:id', updateAddressValidator, validateRequest, updateAddress);
 
 /**
  * @route   DELETE /api/user/address/:id
  * @desc    Delete a delivery address by ID
  * @access  User
  */
-router.delete('/:id', deleteAddress);
+router.delete('/address/:id', deleteAddress);
 
 
 router.get('/profile',getUserProfile)

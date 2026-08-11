@@ -1,4 +1,5 @@
 const paymentService = require('./payment.service');
+const orderService = require('@modules/order/order.service');
 const CustomError = require('@utils/customError');
 const prisma = require('@config/prisma');
 
@@ -15,15 +16,87 @@ exports.createOrderid = async (req, res, next) => {
       orderBy: {
         createdAt: 'desc',
       },
+      include: { orderItems: true },
     });
 
     if (!draftOrder || draftOrder.total <= 0) {
       throw new CustomError('No valid draft order', 401);
     }
 
-    // 🟡 Step 2: Create Razorpay Order ID with amount
+    // 🟡 Step 2: Catch a stale draft before ever creating a Razorpay order
+    // for it — a Razorpay order amount is fixed once created, so this is
+    // the last point it's safe to refuse a price/stock drift, or a delivery
+    // address that's since been deleted, outright — before the customer
+    // sees a checkout modal for an order that no longer matches reality or
+    // could never actually be shipped.
+    const conflicts = [
+      ...(await orderService.detectAddressConflict(draftOrder.addressId, userId)),
+      ...(await orderService.detectOrderConflicts(draftOrder.orderItems)),
+    ];
+    if (conflicts.length > 0) {
+      throw new CustomError(
+        'Some items in your order have changed since it was created. Please refresh your order before paying.',
+        409,
+        { conflicts }
+      );
+    }
+
+    const expectedAmountPaise = Math.round(draftOrder.total * 100);
+
+    // 🟡 Step 3: Reuse-or-reconcile before ever minting a new Razorpay
+    // order. This endpoint can legitimately be hit more than once for the
+    // same draft order — a retry after a dropped connection, the customer
+    // backing out of the Checkout.js modal and hitting Pay again, a
+    // double-tap — and naively creating a fresh Razorpay order every time
+    // would overwrite this order's `payment_order_id`, which is the only
+    // thing /verify and the webhook use to find it again. That silently
+    // orphans a payment already captured against the old id: Razorpay
+    // still has the money, but nothing in our DB points at it anymore.
+    if (draftOrder.payment_order_id && draftOrder.paymentStatus === 'pending') {
+      const existing = await paymentService.fetchRazorpayOrder(draftOrder.payment_order_id);
+
+      if (existing && existing.amount === expectedAmountPaise) {
+        if (existing.status === 'paid') {
+          // Razorpay already captured this — our record just hasn't
+          // caught up (the client that paid never got to call /verify,
+          // and the webhook hasn't landed yet). Reconcile right now
+          // rather than making the customer wait on the webhook or,
+          // worse, letting them see a fresh checkout modal for an order
+          // that's already paid.
+          const payments = await paymentService.fetchOrderPayments(draftOrder.payment_order_id);
+          const captured = payments.find((p) => p.status === 'captured');
+
+          if (captured) {
+            const { order } = await paymentService.updateOrderAfterPayment(
+              draftOrder.payment_order_id,
+              captured.id
+            );
+            return res.sendResponse({
+              message: 'Payment already completed for this order',
+              data: { alreadyPaid: true, orderId: order.id },
+            });
+          }
+          // Razorpay says paid but we can't find the captured payment
+          // (shouldn't normally happen) — fall through and let a fresh
+          // attempt proceed rather than leaving the customer stuck.
+        } else {
+          // 'created' (never attempted) or 'attempted' (a previous try
+          // failed/was abandoned, but this order id is still payable) —
+          // safe to hand back as-is instead of minting a new one.
+          return res.sendResponse({
+            message: 'Razorpay order created successfully',
+            data: { order: existing, key_id: process.env.RAZORPAY_KEY_ID },
+          });
+        }
+      }
+      // No usable existing order (amount drifted since it was created,
+      // the lookup failed, or it ended up in some other terminal state)
+      // — fall through to minting a new one below.
+    }
+
+    // 🟡 Step 4: Create a fresh Razorpay Order ID with amount
     const razorpayOrder = await paymentService.createRazorpayOrder({
-      amount: draftOrder.total * 100, // Convert to paise
+      amount: expectedAmountPaise,
       currency: 'INR',
       receipt: `order_${draftOrder.id}`,
       order_id: draftOrder.id,
@@ -58,6 +131,27 @@ exports.verifyPayment = async (req, res, next) => {
 
     if (!isValid) {
       throw new CustomError('Invalid signature', 400);
+    }
+
+    // A valid signature proves this order_id/payment_id pair really was
+    // captured by Razorpay under our account — it does NOT prove this
+    // caller is who the order belongs to. Razorpay order ids aren't
+    // secret (visible in browser history, dev tools, shared support
+    // tickets), so without this check any authenticated user could flip
+    // someone else's order to 'paid' by replaying their ids/signature.
+    // Mirrors the same ownership check handleCODOrder already does for
+    // the COD path.
+    const owningOrder = await prisma.order.findUnique({
+      where: { payment_order_id: razorpay_order_id },
+      select: { userId: true },
+    });
+
+    if (!owningOrder) {
+      throw new CustomError('Order not found for this payment', 404);
+    }
+
+    if (owningOrder.userId !== req.user.userId) {
+      throw new CustomError('This payment does not belong to your account', 403);
     }
 
     // Idempotent: a second call for the same order (client retry, double

@@ -16,8 +16,17 @@ exports.validateGetProductsByIds = [
   query('ids')
     .exists({ checkFalsy: true })
     .withMessage('ids is required')
+    // .bail() is required here: without it, express-validator still runs
+    // every later step in the chain even after `exists` has already
+    // failed. When `ids` is missing, `value` below is `undefined`, and
+    // the customSanitizer's `value.split(',')` throws a raw TypeError
+    // that escapes as an unhandled 500 instead of the intended 422 —
+    // exactly the class of bug this endpoint needs to not have, since
+    // it's public and unauthenticated.
+    .bail()
     .isString()
     .withMessage('ids must be a comma-separated string of product ids')
+    .bail()
     .customSanitizer((value) =>
       Array.from(new Set(value.split(',').map((id) => id.trim()).filter(Boolean)))
     )

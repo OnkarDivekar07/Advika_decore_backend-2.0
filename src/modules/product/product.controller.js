@@ -1,4 +1,5 @@
 const productService = require('./product.service');
+const { matchedData } = require('express-validator');
 
 exports.createProduct = async (req, res, next) => {
   try {
@@ -75,11 +76,21 @@ exports.getProductById = async (req, res, next) => {
 };
 
 // GET /api/products/batch?ids=a,b,c — see product.validation's
-// validateGetProductsByIds for the sanitizing/capping of req.query.ids into
-// a deduped array; this just forwards it.
+// validateGetProductsByIds for the sanitizing/capping of ids into a
+// deduped array.
+//
+// Reads the sanitized value via matchedData() rather than req.query.ids.
+// Express 5 makes req.query a getter computed fresh from the URL on every
+// access, with no setter — so express-validator's customSanitizer/toInt/
+// toFloat/toBoolean calls run and are reflected in validationResult(),
+// but silently fail to write back onto req.query itself. Reading
+// req.query.ids here would still see the raw, undeduped, uncapped string
+// exactly as the client sent it. matchedData() returns the value
+// express-validator actually computed, independent of that mutation.
 exports.getProductsByIds = async (req, res, next) => {
   try {
-    const result = await productService.getProductsByIds(req.query.ids);
+    const { ids } = matchedData(req);
+    const result = await productService.getProductsByIds(ids);
     res.sendResponse({
       message: 'Products fetched successfully',
       data: result,

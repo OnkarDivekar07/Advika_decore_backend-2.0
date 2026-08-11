@@ -11,7 +11,7 @@ const {
 const authenticate = require('@middlewares/authenticate');
 const authorizeAdminOnly = require('@middlewares/authorizeAdminOnly');
 const validateRequest = require('@middlewares/validateRequest');
-const { validateDraftOrder } = require('./order.validation'); // renamed from admin.validation to avoid confusion
+const { validateDraftOrder, validateOrderIdParam } = require('./order.validation'); // renamed from admin.validation to avoid confusion
 
 // -----------------------------------------------------------------------------
 // @route   POST /api/orders
@@ -51,13 +51,14 @@ router.get(
 
 // -----------------------------------------------------------------------------
 // @route   GET /api/orders/:id
-// @desc    Get a specific order by ID (Admin only)
-// @access  Admin
+// @desc    Get a specific order by ID (owner or admin)
+// @access  Authenticated User (must own the order) or Admin
 // -----------------------------------------------------------------------------
 router.get(
   '/:id',
   authenticate,
-  authorizeAdminOnly,
+  validateOrderIdParam,
+  validateRequest,
   getOrderById
 );
 

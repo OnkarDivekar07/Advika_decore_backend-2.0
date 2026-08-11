@@ -106,7 +106,7 @@ const mockPrisma = {
     findUnique: jest.fn(async ({ where }) => db.addresses[where.id] || null),
   },
   order: {
-    findFirst: jest.fn(async ({ where, orderBy }) => {
+    findFirst: jest.fn(async ({ where, orderBy, include }) => {
       let matches = Object.values(db.orders).filter(
         (o) =>
           o.userId === where.userId &&
@@ -115,7 +115,18 @@ const mockPrisma = {
       if (orderBy?.createdAt === 'desc') {
         matches = matches.sort((a, b) => b.createdAt - a.createdAt);
       }
-      return matches[0] || null;
+      const order = matches[0];
+      if (!order) return null;
+
+      const result = { ...order };
+      if (include?.orderItems) {
+        let items = db.orderItems.filter((i) => i.orderId === order.id);
+        if (include.orderItems.include?.product) {
+          items = items.map((i) => ({ ...i, product: db.products[i.productId] }));
+        }
+        result.orderItems = items;
+      }
+      return result;
     }),
     create: jest.fn(async ({ data }) => {
       const id = genId();
@@ -227,6 +238,15 @@ const mockCartQueue = {
 };
 jest.mock('../../src/jobs/queues/clearCartQueue', () => mockCartQueue);
 
+// -- Notification queue: payment.service.js queues an 'order-confirmation'
+// job on every path that confirms an order (COD, /verify, and the
+// webhook). Left unmocked, requiring it pulls in the real BullMQ Queue,
+// which opens a real ioredis connection to 127.0.0.1:6379 — with no Redis
+// available in the test environment, `.add()` never resolves and the test
+// times out instead of failing fast on an assertion.
+const mockNotificationQueue = { add: jest.fn(async () => {}) };
+jest.mock('../../src/jobs/queues/notificationQueue', () => mockNotificationQueue);
+
 const Razorpay = require('razorpay');
 const cartRoutes = require('@modules/cart/cart.routes');
 const orderRoutes = require('@modules/order/order.routes');
@@ -315,10 +335,13 @@ describe('checkout flow — Cash on Delivery', () => {
   it('409s a COD order whose cart no longer has enough stock, without touching the cart', async () => {
     // Enough stock to get 2 units into the cart in the first place — the
     // cart itself now guards against adding more than is in stock (see
-    // cart.service's assertProductAvailable), so this test instead models
-    // stock being depleted by someone else *after* the item is already in
-    // the cart but *before* checkout, which is the race the order/payment
-    // layer's own stock guard (inventory.service) still has to catch.
+    // cart.service's assertProductAvailable), and draft-order creation
+    // re-validates stock too (order.service's own insufficientStock guard),
+    // so this test models stock being depleted by someone else *after* the
+    // draft order was already created with 2 units locked in — the race
+    // the COD-placement step's own stock guard (inventory.service) still
+    // has to catch, since a draft order can sit around for a while before
+    // the customer actually pays/confirms.
     const product = seedProduct({ price: 500, stock: 2 });
     const address = seedAddress('user_1');
 
@@ -327,15 +350,17 @@ describe('checkout flow — Cash on Delivery', () => {
       .set('x-user-id', 'user_1')
       .send({ cartItems: [{ productId: product.id, quantity: 2 }] });
 
-    // Someone else's order (or a stock correction) eats into the supply
-    // between add-to-cart and checkout.
-    db.products[product.id].stock = 1;
-
     const draftRes = await request(app)
       .post('/api/order')
       .set('x-user-id', 'user_1')
       .send({ selectedAddressId: address.id });
+    expect(draftRes.status).toBe(201);
     const orderId = draftRes.body.data.id;
+
+    // Someone else's order (or a stock correction) eats into the supply
+    // between draft-order creation and the customer actually placing the
+    // COD order.
+    db.products[product.id].stock = 1;
 
     const codRes = await request(app)
       .post('/api/payment/cod')

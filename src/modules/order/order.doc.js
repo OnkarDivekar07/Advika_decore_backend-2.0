@@ -140,7 +140,7 @@
  * @swagger
  * /api/orders/{id}:
  *   get:
- *     summary: Get a specific order by ID (Admin only)
+ *     summary: Get a specific order by ID (owner or admin)
  *     tags:
  *       - Orders
  *     security:

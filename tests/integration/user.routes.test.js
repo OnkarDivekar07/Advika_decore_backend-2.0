@@ -80,10 +80,10 @@ describe('GET /api/user/addresses', () => {
   });
 });
 
-describe('PUT /api/user/:id', () => {
+describe('PUT /api/user/address/:id', () => {
   it('422s an invalid pincode on update', async () => {
     const res = await request(app)
-      .put('/api/user/addr1')
+      .put('/api/user/address/addr1')
       .send({ pincode: 'not-a-pincode' });
 
     expect(res.status).toBe(422);
@@ -94,7 +94,7 @@ describe('PUT /api/user/:id', () => {
     userService.updateAddressById.mockResolvedValue({ id: 'addr1', city: 'Mumbai' });
 
     const res = await request(app)
-      .put('/api/user/addr1')
+      .put('/api/user/address/addr1')
       .send({ city: 'Mumbai' });
 
     expect(res.status).toBe(200);
@@ -112,18 +112,18 @@ describe('PUT /api/user/:id', () => {
     );
 
     const res = await request(app)
-      .put('/api/user/addr1')
+      .put('/api/user/address/addr1')
       .send({ city: 'Mumbai' });
 
     expect(res.status).toBe(403);
   });
 });
 
-describe('DELETE /api/user/:id', () => {
+describe('DELETE /api/user/address/:id', () => {
   it('deletes the address for the authenticated user', async () => {
     userService.deleteAddressById.mockResolvedValue({ id: 'addr1' });
 
-    const res = await request(app).delete('/api/user/addr1');
+    const res = await request(app).delete('/api/user/address/addr1');
 
     expect(res.status).toBe(200);
     expect(userService.deleteAddressById).toHaveBeenCalledWith(

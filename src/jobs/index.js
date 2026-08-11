@@ -3,11 +3,13 @@ const logger = require('@config/logger');
 
 const imageWorker = require('./workers/imageWorker');
 const clearCartWorker = require('./workers/clearCartWorker');
+const notificationWorker = require('./workers/notificationWorker');
 const imageQueue = require('./queues/imageQueue');
 const clearCartQueue = require('./queues/clearCartQueue');
+const notificationQueue = require('./queues/notificationQueue');
 
-const workers = [imageWorker, clearCartWorker];
-const queues = [imageQueue, clearCartQueue];
+const workers = [imageWorker, clearCartWorker, notificationWorker];
+const queues = [imageQueue, clearCartQueue, notificationQueue];
 
 module.exports = () => {
   logger.info('Workers initialized');

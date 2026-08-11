@@ -29,14 +29,33 @@ jest.mock('@modules/inventory/inventory.service', () => ({
   decrementStockForOrder: jest.fn(),
 }));
 
+jest.mock('@modules/order/order.service', () => ({
+  detectOrderConflicts: jest.fn(),
+  detectAddressConflict: jest.fn(),
+}));
+
 jest.mock('../../src/jobs/queues/clearCartQueue', () => ({
+  add: jest.fn(),
+}));
+
+// Without this mock, requiring payment.service.js pulls in the real
+// notificationQueue (BullMQ + ioredis), which tries to open a live Redis
+// connection. In an environment with no Redis running, `.add()` on that
+// real queue never resolves, so every code path in payment.service.js
+// that queues an 'order-confirmation' job (updateOrderAfterPayment,
+// handleRazorpayWebhookEvent's payment.captured branch, handleCODOrder)
+// hangs until Jest's 5s test timeout fires — surfacing as a timeout
+// failure rather than a real assertion failure.
+jest.mock('../../src/jobs/queues/notificationQueue', () => ({
   add: jest.fn(),
 }));
 
 const Razorpay = require('razorpay');
 const prisma = require('@config/prisma');
 const inventoryService = require('@modules/inventory/inventory.service');
+const orderService = require('@modules/order/order.service');
 const cartQueue = require('../../src/jobs/queues/clearCartQueue');
+const notificationQueue = require('../../src/jobs/queues/notificationQueue');
 const paymentService = require('@modules/payment/payment.service');
 
 const razorpayInstance = Razorpay.mock.results[0].value;
@@ -293,6 +312,14 @@ describe('payment.service', () => {
       mockOrder.findUnique.mockReset();
       mockOrder.update.mockReset();
       inventoryService.decrementStockForOrder.mockReset();
+      orderService.detectOrderConflicts.mockReset();
+      orderService.detectAddressConflict.mockReset();
+      // Default: no drift since the draft order was created, and the
+      // delivery address is still around — matches the pre-existing
+      // fixtures below, which weren't written with a price/stock/address
+      // conflict in mind.
+      orderService.detectOrderConflicts.mockResolvedValue([]);
+      orderService.detectAddressConflict.mockResolvedValue([]);
       cartQueue.add.mockReset();
       prisma.$transaction.mockClear();
     });
@@ -337,6 +364,7 @@ describe('payment.service', () => {
       mockOrder.findUnique.mockResolvedValue({
         id: 'order_1',
         userId: 'user_1',
+        addressId: 'addr_1',
         status: 'draft',
         orderItems: [{ productId: 'p1', quantity: 1 }],
       });
@@ -350,6 +378,15 @@ describe('payment.service', () => {
       const result = await paymentService.handleCODOrder('order_1', 'user_1');
 
       expect(result.alreadyProcessed).toBe(false);
+      expect(orderService.detectAddressConflict).toHaveBeenCalledWith(
+        'addr_1',
+        'user_1',
+        mockTx
+      );
+      expect(orderService.detectOrderConflicts).toHaveBeenCalledWith(
+        [{ productId: 'p1', quantity: 1 }],
+        mockTx
+      );
       expect(inventoryService.decrementStockForOrder).toHaveBeenCalledWith(
         [{ productId: 'p1', quantity: 1 }],
         mockTx
@@ -383,6 +420,79 @@ describe('payment.service', () => {
         paymentService.handleCODOrder('order_1', 'user_1')
       ).rejects.toMatchObject({ statusCode: 409 });
 
+      expect(mockOrder.update).not.toHaveBeenCalled();
+      expect(cartQueue.add).not.toHaveBeenCalled();
+    });
+
+    // Price/stock conflict detection — see order.service.js's
+    // detectOrderConflicts. This runs before the atomic stock decrement, so
+    // it's the path that actually fires for a drifted draft order in
+    // practice (the decrement-time 409 above is the final race-condition
+    // backstop, not the primary way a stale COD order gets caught).
+    it('409s with the structured conflicts and never reserves stock or confirms when the order has drifted since it was created', async () => {
+      mockOrder.findUnique.mockResolvedValue({
+        id: 'order_1',
+        userId: 'user_1',
+        status: 'draft',
+        orderItems: [{ productId: 'p1', quantity: 1, price: 999 }],
+      });
+      orderService.detectOrderConflicts.mockResolvedValue([
+        {
+          productId: 'p1',
+          name: 'Running Shoe',
+          type: 'price_changed',
+          orderedPrice: 999,
+          currentPrice: 1099,
+          message: 'The price of this item has changed since it was added to your order.',
+        },
+      ]);
+
+      await expect(
+        paymentService.handleCODOrder('order_1', 'user_1')
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        errors: {
+          conflicts: [
+            expect.objectContaining({ productId: 'p1', type: 'price_changed' }),
+          ],
+        },
+      });
+
+      expect(inventoryService.decrementStockForOrder).not.toHaveBeenCalled();
+      expect(mockOrder.update).not.toHaveBeenCalled();
+      expect(cartQueue.add).not.toHaveBeenCalled();
+    });
+
+    // Address deletion — see order.service.js's detectAddressConflict. No
+    // money has moved yet for COD, so this has to be caught before stock is
+    // reserved, same reasoning as the price/stock conflict case above.
+    it('409s with an address_unavailable conflict and never reserves stock or confirms when the delivery address has been deleted', async () => {
+      mockOrder.findUnique.mockResolvedValue({
+        id: 'order_1',
+        userId: 'user_1',
+        addressId: 'addr_deleted',
+        status: 'draft',
+        orderItems: [{ productId: 'p1', quantity: 1, price: 999 }],
+      });
+      orderService.detectAddressConflict.mockResolvedValue([
+        {
+          type: 'address_unavailable',
+          message: 'The delivery address for this order is no longer available. Please choose a different address.',
+        },
+      ]);
+
+      await expect(
+        paymentService.handleCODOrder('order_1', 'user_1')
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        errors: {
+          conflicts: [
+            expect.objectContaining({ type: 'address_unavailable' }),
+          ],
+        },
+      });
+
+      expect(inventoryService.decrementStockForOrder).not.toHaveBeenCalled();
       expect(mockOrder.update).not.toHaveBeenCalled();
       expect(cartQueue.add).not.toHaveBeenCalled();
     });

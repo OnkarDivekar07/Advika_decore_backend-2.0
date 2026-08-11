@@ -115,6 +115,7 @@ describe('POST /api/order', () => {
     expect(orderService.createDraftOrderService).toHaveBeenCalledWith(
       'user_1',
       VALID_ADDRESS_ID,
+      null,
       null
     );
     expect(res.body.data).toEqual({
@@ -163,7 +164,8 @@ describe('POST /api/order', () => {
     expect(orderService.createDraftOrderService).toHaveBeenCalledWith(
       'user_1',
       VALID_ADDRESS_ID,
-      'SAVE10'
+      'SAVE10',
+      null
     );
   });
 
@@ -171,6 +173,56 @@ describe('POST /api/order', () => {
     const res = await request(app)
       .post('/api/order')
       .send({ selectedAddressId: VALID_ADDRESS_ID, couponCode: 12345 });
+
+    expect(res.status).toBe(422);
+    expect(orderService.createDraftOrderService).not.toHaveBeenCalled();
+  });
+
+  // Buy Now — see checkout-architecture.md §3.2 step 5 / §4.4. Shape is
+  // validated here; the actual product/stock re-check happens server-side
+  // in order.service.js, exercised separately in order.service.test.js.
+  const VALID_PRODUCT_ID = '507f1f77bcf86cd799439022';
+
+  it('passes an optional buyNow line item through to the service unchanged', async () => {
+    mockAddress.findUnique.mockResolvedValue({
+      id: VALID_ADDRESS_ID,
+      userId: 'user_1',
+    });
+    orderService.createDraftOrderService.mockResolvedValue({
+      id: VALID_ORDER_ID,
+      status: 'draft',
+      total: 1999,
+    });
+
+    const res = await request(app).post('/api/order').send({
+      selectedAddressId: VALID_ADDRESS_ID,
+      buyNow: { productId: VALID_PRODUCT_ID, quantity: 2 },
+    });
+
+    expect(res.status).toBe(201);
+    expect(orderService.createDraftOrderService).toHaveBeenCalledWith(
+      'user_1',
+      VALID_ADDRESS_ID,
+      null,
+      { productId: VALID_PRODUCT_ID, quantity: 2 }
+    );
+  });
+
+  it('422s when buyNow.productId is not a valid ObjectId', async () => {
+    const res = await request(app).post('/api/order').send({
+      selectedAddressId: VALID_ADDRESS_ID,
+      buyNow: { productId: 'not-an-object-id', quantity: 1 },
+    });
+
+    expect(res.status).toBe(422);
+    expect(orderService.createDraftOrderService).not.toHaveBeenCalled();
+  });
+
+  it('422s when buyNow.quantity is not a positive integer', async () => {
+    const res = await request(app).post('/api/order').send({
+      selectedAddressId: VALID_ADDRESS_ID,
+      buyNow: { productId: VALID_PRODUCT_ID, quantity: 0 },
+    });
 
     expect(res.status).toBe(422);
     expect(orderService.createDraftOrderService).not.toHaveBeenCalled();
@@ -230,12 +282,12 @@ describe('GET /api/order/all', () => {
 });
 
 describe('GET /api/order/:id', () => {
-  it('403s for a non-admin user', async () => {
+  it('422s when the id is not a valid ObjectId', async () => {
     const res = await request(app)
-      .get(`/api/order/${VALID_ORDER_ID}`)
+      .get('/api/order/not-an-object-id')
       .set('x-role', 'customer');
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(422);
     expect(orderService.fetchOrderById).not.toHaveBeenCalled();
   });
 
@@ -244,23 +296,56 @@ describe('GET /api/order/:id', () => {
 
     const res = await request(app)
       .get(`/api/order/${VALID_ORDER_ID}`)
-      .set('x-role', 'admin');
+      .set('x-role', 'customer');
 
     expect(res.status).toBe(404);
   });
 
-  it('200s with the order for an admin', async () => {
+  it('200s with the order for the owning customer', async () => {
     orderService.fetchOrderById.mockResolvedValue({
       id: VALID_ORDER_ID,
+      userId: 'user_1',
       total: 500,
     });
 
     const res = await request(app)
       .get(`/api/order/${VALID_ORDER_ID}`)
-      .set('x-role', 'admin');
+      .set('x-user-id', 'user_1')
+      .set('x-role', 'customer');
 
     expect(res.status).toBe(200);
     expect(res.body.message).toBe('Order fetched successfully');
+    expect(orderService.fetchOrderById).toHaveBeenCalledWith(VALID_ORDER_ID);
+  });
+
+  it("403s when a customer requests another user's order", async () => {
+    orderService.fetchOrderById.mockResolvedValue({
+      id: VALID_ORDER_ID,
+      userId: 'someone_else',
+      total: 500,
+    });
+
+    const res = await request(app)
+      .get(`/api/order/${VALID_ORDER_ID}`)
+      .set('x-user-id', 'user_1')
+      .set('x-role', 'customer');
+
+    expect(res.status).toBe(403);
+  });
+
+  it('200s with the order for an admin regardless of owner', async () => {
+    orderService.fetchOrderById.mockResolvedValue({
+      id: VALID_ORDER_ID,
+      userId: 'someone_else',
+      total: 500,
+    });
+
+    const res = await request(app)
+      .get(`/api/order/${VALID_ORDER_ID}`)
+      .set('x-user-id', 'admin_1')
+      .set('x-role', 'admin');
+
+    expect(res.status).toBe(200);
     expect(orderService.fetchOrderById).toHaveBeenCalledWith(VALID_ORDER_ID);
   });
 });

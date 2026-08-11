@@ -6,7 +6,7 @@ exports.createDraftOrder = async (req, res, next) => {
   try {
     const userId = req.user.userId;
 
-    const { selectedAddressId, couponCode } = req.body;
+    const { selectedAddressId, couponCode, buyNow } = req.body;
   
     if (!userId) {
       throw new CustomError('Unauthorized access. User ID missing.', 401);
@@ -28,6 +28,7 @@ exports.createDraftOrder = async (req, res, next) => {
       userId,
       selectedAddressId,
       couponCode || null,
+      buyNow || null,
     );
 
     return res.sendResponse({
@@ -79,14 +80,22 @@ exports.getOrders = async (req, res, next) => {
 
 
 // GET /api/order/:id
+// Owner-or-admin: any authenticated customer can fetch their own order by id
+// (needed for the order-confirmation/success page — see
+// checkout-architecture.md §4.2), admins can fetch any order.
 exports.getOrderById = async (req, res, next) => {
   const { id } = req.params;
+  const { userId, role } = req.user;
 
   try {
     const order = await orderService.fetchOrderById(id);
 
     if (!order) {
       throw new CustomError('No draft order found.', 404);
+    }
+
+    if (role !== 'admin' && order.userId !== userId) {
+      throw new CustomError('You do not have access to this order.', 403);
     }
 
     res.sendResponse({

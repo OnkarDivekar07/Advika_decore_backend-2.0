@@ -21,10 +21,23 @@ jest.mock('@modules/payment/payment.service', () => ({
   createRazorpayOrder: jest.fn(),
 }));
 
-const mockDraftOrder = { findFirst: jest.fn() };
+jest.mock('@modules/order/order.service', () => ({
+  detectOrderConflicts: jest.fn(),
+  detectAddressConflict: jest.fn(),
+}));
+
+// findUnique backs the ownership check verifyPayment now does before
+// trusting a signature-valid payment_order_id/payment_id pair (Razorpay
+// order ids aren't secret, so /verify has to confirm the order it
+// resolves to actually belongs to the caller — see payment.controller.js).
+// Without a findUnique mock here, that lookup returns undefined and the
+// controller throws trying to read `.userId` off it, 500ing every test
+// that reaches this code path.
+const mockDraftOrder = { findFirst: jest.fn(), findUnique: jest.fn() };
 jest.mock('@config/prisma', () => ({ order: mockDraftOrder }));
 
 const paymentService = require('@modules/payment/payment.service');
+const orderService = require('@modules/order/order.service');
 const paymentRoutes = require('@modules/payment/payment.routes');
 const responseMiddleware = require('@middlewares/responseMiddleware');
 const errorHandler = require('@middlewares/errorHandler');
@@ -69,6 +82,7 @@ describe('POST /api/payment/verify', () => {
 
   it('confirms the order on a valid signature', async () => {
     paymentService.verifyRazorpaySignature.mockReturnValue(true);
+    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'user_1' });
     paymentService.updateOrderAfterPayment.mockResolvedValue({
       order: { id: 'order_1' },
       alreadyProcessed: false,
@@ -87,6 +101,34 @@ describe('POST /api/payment/verify', () => {
       alreadyProcessed: false,
       orderId: 'order_1',
     });
+  });
+
+  it('404s when the order for this payment_order_id cannot be found', async () => {
+    paymentService.verifyRazorpaySignature.mockReturnValue(true);
+    mockDraftOrder.findUnique.mockResolvedValue(null);
+
+    const res = await request(app).post('/api/payment/verify').send({
+      razorpay_order_id: 'order_missing',
+      razorpay_payment_id: 'pay_1',
+      razorpay_signature: 'good-signature',
+    });
+
+    expect(res.status).toBe(404);
+    expect(paymentService.updateOrderAfterPayment).not.toHaveBeenCalled();
+  });
+
+  it("403s when the order belongs to a different user (can't replay someone else's payment ids)", async () => {
+    paymentService.verifyRazorpaySignature.mockReturnValue(true);
+    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'someone_else' });
+
+    const res = await request(app).post('/api/payment/verify').send({
+      razorpay_order_id: 'order_1',
+      razorpay_payment_id: 'pay_1',
+      razorpay_signature: 'good-signature',
+    });
+
+    expect(res.status).toBe(403);
+    expect(paymentService.updateOrderAfterPayment).not.toHaveBeenCalled();
   });
 });
 
@@ -194,6 +236,14 @@ describe('POST /api/payment/cod', () => {
 describe('POST /api/payment/create-orderid', () => {
   beforeEach(() => {
     mockDraftOrder.findFirst.mockReset();
+    orderService.detectOrderConflicts.mockReset();
+    orderService.detectAddressConflict.mockReset();
+    // Default: no drift since the draft order was created, and the
+    // delivery address is still around — matches the pre-existing fixtures
+    // below, which weren't written with a price/stock/address conflict in
+    // mind.
+    orderService.detectOrderConflicts.mockResolvedValue([]);
+    orderService.detectAddressConflict.mockResolvedValue([]);
   });
 
   it('401s when the user has no draft order', async () => {
@@ -209,6 +259,8 @@ describe('POST /api/payment/create-orderid', () => {
     mockDraftOrder.findFirst.mockResolvedValue({
       id: 'order_1',
       total: 499,
+      addressId: 'addr_1',
+      orderItems: [{ productId: 'p1', quantity: 1, price: 499 }],
     });
     paymentService.createRazorpayOrder.mockResolvedValue({
       id: 'rzp_order_1',
@@ -219,11 +271,72 @@ describe('POST /api/payment/create-orderid', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.order).toEqual({ id: 'rzp_order_1' });
     expect(res.body.data.key_id).toBe(process.env.RAZORPAY_KEY_ID);
+    expect(orderService.detectAddressConflict).toHaveBeenCalledWith('addr_1', 'user_1');
+    expect(orderService.detectOrderConflicts).toHaveBeenCalledWith([
+      { productId: 'p1', quantity: 1, price: 499 },
+    ]);
     expect(paymentService.createRazorpayOrder).toHaveBeenCalledWith({
       amount: 49900,
       currency: 'INR',
       receipt: 'order_order_1',
       order_id: 'order_1',
     });
+  });
+
+  // Price/stock conflict detection — see order.service.js's
+  // detectOrderConflicts. A Razorpay order amount is fixed once created, so
+  // this has to be checked before create-orderid ever calls Razorpay, not
+  // after.
+  it('409s with the structured conflicts and never creates a Razorpay order when the draft has drifted', async () => {
+    mockDraftOrder.findFirst.mockResolvedValue({
+      id: 'order_1',
+      total: 499,
+      orderItems: [{ productId: 'p1', quantity: 1, price: 499 }],
+    });
+    orderService.detectOrderConflicts.mockResolvedValue([
+      {
+        productId: 'p1',
+        name: 'Running Shoe',
+        type: 'price_changed',
+        orderedPrice: 499,
+        currentPrice: 599,
+        message: 'The price of this item has changed since it was added to your order.',
+      },
+    ]);
+
+    const res = await request(app).post('/api/payment/create-orderid').send();
+
+    expect(res.status).toBe(409);
+    expect(res.body.errors.conflicts).toEqual([
+      expect.objectContaining({ productId: 'p1', type: 'price_changed' }),
+    ]);
+    expect(paymentService.createRazorpayOrder).not.toHaveBeenCalled();
+  });
+
+  // Address deletion — see order.service.js's detectAddressConflict. A
+  // Razorpay order amount is fixed once created, so this has to be checked
+  // before create-orderid ever calls Razorpay, same reasoning as the
+  // price/stock conflict case above.
+  it('409s with an address_unavailable conflict and never creates a Razorpay order when the delivery address has been deleted', async () => {
+    mockDraftOrder.findFirst.mockResolvedValue({
+      id: 'order_1',
+      total: 499,
+      addressId: 'addr_deleted',
+      orderItems: [{ productId: 'p1', quantity: 1, price: 499 }],
+    });
+    orderService.detectAddressConflict.mockResolvedValue([
+      {
+        type: 'address_unavailable',
+        message: 'The delivery address for this order is no longer available. Please choose a different address.',
+      },
+    ]);
+
+    const res = await request(app).post('/api/payment/create-orderid').send();
+
+    expect(res.status).toBe(409);
+    expect(res.body.errors.conflicts).toEqual([
+      expect.objectContaining({ type: 'address_unavailable' }),
+    ]);
+    expect(paymentService.createRazorpayOrder).not.toHaveBeenCalled();
   });
 });
