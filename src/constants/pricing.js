@@ -9,17 +9,21 @@
 // preview can't drift apart from a copy-pasted threshold going stale in
 // one place.
 //
-// The frontend mirrors these two numbers in src/config/pricing.js purely
-// to render the cart preview without an extra round trip — that's safe
-// because this is a static, publicly-known rule (not inventory/user data
-// that can go stale), but it means the two files must be updated
-// together. If this rule ever needs to vary per-order (promotions,
-// per-pincode shipping, etc.), that mirroring assumption breaks and the
-// frontend should start asking the backend for the number instead.
+// The actual numbers are configured via env vars (FREE_DELIVERY_THRESHOLD /
+// DELIVERY_CHARGE — see src/config/env.js for parsing/defaults), not
+// hardcoded here, so ops can change the rule without a code change. The
+// frontend no longer keeps its own hardcoded copy of these two numbers —
+// it fetches them live from GET /api/shipping/delivery-config (see
+// shipping.service.js's getDeliveryConfig / shipping.controller.js) and
+// falls back to a static default only for the brief window before that
+// first fetch resolves. That's what keeps a backend-side config change
+// (an env var edit + restart, no frontend deploy) reflected everywhere
+// automatically instead of requiring the two to be hand-kept in sync.
 const CustomError = require('@utils/customError');
+const env = require('@config/env');
 
-const FREE_DELIVERY_THRESHOLD = 600;
-const DELIVERY_CHARGE = 49;
+const FREE_DELIVERY_THRESHOLD = env.freeDeliveryThreshold;
+const DELIVERY_CHARGE = env.deliveryCharge;
 
 /**
  * @param {number} subtotal - sum of (price * quantity) across order/cart items

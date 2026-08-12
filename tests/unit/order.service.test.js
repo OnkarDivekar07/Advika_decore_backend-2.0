@@ -22,6 +22,14 @@ const mockPrisma = {
 };
 jest.mock('@config/prisma', () => mockPrisma);
 
+// detectAddressConflict now also checks delivery eligibility for the
+// address's pincode — mocked here so these tests never reach the real
+// shipping.service.js (and, through it, the Ekart client / network).
+jest.mock('@modules/shipping/shipping.service', () => ({
+  checkDeliveryEligibility: jest.fn(),
+}));
+
+const shippingService = require('@modules/shipping/shipping.service');
 const orderService = require('@modules/order/order.service');
 
 const cartRow = (overrides = {}) => ({
@@ -487,14 +495,28 @@ describe('detectOrderConflicts', () => {
 describe('detectAddressConflict', () => {
   beforeEach(() => {
     mockAddress.findUnique.mockReset();
+    shippingService.checkDeliveryEligibility.mockReset();
+    // Default: address's pincode is deliverable and COD-eligible, so tests
+    // that aren't specifically about delivery eligibility don't need to
+    // set this up themselves.
+    shippingService.checkDeliveryEligibility.mockResolvedValue({
+      serviceable: true,
+      reason: null,
+      codAvailable: true,
+      skippedCheck: false,
+    });
   });
 
-  it('returns no conflicts when the address still exists and belongs to the user', async () => {
-    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1' });
+  it('returns no conflicts when the address still exists, belongs to the user, and is deliverable', async () => {
+    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' });
 
     const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
 
     expect(conflicts).toEqual([]);
+    expect(shippingService.checkDeliveryEligibility).toHaveBeenCalledWith({
+      destinationPincode: '400001',
+      paymentMode: 'PREPAID',
+    });
   });
 
   it('flags an address_unavailable conflict when the address has been deleted', async () => {
@@ -505,6 +527,8 @@ describe('detectAddressConflict', () => {
     expect(conflicts).toEqual([
       expect.objectContaining({ type: 'address_unavailable' }),
     ]);
+    // Nothing to check delivery for once the address itself is gone.
+    expect(shippingService.checkDeliveryEligibility).not.toHaveBeenCalled();
   });
 
   it('flags an address_unavailable conflict when the address now belongs to a different user', async () => {
@@ -527,12 +551,185 @@ describe('detectAddressConflict', () => {
   });
 
   it('reads through the provided transaction client rather than the top-level prisma client when one is passed', async () => {
-    const txAddress = { findUnique: jest.fn().mockResolvedValue({ id: 'addr_1', userId: 'user_1' }) };
+    const txAddress = {
+      findUnique: jest.fn().mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' }),
+    };
     const tx = { address: txAddress };
 
     await orderService.detectAddressConflict('addr_1', 'user_1', tx);
 
     expect(txAddress.findUnique).toHaveBeenCalledWith({ where: { id: 'addr_1' } });
     expect(mockAddress.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('flags a delivery_unavailable conflict when the pincode is a real one Ekart just does not cover', async () => {
+    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' });
+    shippingService.checkDeliveryEligibility.mockResolvedValue({
+      serviceable: false,
+      reason: 'AREA_NOT_COVERED',
+      codAvailable: false,
+      skippedCheck: false,
+    });
+
+    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({ type: 'delivery_unavailable' }),
+    ]);
+  });
+
+  it('flags an invalid_pincode conflict when Ekart does not recognize the pincode at all', async () => {
+    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '999999' });
+    shippingService.checkDeliveryEligibility.mockResolvedValue({
+      serviceable: false,
+      reason: 'INVALID_PINCODE',
+      codAvailable: false,
+      skippedCheck: false,
+    });
+
+    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({ type: 'invalid_pincode' }),
+    ]);
+  });
+
+  it('flags an invalid_pincode conflict (and blocks placement) for a malformed/unrecognizable stored pincode', async () => {
+    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '' });
+    shippingService.checkDeliveryEligibility.mockResolvedValue({
+      serviceable: false,
+      reason: 'INVALID_FORMAT',
+      codAvailable: false,
+      skippedCheck: false,
+    });
+
+    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({ type: 'invalid_pincode' }),
+    ]);
+  });
+
+  it('flags a cod_unavailable conflict when a COD order is placed against a prepaid-only pincode', async () => {
+    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' });
+    shippingService.checkDeliveryEligibility.mockResolvedValue({
+      serviceable: true,
+      reason: null,
+      codAvailable: false,
+      skippedCheck: false,
+    });
+
+    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1', undefined, 'COD');
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({ type: 'cod_unavailable' }),
+    ]);
+    expect(shippingService.checkDeliveryEligibility).toHaveBeenCalledWith({
+      destinationPincode: '400001',
+      paymentMode: 'COD',
+    });
+  });
+
+  it('does not flag cod_unavailable for a prepaid order even when the pincode has no COD coverage', async () => {
+    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' });
+    shippingService.checkDeliveryEligibility.mockResolvedValue({
+      serviceable: true,
+      reason: null,
+      codAvailable: false,
+      skippedCheck: false,
+    });
+
+    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+
+    expect(conflicts).toEqual([]);
+  });
+
+  it('does not block the order when the eligibility check itself failed under the fail-open policy', async () => {
+    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' });
+    shippingService.checkDeliveryEligibility.mockResolvedValue({
+      serviceable: true,
+      reason: null,
+      codAvailable: true,
+      skippedCheck: true,
+    });
+
+    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1', undefined, 'COD');
+
+    expect(conflicts).toEqual([]);
+  });
+
+  it('flags a delivery_check_unavailable conflict (and blocks placement) when the eligibility check failed under a fail-closed policy', async () => {
+    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' });
+    // Shape checkDeliveryEligibility returns under
+    // SHIPPING_SERVICEABILITY_FALLBACK_POLICY=fail_closed (see
+    // shipping.service.js) — a distinct reason from AREA_NOT_COVERED, since
+    // this is "we couldn't check" rather than "we checked and it's a no".
+    shippingService.checkDeliveryEligibility.mockResolvedValue({
+      serviceable: false,
+      reason: 'CHECK_UNAVAILABLE',
+      codAvailable: false,
+      skippedCheck: true,
+    });
+
+    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({ type: 'delivery_check_unavailable' }),
+    ]);
+    // Distinct wording from a real "not covered" answer — never tells the
+    // customer to pick a different address for what's actually a carrier
+    // outage.
+    expect(conflicts[0].message).toMatch(/try again/i);
+  });
+});
+
+// Delivery-charge/total drift — the guard that catches an env-level
+// pricing config change (FREE_DELIVERY_THRESHOLD/DELIVERY_CHARGE — see
+// src/constants/pricing.js) made after a draft order was created, which
+// detectOrderConflicts alone (item price/stock only) would never catch.
+// Test env: ₹49 delivery charge below a ₹600 subtotal, free at/above it —
+// same figures the createDraftOrderService tests above use.
+describe('detectPricingConflict', () => {
+  it('returns no conflicts when the stored delivery charge/total still match the current rule', () => {
+    const order = { subtotal: 398, discount: 0, deliveryCharge: 49, total: 447 };
+
+    expect(orderService.detectPricingConflict(order)).toEqual([]);
+  });
+
+  it('returns no conflicts for a free-delivery order at/above the threshold', () => {
+    const order = { subtotal: 600, discount: 0, deliveryCharge: 0, total: 600 };
+
+    expect(orderService.detectPricingConflict(order)).toEqual([]);
+  });
+
+  it('flags a pricing_changed conflict when the stored delivery charge no longer matches the current rule', () => {
+    // Stored as if delivery had been free (e.g. computed under a since-
+    // lowered threshold, or before DELIVERY_CHARGE was raised) — the
+    // current rule (₹49 below ₹600) now disagrees.
+    const order = { subtotal: 398, discount: 0, deliveryCharge: 0, total: 398 };
+
+    const conflicts = orderService.detectPricingConflict(order);
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({
+        type: 'pricing_changed',
+        previousTotal: 398,
+        currentTotal: 447,
+      }),
+    ]);
+  });
+
+  it('flags a pricing_changed conflict when the stored total no longer matches subtotal + current delivery charge - discount', () => {
+    const order = { subtotal: 600, discount: 0, deliveryCharge: 49, total: 649 };
+
+    const conflicts = orderService.detectPricingConflict(order);
+
+    expect(conflicts).toEqual([
+      expect.objectContaining({
+        type: 'pricing_changed',
+        previousTotal: 649,
+        currentTotal: 600,
+      }),
+    ]);
   });
 });

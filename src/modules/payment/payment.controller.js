@@ -25,13 +25,16 @@ exports.createOrderid = async (req, res, next) => {
 
     // 🟡 Step 2: Catch a stale draft before ever creating a Razorpay order
     // for it — a Razorpay order amount is fixed once created, so this is
-    // the last point it's safe to refuse a price/stock drift, or a delivery
-    // address that's since been deleted, outright — before the customer
-    // sees a checkout modal for an order that no longer matches reality or
-    // could never actually be shipped.
+    // the last point it's safe to refuse a price/stock drift, a delivery
+    // address that's since been deleted, or a delivery-charge/total that no
+    // longer matches the current backend pricing rule (see
+    // order.service.js's detectPricingConflict), outright — before the
+    // customer sees a checkout modal for an order that no longer matches
+    // reality or could never actually be shipped.
     const conflicts = [
-      ...(await orderService.detectAddressConflict(draftOrder.addressId, userId)),
+      ...(await orderService.detectAddressConflict(draftOrder.addressId, userId, undefined, 'PREPAID')),
       ...(await orderService.detectOrderConflicts(draftOrder.orderItems)),
+      ...orderService.detectPricingConflict(draftOrder),
     ];
     if (conflicts.length > 0) {
       throw new CustomError(
@@ -41,6 +44,14 @@ exports.createOrderid = async (req, res, next) => {
       );
     }
 
+    // SECURITY INVARIANT: the amount charged is derived ONLY from
+    // draftOrder.total, read from our own DB — this endpoint takes no
+    // request body at all, so there is nothing client-supplied to even
+    // consider trusting here. draftOrder.total is itself always
+    // server-computed (see order.service.js's createDraftOrderService /
+    // calculateDeliveryCharge) — never anything the frontend posts.
+    // Regression-covered in payment.routes.test.js's "ignores a
+    // client-supplied amount/total/deliveryCharge" test.
     const expectedAmountPaise = Math.round(draftOrder.total * 100);
 
     // 🟡 Step 3: Reuse-or-reconcile before ever minting a new Razorpay

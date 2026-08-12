@@ -20,6 +20,23 @@ jest.mock('razorpay', () =>
   }))
 );
 
+// -- Ekart client: never hit the network ---------------------------------
+// Same "mock only the outermost boundary" rule this suite applies to
+// Razorpay — checkout now also runs a real delivery-serviceability check
+// (order.service.js's detectAddressConflict, via shipping.service.js) at
+// both the COD and Razorpay-order-creation gates, so this needs a
+// deterministic stand-in too rather than either hitting the real network
+// or silently relying on the fail-open fallback path to paper over an
+// unmocked dependency.
+jest.mock('../../src/services/external/EkartClient', () => ({
+  checkServiceability: jest.fn().mockResolvedValue({ is_serviceable: true, cod_available: true }),
+  createShipment: jest.fn(),
+  trackShipment: jest.fn(),
+  cancelShipment: jest.fn(),
+  updateShipment: jest.fn(),
+  verifyWebhookSignature: jest.fn(),
+}));
+
 // -- Authenticate: real JWT verification is unit-tested elsewhere; here we
 // just need to attribute each request to a user/role, read off headers so
 // a single suite can act as several different shoppers. --------------------
@@ -61,7 +78,12 @@ const seedProduct = (overrides = {}) => {
 
 const seedAddress = (userId) => {
   const id = genId();
-  db.addresses[id] = { id, userId };
+  // A valid-format pincode is required as of the delivery-serviceability
+  // check detectAddressConflict now runs before COD confirmation / Razorpay
+  // order creation (see order.service.js) — an address without one would
+  // fail that check for real (INVALID_FORMAT), not exercise the checkout
+  // path this suite is actually testing.
+  db.addresses[id] = { id, userId, pincode: '400001' };
   return db.addresses[id];
 };
 

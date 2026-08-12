@@ -221,6 +221,14 @@ model Shipment {
   codAmount          Float          @default(0)
   pickupLocationCode String?
   lastLocation       String?
+  // Delivery-by estimate for this shipment. Set from Ekart's create-shipment
+  // response at creation time (see createShipmentForOrder), and kept fresh
+  // by trackOrderShipment / handleEkartWebhookEvent whenever Ekart returns a
+  // refreshed one on a later poll or webhook (e.g. after a delay). Distinct
+  // from the pre-shipment `estimatedDays`/`estimatedDeliveryDate` returned by
+  // checkServiceability — that's a rough pre-order preview computed from an
+  // SLA day-count; this is the real per-shipment estimate once one exists.
+  estimatedDeliveryDate DateTime?
   lastSyncedAt       DateTime?
   raw                Json?          // last raw payload received from Ekart, kept for debugging
   createdAt          DateTime       @default(now())

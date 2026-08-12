@@ -7,6 +7,41 @@
 
 /**
  * @swagger
+ * /api/shipping/delivery-config:
+ *   get:
+ *     tags:
+ *       - Shipping
+ *     summary: Get the backend-configured delivery pricing rule
+ *     description: >
+ *       Returns the flat delivery-charge rule currently in effect
+ *       (FREE_DELIVERY_THRESHOLD / DELIVERY_CHARGE — see src/config/env.js).
+ *       Public, cacheable, and safe to call before a cart or draft order
+ *       exists — this is what the frontend uses instead of hardcoding its
+ *       own copy of these numbers, so a backend-side config change (an env
+ *       var edit) is reflected on the frontend without a separate deploy.
+ *     responses:
+ *       200:
+ *         description: Delivery configuration fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     freeDeliveryThreshold:
+ *                       type: number
+ *                       example: 600
+ *                     deliveryCharge:
+ *                       type: number
+ *                       example: 49
+ */
+
+/**
+ * @swagger
  * /api/shipping/serviceability:
  *   post:
  *     tags:
@@ -32,6 +67,14 @@
  *               weightKg:
  *                 type: number
  *                 example: 1.2
+ *               subtotal:
+ *                 type: number
+ *                 description: >
+ *                   Optional. When provided, the response also includes
+ *                   deliveryCharge/freeDeliveryThreshold/freeDeliveryEligible
+ *                   computed for this amount, so a single call can answer
+ *                   serviceability and pricing together.
+ *                 example: 799
  *     responses:
  *       200:
  *         description: Serviceability checked successfully
@@ -47,13 +90,52 @@
  *                   properties:
  *                     serviceable:
  *                       type: boolean
+ *                     reason:
+ *                       type: string
+ *                       nullable: true
+ *                       enum: [INVALID_FORMAT, INVALID_PINCODE, AREA_NOT_COVERED, null]
+ *                       description: >
+ *                         Why `serviceable` is false — null when it's true.
+ *                         INVALID_FORMAT means the pincode is empty or not
+ *                         even shaped like a 6-digit Indian pincode (checked
+ *                         locally, without calling Ekart — this normally
+ *                         can't happen via this route since the request body
+ *                         is already validated to 422 first, but the same
+ *                         check runs server-side wherever serviceability is
+ *                         checked, including internal callers that skip this
+ *                         route). INVALID_PINCODE means the pincode is
+ *                         well-formed but Ekart doesn't recognize it at all.
+ *                         AREA_NOT_COVERED means it's a real pincode Ekart
+ *                         just doesn't deliver to (yet).
  *                     estimatedDays:
  *                       type: integer
  *                       nullable: true
+ *                     estimatedDeliveryDate:
+ *                       type: string
+ *                       format: date-time
+ *                       nullable: true
+ *                       description: >
+ *                         Concrete delivery-by date derived from estimatedDays
+ *                         (or an explicit date from Ekart, once confirmed) —
+ *                         null when the pincode isn't serviceable.
+ *                       example: "2026-08-15T00:00:00.000Z"
  *                     codAvailable:
  *                       type: boolean
+ *                     deliveryCharge:
+ *                       type: number
+ *                       description: Only present when `subtotal` was provided in the request.
+ *                       example: 49
+ *                     freeDeliveryThreshold:
+ *                       type: number
+ *                       description: Only present when `subtotal` was provided in the request.
+ *                       example: 600
+ *                     freeDeliveryEligible:
+ *                       type: boolean
+ *                       description: Only present when `subtotal` was provided in the request.
  *       422:
- *         description: Validation failed
+ *         description: Validation failed (malformed pincode — not 6 digits)
+ *       503:
+ *         description: Could not reach Ekart to check serviceability right now — try again shortly
  */
 
 /**
@@ -90,7 +172,12 @@
  *     tags:
  *       - Shipping
  *     summary: Get the latest tracking status for an order's shipment
- *     description: Polls Ekart for the latest status and refreshes our own record. Accessible to the order's owner or an admin.
+ *     description: >
+ *       Polls Ekart for the latest status and refreshes our own record.
+ *       Accessible to the order's owner or an admin. The returned Shipment
+ *       includes `estimatedDeliveryDate` (set when the shipment was created,
+ *       and refreshed here if Ekart returns a revised one) whenever the
+ *       backend has one to show.
  *     security:
  *       - bearerAuth: []
  *     parameters:

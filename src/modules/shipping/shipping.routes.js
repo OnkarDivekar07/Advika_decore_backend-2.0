@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 const {
+  getDeliveryConfig,
   checkServiceability,
   createShipment,
   trackShipment,
@@ -26,6 +27,16 @@ const {
  *          be registered before the `authenticate` middleware below)
  */
 router.post('/webhook', ekartWebhook);
+
+/**
+ * @route   GET /api/shipping/delivery-config
+ * @desc    Backend-configured delivery pricing rule (free-delivery
+ *          threshold + flat delivery charge below it) — lets the frontend
+ *          show an accurate estimate before a cart/draft order exists to
+ *          ask, without hardcoding its own copy of these numbers.
+ * @access  Public
+ */
+router.get('/delivery-config', getDeliveryConfig);
 
 /**
  * @route   POST /api/shipping/serviceability

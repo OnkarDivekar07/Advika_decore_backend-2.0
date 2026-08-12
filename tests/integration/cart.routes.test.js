@@ -570,3 +570,80 @@ describe('GET /api/cart — summary meta', () => {
     });
   });
 });
+
+// Regression coverage for one specific invariant: the client can never
+// influence the delivery charge (or subtotal/total/price) that actually
+// gets persisted or shown — every number here is derived server-side from
+// live product data (calculateDeliveryCharge / summarizeCart), never from
+// the request body. These tests send an otherwise-valid request with
+// hostile pricing fields tacked on and assert the server-computed value
+// wins every time, to catch a future change that accidentally starts
+// reading (or spreading) a price-shaped field off req.body.
+describe('pricing fields in the request body can never override the server-computed charge', () => {
+  it('PUT /api/cart: a client-supplied deliveryCharge/price/total is never written or echoed back', async () => {
+    mockProduct.findUnique.mockResolvedValue(inStockProduct({ price: 199 })); // below ₹600 threshold
+    mockCart.upsert.mockResolvedValue({
+      id: 'cart_1',
+      userId: 'user_1',
+      productId: 'prod_1',
+      quantity: 1,
+      product: inStockProduct({ price: 199 }),
+    });
+    mockCart.findMany.mockResolvedValue([
+      { id: 'cart_1', userId: 'user_1', productId: 'prod_1', quantity: 1, product: inStockProduct({ price: 199 }) },
+    ]);
+
+    const res = await request(app)
+      .put('/api/cart')
+      .send({
+        productId: 'prod_1',
+        quantity: 1,
+        // Hostile extras a tampered client might try to sneak in:
+        deliveryCharge: 0,
+        shippingCharge: 0,
+        price: 1, // try to overwrite the product's real ₹199 price
+        total: 1,
+        discount: 500,
+      });
+
+    expect(res.status).toBe(200);
+    // The upsert only ever wrote productId/quantity — nothing price-shaped
+    // was passed to Prisma, regardless of what was in the body.
+    expect(mockCart.upsert).toHaveBeenCalledWith({
+      where: { userId_productId: { userId: 'user_1', productId: 'prod_1' } },
+      update: { quantity: 1 },
+      create: { userId: 'user_1', productId: 'prod_1', quantity: 1 },
+      include: { product: true },
+    });
+    // The response summary still reflects the real ₹199 product price
+    // (below the ₹600 threshold -> ₹49 delivery charge), not the
+    // ₹0 delivery / ₹1 total the request body tried to claim.
+    expect(res.body.meta.summary).toEqual({ subtotal: 199, deliveryCharge: 49, total: 248 });
+  });
+
+  it('POST /api/cart: a client-supplied per-item price/deliveryCharge is ignored — the live product price always wins', async () => {
+    mockProduct.findUnique.mockResolvedValue(inStockProduct({ price: 199 }));
+    mockCart.deleteMany.mockResolvedValue({});
+    mockCart.createMany.mockResolvedValue({});
+    mockCart.findMany.mockResolvedValue([
+      { id: 'cart_1', userId: 'user_1', productId: 'prod_1', quantity: 1, product: inStockProduct({ price: 199 }) },
+    ]);
+
+    const res = await request(app)
+      .post('/api/cart')
+      .send({
+        cartItems: [
+          // A tampered client claiming this item costs ₹1 with free delivery.
+          { productId: 'prod_1', quantity: 1, price: 1, deliveryCharge: 0 },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    // createMany only ever receives productId/quantity per item (see
+    // cart.service.js's saveUserCart) — never a client-supplied price.
+    expect(mockCart.createMany).toHaveBeenCalledWith({
+      data: [{ userId: 'user_1', productId: 'prod_1', quantity: 1 }],
+    });
+    expect(res.body.meta.summary).toEqual({ subtotal: 199, deliveryCharge: 49, total: 248 });
+  });
+});

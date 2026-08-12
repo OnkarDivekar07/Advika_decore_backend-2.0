@@ -18,6 +18,7 @@ jest.mock('@middlewares/authenticate', () =>
 // Explicit factory (rather than automock) so requiring this test file never
 // pulls in the real shipping.service.js / a real Prisma client.
 jest.mock('@modules/shipping/shipping.service', () => ({
+  getDeliveryConfig: jest.fn(),
   checkServiceability: jest.fn(),
   createShipmentForOrder: jest.fn(),
   trackOrderShipment: jest.fn(),
@@ -62,6 +63,20 @@ beforeEach(() => {
   ekartClient.verifyWebhookSignature.mockReset();
 });
 
+describe('GET /api/shipping/delivery-config', () => {
+  it('returns the configured delivery pricing rule without requiring a user JWT', async () => {
+    shippingService.getDeliveryConfig.mockReturnValue({
+      freeDeliveryThreshold: 600,
+      deliveryCharge: 49,
+    });
+
+    const res = await request(app).get('/api/shipping/delivery-config');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ freeDeliveryThreshold: 600, deliveryCharge: 49 });
+  });
+});
+
 describe('POST /api/shipping/serviceability', () => {
   it('422s on an invalid pincode', async () => {
     const res = await request(app)
@@ -84,6 +99,48 @@ describe('POST /api/shipping/serviceability', () => {
       .send({ pincode: '400001' });
 
     expect(res.status).toBe(200);
+  });
+
+  it('422s a leading-zero pincode (well-formed 6 digits, but not a real Indian pincode shape)', async () => {
+    const res = await request(app)
+      .post('/api/shipping/serviceability')
+      .send({ pincode: '012345' });
+
+    expect(res.status).toBe(422);
+    expect(shippingService.checkServiceability).not.toHaveBeenCalled();
+  });
+
+  it('422s an empty pincode', async () => {
+    const res = await request(app)
+      .post('/api/shipping/serviceability')
+      .send({ pincode: '' });
+
+    expect(res.status).toBe(422);
+    expect(shippingService.checkServiceability).not.toHaveBeenCalled();
+  });
+
+  it('passes an optional subtotal through to the service so pricing can be folded into the response', async () => {
+    shippingService.checkServiceability.mockResolvedValue({
+      serviceable: true,
+      estimatedDays: 3,
+      codAvailable: true,
+      deliveryCharge: 0,
+      freeDeliveryThreshold: 600,
+      freeDeliveryEligible: true,
+    });
+
+    const res = await request(app)
+      .post('/api/shipping/serviceability')
+      .send({ pincode: '400001', subtotal: 799 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ deliveryCharge: 0, freeDeliveryEligible: true });
+    expect(shippingService.checkServiceability).toHaveBeenCalledWith({
+      destinationPincode: '400001',
+      paymentMode: undefined,
+      weightKg: undefined,
+      subtotal: 799,
+    });
   });
 
   it('returns the serviceability result for a valid pincode', async () => {
@@ -188,6 +245,23 @@ describe('GET /api/shipping/:orderId/track', () => {
       VALID_ORDER_ID,
       expect.objectContaining({ userId: 'user_1' })
     );
+  });
+
+  it("never leaks Ekart's raw payload out through the API — only the normalized shipment fields", async () => {
+    shippingService.trackOrderShipment.mockResolvedValue({
+      orderId: VALID_ORDER_ID,
+      status: 'IN_TRANSIT',
+      trackingId: 'EKT123',
+      raw: { some_ekart_internal_field: 'should-not-leak', is_serviceable: true },
+    });
+
+    const res = await request(app)
+      .get(`/api/shipping/${VALID_ORDER_ID}/track`)
+      .set('x-user-id', 'user_1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.trackingId).toBe('EKT123');
+    expect(res.body.data).not.toHaveProperty('raw');
   });
 
   it("propagates a 403 from the service when it's not the owner", async () => {

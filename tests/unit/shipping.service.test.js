@@ -47,27 +47,47 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 
+describe('getDeliveryConfig', () => {
+  it('mirrors the configured pricing constants', () => {
+    const { FREE_DELIVERY_THRESHOLD, DELIVERY_CHARGE } = require('@constants/pricing');
+
+    expect(shippingService.getDeliveryConfig()).toEqual({
+      freeDeliveryThreshold: FREE_DELIVERY_THRESHOLD,
+      deliveryCharge: DELIVERY_CHARGE,
+    });
+  });
+});
+
 describe('checkServiceability', () => {
-  it('normalizes the Ekart response into a stable shape', async () => {
+  it('normalizes the Ekart response into a stable shape, including a computed delivery date', async () => {
     ekartClient.checkServiceability.mockResolvedValue({
       is_serviceable: true,
       sla_days: 3,
       cod_available: true,
     });
 
+    const before = Date.now();
     const result = await shippingService.checkServiceability({
       destinationPincode: '400001',
       paymentMode: 'COD',
     });
+    const after = Date.now();
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       serviceable: true,
+      reason: null,
       estimatedDays: 3,
       codAvailable: true,
     });
+    expect(result.estimatedDeliveryDate).toBeInstanceOf(Date);
+    // Roughly "3 days from now" — bounded rather than asserting an exact
+    // timestamp, since addDays() reads the current time internally.
+    const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+    expect(result.estimatedDeliveryDate.getTime()).toBeGreaterThanOrEqual(before + THREE_DAYS_MS - 1000);
+    expect(result.estimatedDeliveryDate.getTime()).toBeLessThanOrEqual(after + THREE_DAYS_MS + 1000);
   });
 
-  it('defaults to not serviceable when the fields are missing', async () => {
+  it('defaults to not serviceable when the fields are missing, with no delivery date to show', async () => {
     ekartClient.checkServiceability.mockResolvedValue({});
 
     const result = await shippingService.checkServiceability({
@@ -76,8 +96,262 @@ describe('checkServiceability', () => {
 
     expect(result).toEqual({
       serviceable: false,
+      reason: 'AREA_NOT_COVERED',
       estimatedDays: null,
+      estimatedDeliveryDate: null,
       codAvailable: false,
+    });
+  });
+
+  it('withholds a delivery date for a serviceable pincode with no day-count SLA', async () => {
+    ekartClient.checkServiceability.mockResolvedValue({
+      is_serviceable: true,
+      cod_available: false,
+    });
+
+    const result = await shippingService.checkServiceability({
+      destinationPincode: '400001',
+    });
+
+    expect(result.estimatedDays).toBeNull();
+    expect(result.estimatedDeliveryDate).toBeNull();
+  });
+
+  it('reports INVALID_PINCODE (not a generic error) when Ekart says the pincode is unrecognized', async () => {
+    const ekartError = new Error('Invalid pincode supplied');
+    ekartError.statusCode = 400;
+    ekartClient.checkServiceability.mockRejectedValue(ekartError);
+
+    const result = await shippingService.checkServiceability({
+      destinationPincode: '999999',
+    });
+
+    expect(result).toEqual({
+      serviceable: false,
+      reason: 'INVALID_PINCODE',
+      estimatedDays: null,
+      estimatedDeliveryDate: null,
+      codAvailable: false,
+    });
+  });
+
+  it('throws a 503 (not a generic 500) when Ekart times out rather than giving a real answer', async () => {
+    const timeoutError = new Error('Ekart API request timed out after 8000ms');
+    timeoutError.isTimeout = true;
+    ekartClient.checkServiceability.mockRejectedValue(timeoutError);
+
+    await expect(
+      shippingService.checkServiceability({ destinationPincode: '400001' })
+    ).rejects.toMatchObject({ statusCode: 503 });
+  });
+
+  it('throws a 503 when Ekart errors in a way that does not match the invalid-pincode heuristic', async () => {
+    const serverError = new Error('Internal Server Error');
+    serverError.statusCode = 500;
+    ekartClient.checkServiceability.mockRejectedValue(serverError);
+
+    await expect(
+      shippingService.checkServiceability({ destinationPincode: '400001' })
+    ).rejects.toMatchObject({ statusCode: 503 });
+  });
+});
+
+describe('checkDeliveryEligibility', () => {
+  it('passes through a definitive serviceable result', async () => {
+    ekartClient.checkServiceability.mockResolvedValue({ is_serviceable: true, cod_available: true });
+
+    const result = await shippingService.checkDeliveryEligibility({ destinationPincode: '400001' });
+
+    expect(result).toMatchObject({ serviceable: true, skippedCheck: undefined });
+  });
+
+  it('passes through a definitive not-serviceable result so callers can block on it', async () => {
+    ekartClient.checkServiceability.mockResolvedValue({ is_serviceable: false });
+
+    const result = await shippingService.checkDeliveryEligibility({ destinationPincode: '400001' });
+
+    expect(result.serviceable).toBe(false);
+    expect(result.reason).toBe('AREA_NOT_COVERED');
+  });
+
+  it('fails open (does not block) when the check itself could not get an answer, under the default policy', async () => {
+    const timeoutError = new Error('timed out');
+    timeoutError.isTimeout = true;
+    ekartClient.checkServiceability.mockRejectedValue(timeoutError);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await shippingService.checkDeliveryEligibility({ destinationPincode: '400001' });
+
+    expect(result).toEqual({
+      serviceable: true,
+      reason: null,
+      estimatedDays: null,
+      estimatedDeliveryDate: null,
+      codAvailable: true,
+      skippedCheck: true,
+    });
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});
+
+// SHIPPING_SERVICEABILITY_FALLBACK_POLICY=fail_closed — a separate describe
+// block that loads its own fresh copy of shipping.service.js (and its
+// EkartClient mock) under the overridden env var, rather than sharing the
+// module instance the rest of this file uses, since the policy is read
+// once at require time (see src/config/env.js / shipping.service.js's own
+// top-of-file require). Same isolated-reload pattern as
+// env.deliveryPricing.test.js.
+describe('checkDeliveryEligibility — SHIPPING_SERVICEABILITY_FALLBACK_POLICY=fail_closed', () => {
+  const ORIGINAL_ENV = { ...process.env };
+  let ekartClientFailClosed;
+  let shippingServiceFailClosed;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env.SHIPPING_SERVICEABILITY_FALLBACK_POLICY = 'fail_closed';
+
+    jest.doMock('../../src/services/external/EkartClient', () => ({
+      checkServiceability: jest.fn(),
+      createShipment: jest.fn(),
+      trackShipment: jest.fn(),
+      cancelShipment: jest.fn(),
+      updateShipment: jest.fn(),
+      verifyWebhookSignature: jest.fn(),
+    }));
+    jest.doMock('@config/prisma', () => ({
+      order: { findUnique: jest.fn(), update: jest.fn() },
+      shipment: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() },
+    }));
+
+    // eslint-disable-next-line global-require
+    ekartClientFailClosed = require('../../src/services/external/EkartClient');
+    // eslint-disable-next-line global-require
+    shippingServiceFailClosed = require('@modules/shipping/shipping.service');
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    jest.resetModules();
+  });
+
+  it('blocks (serviceable: false, reason CHECK_UNAVAILABLE) when the check could not get an answer', async () => {
+    const timeoutError = new Error('timed out');
+    timeoutError.isTimeout = true;
+    ekartClientFailClosed.checkServiceability.mockRejectedValue(timeoutError);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await shippingServiceFailClosed.checkDeliveryEligibility({
+      destinationPincode: '400001',
+    });
+
+    expect(result).toEqual({
+      serviceable: false,
+      reason: 'CHECK_UNAVAILABLE',
+      estimatedDays: null,
+      estimatedDeliveryDate: null,
+      codAvailable: false,
+      skippedCheck: true,
+    });
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('still passes through a definitive answer unchanged (policy only governs the failure path)', async () => {
+    ekartClientFailClosed.checkServiceability.mockResolvedValue({
+      is_serviceable: true,
+      cod_available: true,
+    });
+
+    const result = await shippingServiceFailClosed.checkDeliveryEligibility({
+      destinationPincode: '400001',
+    });
+
+    expect(result).toMatchObject({ serviceable: true, skippedCheck: undefined });
+  });
+});
+
+describe('checkServiceability — pincode format', () => {
+  it.each([
+    ['', 'an empty string'],
+    ['   ', 'whitespace only'],
+    ['12345', 'too short'],
+    ['1234567', 'too long'],
+    ['012345', 'a leading zero (not a real Indian pincode)'],
+    ['abcdef', 'non-numeric'],
+    [undefined, 'missing entirely'],
+    [null, 'null'],
+  ])('rejects %s (%s) as INVALID_FORMAT without calling Ekart', async (badPincode) => {
+    const result = await shippingService.checkServiceability({ destinationPincode: badPincode });
+
+    expect(result).toEqual({
+      serviceable: false,
+      reason: 'INVALID_FORMAT',
+      estimatedDays: null,
+      estimatedDeliveryDate: null,
+      codAvailable: false,
+    });
+    expect(ekartClient.checkServiceability).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to call Ekart for a well-formed pincode', async () => {
+    ekartClient.checkServiceability.mockResolvedValue({ is_serviceable: true });
+
+    await shippingService.checkServiceability({ destinationPincode: '400001' });
+
+    expect(ekartClient.checkServiceability).toHaveBeenCalled();
+  });
+});
+
+describe('checkServiceability — normalized pricing contract (subtotal)', () => {
+  it('omits deliveryCharge/freeDeliveryThreshold/freeDeliveryEligible when no subtotal is given', async () => {
+    ekartClient.checkServiceability.mockResolvedValue({ is_serviceable: true });
+
+    const result = await shippingService.checkServiceability({ destinationPincode: '400001' });
+
+    expect(result).not.toHaveProperty('deliveryCharge');
+    expect(result).not.toHaveProperty('freeDeliveryThreshold');
+    expect(result).not.toHaveProperty('freeDeliveryEligible');
+  });
+
+  it('folds in the delivery-charge/free-delivery fields for a given subtotal, using the same rule as order/cart totals', async () => {
+    const { FREE_DELIVERY_THRESHOLD, DELIVERY_CHARGE } = require('@constants/pricing');
+    ekartClient.checkServiceability.mockResolvedValue({ is_serviceable: true, cod_available: true });
+
+    const belowThreshold = await shippingService.checkServiceability({
+      destinationPincode: '400001',
+      subtotal: FREE_DELIVERY_THRESHOLD - 1,
+    });
+    expect(belowThreshold).toMatchObject({
+      deliveryCharge: DELIVERY_CHARGE,
+      freeDeliveryThreshold: FREE_DELIVERY_THRESHOLD,
+      freeDeliveryEligible: false,
+    });
+
+    const atThreshold = await shippingService.checkServiceability({
+      destinationPincode: '400001',
+      subtotal: FREE_DELIVERY_THRESHOLD,
+    });
+    expect(atThreshold).toMatchObject({
+      deliveryCharge: 0,
+      freeDeliveryThreshold: FREE_DELIVERY_THRESHOLD,
+      freeDeliveryEligible: true,
+    });
+  });
+
+  it('also prices an INVALID_FORMAT/unserviceable result rather than only the happy path', async () => {
+    const { DELIVERY_CHARGE } = require('@constants/pricing');
+
+    const result = await shippingService.checkServiceability({
+      destinationPincode: 'bad',
+      subtotal: 0,
+    });
+
+    expect(result).toMatchObject({
+      serviceable: false,
+      reason: 'INVALID_FORMAT',
+      deliveryCharge: DELIVERY_CHARGE,
+      freeDeliveryEligible: false,
     });
   });
 });
@@ -118,6 +392,7 @@ describe('createShipmentForOrder', () => {
     ekartClient.createShipment.mockResolvedValue({
       tracking_id: 'EKT123',
       awb_number: 'AWB123',
+      estimated_delivery_days: 4,
     });
     mockShipment.create.mockResolvedValue({
       id: 'shipment_1',
@@ -144,6 +419,7 @@ describe('createShipmentForOrder', () => {
           trackingId: 'EKT123',
           awbNumber: 'AWB123',
           status: 'CREATED',
+          estimatedDeliveryDate: expect.any(Date),
         }),
       })
     );
@@ -164,6 +440,31 @@ describe('createShipmentForOrder', () => {
     expect(ekartClient.createShipment).toHaveBeenCalledWith(
       expect.objectContaining({ payment_mode: 'COD', cod_amount: 999 })
     );
+  });
+
+  it('surfaces a clean 422 (not a raw Ekart error) if the pincode has fallen out of coverage since the order was confirmed', async () => {
+    mockOrder.findUnique.mockResolvedValue(baseOrder);
+    mockShipment.findUnique.mockResolvedValue(null);
+    const ekartError = new Error('Invalid pincode');
+    ekartError.statusCode = 400;
+    ekartClient.createShipment.mockRejectedValue(ekartError);
+
+    await expect(shippingService.createShipmentForOrder('order_1')).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockShipment.create).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a 503 if Ekart is unreachable while creating the shipment', async () => {
+    mockOrder.findUnique.mockResolvedValue(baseOrder);
+    mockShipment.findUnique.mockResolvedValue(null);
+    const timeoutError = new Error('timed out');
+    timeoutError.isTimeout = true;
+    ekartClient.createShipment.mockRejectedValue(timeoutError);
+
+    await expect(shippingService.createShipmentForOrder('order_1')).rejects.toMatchObject({
+      statusCode: 503,
+    });
   });
 });
 
@@ -257,6 +558,50 @@ describe('trackOrderShipment', () => {
     await shippingService.trackOrderShipment('order_1', requestingOwner);
 
     expect(mockOrder.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps the previously stored estimate when a poll has nothing new to say about timing', async () => {
+    const existingEstimate = new Date('2026-08-20T00:00:00.000Z');
+    mockOrder.findUnique.mockResolvedValue(baseOrder);
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      trackingId: 'EKT123',
+      status: 'IN_TRANSIT',
+      estimatedDeliveryDate: existingEstimate,
+    });
+    ekartClient.trackShipment.mockResolvedValue({ status: 'IN_TRANSIT' });
+    mockShipment.update.mockResolvedValue({ orderId: 'order_1', status: 'IN_TRANSIT' });
+
+    await shippingService.trackOrderShipment('order_1', requestingOwner);
+
+    expect(mockShipment.update).toHaveBeenCalledWith({
+      where: { orderId: 'order_1' },
+      data: expect.objectContaining({ estimatedDeliveryDate: existingEstimate }),
+    });
+  });
+
+  it('adopts a revised delivery date when a poll returns one', async () => {
+    mockOrder.findUnique.mockResolvedValue(baseOrder);
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      trackingId: 'EKT123',
+      status: 'IN_TRANSIT',
+      estimatedDeliveryDate: new Date('2026-08-20T00:00:00.000Z'),
+    });
+    ekartClient.trackShipment.mockResolvedValue({
+      status: 'IN_TRANSIT',
+      expected_delivery_date: '2026-08-25T00:00:00.000Z',
+    });
+    mockShipment.update.mockResolvedValue({ orderId: 'order_1', status: 'IN_TRANSIT' });
+
+    await shippingService.trackOrderShipment('order_1', requestingOwner);
+
+    expect(mockShipment.update).toHaveBeenCalledWith({
+      where: { orderId: 'order_1' },
+      data: expect.objectContaining({
+        estimatedDeliveryDate: new Date('2026-08-25T00:00:00.000Z'),
+      }),
+    });
   });
 });
 

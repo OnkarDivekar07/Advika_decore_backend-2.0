@@ -24,6 +24,7 @@ jest.mock('@modules/payment/payment.service', () => ({
 jest.mock('@modules/order/order.service', () => ({
   detectOrderConflicts: jest.fn(),
   detectAddressConflict: jest.fn(),
+  detectPricingConflict: jest.fn(),
 }));
 
 // findUnique backs the ownership check verifyPayment now does before
@@ -238,12 +239,14 @@ describe('POST /api/payment/create-orderid', () => {
     mockDraftOrder.findFirst.mockReset();
     orderService.detectOrderConflicts.mockReset();
     orderService.detectAddressConflict.mockReset();
+    orderService.detectPricingConflict.mockReset();
     // Default: no drift since the draft order was created, and the
     // delivery address is still around — matches the pre-existing fixtures
-    // below, which weren't written with a price/stock/address conflict in
-    // mind.
+    // below, which weren't written with a price/stock/address/pricing
+    // conflict in mind.
     orderService.detectOrderConflicts.mockResolvedValue([]);
     orderService.detectAddressConflict.mockResolvedValue([]);
+    orderService.detectPricingConflict.mockReturnValue([]);
   });
 
   it('401s when the user has no draft order', async () => {
@@ -271,10 +274,40 @@ describe('POST /api/payment/create-orderid', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.order).toEqual({ id: 'rzp_order_1' });
     expect(res.body.data.key_id).toBe(process.env.RAZORPAY_KEY_ID);
-    expect(orderService.detectAddressConflict).toHaveBeenCalledWith('addr_1', 'user_1');
+    expect(orderService.detectAddressConflict).toHaveBeenCalledWith('addr_1', 'user_1', undefined, 'PREPAID');
     expect(orderService.detectOrderConflicts).toHaveBeenCalledWith([
       { productId: 'p1', quantity: 1, price: 499 },
     ]);
+    expect(paymentService.createRazorpayOrder).toHaveBeenCalledWith({
+      amount: 49900,
+      currency: 'INR',
+      receipt: 'order_order_1',
+      order_id: 'order_1',
+    });
+  });
+
+  // Regression coverage for one specific invariant: the amount actually
+  // charged always comes from the stored draft order's own `total` (itself
+  // server-computed — see order.service.js's calculateDeliveryCharge),
+  // never from anything the client sends. This route doesn't even declare
+  // a request body — sending one here proves it's simply never read for
+  // the charge amount, let alone trusted for it.
+  it('ignores a client-supplied amount/total/deliveryCharge in the request body — charges the stored draft total', async () => {
+    mockDraftOrder.findFirst.mockResolvedValue({
+      id: 'order_1',
+      total: 499, // the real, server-computed total
+      addressId: 'addr_1',
+      orderItems: [{ productId: 'p1', quantity: 1, price: 499 }],
+    });
+    paymentService.createRazorpayOrder.mockResolvedValue({ id: 'rzp_order_1' });
+
+    const res = await request(app)
+      .post('/api/payment/create-orderid')
+      .send({ amount: 1, total: 1, deliveryCharge: 0, shippingCharge: 0 });
+
+    expect(res.status).toBe(200);
+    // ₹499 * 100 = 49900 paise — derived only from the stored draft
+    // order's `total`, never from the ₹1 the request body claimed.
     expect(paymentService.createRazorpayOrder).toHaveBeenCalledWith({
       amount: 49900,
       currency: 'INR',
@@ -337,6 +370,41 @@ describe('POST /api/payment/create-orderid', () => {
     expect(res.body.errors.conflicts).toEqual([
       expect.objectContaining({ type: 'address_unavailable' }),
     ]);
+    expect(paymentService.createRazorpayOrder).not.toHaveBeenCalled();
+  });
+
+  // Delivery-charge/total drift — see order.service.js's
+  // detectPricingConflict. A Razorpay order amount is fixed once created,
+  // so an env-level pricing config change since the draft order was
+  // created (which item price/stock checks alone would never catch) has to
+  // be caught here too, before create-orderid ever calls Razorpay.
+  it('409s with a pricing_changed conflict and never creates a Razorpay order when the delivery charge/total has drifted', async () => {
+    const draftOrder = {
+      id: 'order_1',
+      total: 447,
+      subtotal: 398,
+      deliveryCharge: 49,
+      discount: 0,
+      addressId: 'addr_1',
+      orderItems: [{ productId: 'p1', quantity: 1, price: 199 }],
+    };
+    mockDraftOrder.findFirst.mockResolvedValue(draftOrder);
+    orderService.detectPricingConflict.mockReturnValue([
+      {
+        type: 'pricing_changed',
+        message: 'The delivery charge or total for this order has changed. Please refresh your order before proceeding.',
+        previousTotal: 447,
+        currentTotal: 398,
+      },
+    ]);
+
+    const res = await request(app).post('/api/payment/create-orderid').send();
+
+    expect(res.status).toBe(409);
+    expect(res.body.errors.conflicts).toEqual([
+      expect.objectContaining({ type: 'pricing_changed' }),
+    ]);
+    expect(orderService.detectPricingConflict).toHaveBeenCalledWith(draftOrder);
     expect(paymentService.createRazorpayOrder).not.toHaveBeenCalled();
   });
 });

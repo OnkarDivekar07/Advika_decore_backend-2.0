@@ -287,16 +287,20 @@ exports.handleCODOrder = async (orderId, userId) => {
     }
 
     // 2. Catch a stale draft before reserving anything for it. No money has
-    // moved yet for COD, so a price/stock drift or a deleted delivery
-    // address since the draft order was created (or last refreshed) is
-    // still safe to refuse outright — this is what stops a customer from
-    // being charged a price that's since changed (or an order being
+    // moved yet for COD, so a price/stock drift, a deleted delivery
+    // address, or a delivery-charge/total that no longer matches the
+    // current backend pricing rule (see order.service.js's
+    // detectPricingConflict — e.g. an env-level delivery-charge config
+    // change since the draft order was created or last refreshed) is still
+    // safe to refuse outright — this is what stops a customer from being
+    // charged a price/total that's since changed (or an order being
     // confirmed with nowhere to actually ship it), and gives a clear
     // "here's exactly what changed" 409 instead of a generic stock-shortfall
     // error, or a crash later in shipping.service.js, with no useful message.
     const conflicts = [
-      ...(await orderService.detectAddressConflict(order.addressId, userId, tx)),
+      ...(await orderService.detectAddressConflict(order.addressId, userId, tx, 'COD')),
       ...(await orderService.detectOrderConflicts(order.orderItems, tx)),
+      ...orderService.detectPricingConflict(order),
     ];
     if (conflicts.length > 0) {
       throw new customError(

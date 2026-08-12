@@ -125,6 +125,61 @@ describe('POST /api/order', () => {
     });
   });
 
+  // Regression coverage for one specific invariant: the client can never
+  // influence the delivery charge or order total — those are always
+  // derived server-side from live cart/product data (see
+  // order.service.js's createDraftOrderService / calculateDeliveryCharge).
+  // validateDraftOrder only whitelists selectedAddressId/couponCode/buyNow
+  // (see order.validation.js), and the controller only ever destructures
+  // those same three fields off req.body — this proves a hostile pricing
+  // field tacked onto an otherwise-valid request neither reaches the
+  // service call nor leaks into the response.
+  it('ignores a client-supplied deliveryCharge/subtotal/total/discount — the service call and response are unaffected', async () => {
+    mockAddress.findUnique.mockResolvedValue({
+      id: VALID_ADDRESS_ID,
+      userId: 'user_1',
+    });
+    // What the service actually (and only) returns — deliberately
+    // different from every hostile value in the request below, so this
+    // test fails loudly if a tampered value leaks through anywhere.
+    const serverComputedOrder = {
+      id: VALID_ORDER_ID,
+      status: 'draft',
+      total: 2048,
+      subtotal: 1999,
+      deliveryCharge: 49,
+      discount: 0,
+    };
+    orderService.createDraftOrderService.mockResolvedValue(serverComputedOrder);
+
+    const res = await request(app)
+      .post('/api/order')
+      .send({
+        selectedAddressId: VALID_ADDRESS_ID,
+        // Hostile extras — not in validateDraftOrder's whitelist, so
+        // express-validator never inspects them and the controller never
+        // destructures them.
+        deliveryCharge: 0,
+        shippingCharge: 0,
+        subtotal: 1,
+        total: 1,
+        discount: 9999,
+      });
+
+    expect(res.status).toBe(201);
+    // Called with exactly the four positional args the controller passes —
+    // no fifth "pricing overrides" object, no spread of req.body.
+    expect(orderService.createDraftOrderService).toHaveBeenCalledWith(
+      'user_1',
+      VALID_ADDRESS_ID,
+      null,
+      null
+    );
+    // The response reflects only what the service (server-side pricing)
+    // returned — the hostile total: 1 / discount: 9999 never show up.
+    expect(res.body.data).toEqual(serverComputedOrder);
+  });
+
   it('propagates a service error (e.g. empty cart) through the error handler', async () => {
     mockAddress.findUnique.mockResolvedValue({
       id: VALID_ADDRESS_ID,

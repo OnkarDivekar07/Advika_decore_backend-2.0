@@ -6,6 +6,17 @@ exports.createDraftOrder = async (req, res, next) => {
   try {
     const userId = req.user.userId;
 
+    // SECURITY INVARIANT: only these three fields are ever read off the
+    // request body. deliveryCharge/subtotal/total/discount/price/amount —
+    // or anything else price-shaped — must NEVER be destructured here or
+    // passed through to orderService.createDraftOrderService below. Every
+    // number that ends up on the order (subtotal, deliveryCharge, discount,
+    // total — and, downstream, what Razorpay/COD actually charges) is
+    // computed server-side from live cart/product data (see
+    // order.service.js / src/constants/pricing.js's calculateDeliveryCharge)
+    // — never trusted from the client. See
+    // tests/integration/order.routes.test.js's "ignores a client-supplied
+    // deliveryCharge/subtotal/total/discount" test for the regression check.
     const { selectedAddressId, couponCode, buyNow } = req.body;
   
     if (!userId) {

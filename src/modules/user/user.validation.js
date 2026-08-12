@@ -7,11 +7,12 @@ const { body, param } = require('express-validator');
 // passes on the client is never surprised by a stricter check here.
 const INDIAN_MOBILE_E164_REGEX = /^\+91[6-9]\d{9}$/;
 
-// Indian PIN codes: exactly 6 digits, first digit 1-9 (no Indian postal
-// zone starts with 0). Deliberately not express-validator's
-// isPostalCode('IN'), which only checks the digit-count shape and would
-// accept a leading-zero value that can't be a real Indian PIN code.
-const INDIAN_PINCODE_REGEX = /^[1-9][0-9]{5}$/;
+// Indian PIN codes: exactly 6 digits, first digit 1-9 — shared with
+// shipping.validation.js / shipping.service.js so every pincode format
+// check in the app (address form, serviceability route, server-side
+// defense-in-depth) agrees on the same definition. See
+// src/constants/pincode.js for the full rationale.
+const { INDIAN_PINCODE_REGEX } = require('@constants/pincode');
 
 const phoneField = (required) => {
   let chain = body('phone');

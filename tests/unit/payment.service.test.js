@@ -32,6 +32,7 @@ jest.mock('@modules/inventory/inventory.service', () => ({
 jest.mock('@modules/order/order.service', () => ({
   detectOrderConflicts: jest.fn(),
   detectAddressConflict: jest.fn(),
+  detectPricingConflict: jest.fn(),
 }));
 
 jest.mock('../../src/jobs/queues/clearCartQueue', () => ({
@@ -314,12 +315,14 @@ describe('payment.service', () => {
       inventoryService.decrementStockForOrder.mockReset();
       orderService.detectOrderConflicts.mockReset();
       orderService.detectAddressConflict.mockReset();
+      orderService.detectPricingConflict.mockReset();
       // Default: no drift since the draft order was created, and the
       // delivery address is still around — matches the pre-existing
-      // fixtures below, which weren't written with a price/stock/address
-      // conflict in mind.
+      // fixtures below, which weren't written with a price/stock/address/
+      // pricing conflict in mind.
       orderService.detectOrderConflicts.mockResolvedValue([]);
       orderService.detectAddressConflict.mockResolvedValue([]);
+      orderService.detectPricingConflict.mockReturnValue([]);
       cartQueue.add.mockReset();
       prisma.$transaction.mockClear();
     });
@@ -381,7 +384,8 @@ describe('payment.service', () => {
       expect(orderService.detectAddressConflict).toHaveBeenCalledWith(
         'addr_1',
         'user_1',
-        mockTx
+        mockTx,
+        'COD'
       );
       expect(orderService.detectOrderConflicts).toHaveBeenCalledWith(
         [{ productId: 'p1', quantity: 1 }],
@@ -488,6 +492,46 @@ describe('payment.service', () => {
         errors: {
           conflicts: [
             expect.objectContaining({ type: 'address_unavailable' }),
+          ],
+        },
+      });
+
+      expect(inventoryService.decrementStockForOrder).not.toHaveBeenCalled();
+      expect(mockOrder.update).not.toHaveBeenCalled();
+      expect(cartQueue.add).not.toHaveBeenCalled();
+    });
+
+    // Delivery-charge/total drift — see order.service.js's
+    // detectPricingConflict. Covers an env-level pricing config change
+    // (FREE_DELIVERY_THRESHOLD/DELIVERY_CHARGE) since the draft order was
+    // created, which item price/stock checks alone would never catch.
+    it('409s with a pricing_changed conflict and never reserves stock or confirms when the delivery charge/total has drifted', async () => {
+      mockOrder.findUnique.mockResolvedValue({
+        id: 'order_1',
+        userId: 'user_1',
+        status: 'draft',
+        subtotal: 398,
+        deliveryCharge: 49,
+        discount: 0,
+        total: 447,
+        orderItems: [{ productId: 'p1', quantity: 1, price: 199 }],
+      });
+      orderService.detectPricingConflict.mockReturnValue([
+        {
+          type: 'pricing_changed',
+          message: 'The delivery charge or total for this order has changed. Please refresh your order before proceeding.',
+          previousTotal: 447,
+          currentTotal: 398,
+        },
+      ]);
+
+      await expect(
+        paymentService.handleCODOrder('order_1', 'user_1')
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        errors: {
+          conflicts: [
+            expect.objectContaining({ type: 'pricing_changed' }),
           ],
         },
       });

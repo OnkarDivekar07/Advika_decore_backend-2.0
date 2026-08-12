@@ -14,7 +14,17 @@ const EKART_API_KEY = process.env.EKART_API_KEY;
 const EKART_MERCHANT_ID = process.env.EKART_MERCHANT_ID;
 const EKART_WEBHOOK_SECRET = process.env.EKART_WEBHOOK_SECRET;
 
+// Serviceability checks can now sit in a hard checkout path (see
+// order.service.js's detectAddressConflict), not just the informational
+// pincode widgets — so a hung Ekart call needs a ceiling rather than being
+// able to stall a COD confirmation / Razorpay order creation indefinitely.
+// Kept generous (checkout is already a multi-step flow) but finite.
+const EKART_REQUEST_TIMEOUT_MS = Number(process.env.EKART_REQUEST_TIMEOUT_MS) || 8000;
+
 async function ekartRequest(path, { method = 'GET', body } = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), EKART_REQUEST_TIMEOUT_MS);
+
   try {
     const response = await fetch(`${EKART_BASE_URL}${path}`, {
       method,
@@ -27,6 +37,7 @@ async function ekartRequest(path, { method = 'GET', body } = {}) {
         'X-Merchant-Id': EKART_MERCHANT_ID,
       },
       body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
     });
 
     const data = await response.json().catch(() => ({}));
@@ -41,8 +52,17 @@ async function ekartRequest(path, { method = 'GET', body } = {}) {
 
     return data;
   } catch (error) {
+    // A timeout/abort has no statusCode of its own — flag it explicitly so
+    // callers (shipping.service.js) can tell "Ekart never answered" apart
+    // from "Ekart answered with an error", without inspecting error.name.
+    if (error.name === 'AbortError') {
+      error.isTimeout = true;
+      error.message = `Ekart API request timed out after ${EKART_REQUEST_TIMEOUT_MS}ms`;
+    }
     console.error(`Error calling Ekart API [${method} ${path}]:`, error.message);
     throw error;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

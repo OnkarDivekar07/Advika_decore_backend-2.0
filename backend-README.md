@@ -99,6 +99,26 @@ RAZORPAY_KEY_SECRET=your_razorpay_key_secret
 AWS_ACCESS_KEY_ID=your_aws_access_key
 AWS_SECRET_ACCESS_KEY=your_aws_secret_key
 BUCKET_NAME=your_s3_bucket_name
+
+# Delivery pricing (optional — see src/constants/pricing.js / src/config/env.js)
+FREE_DELIVERY_THRESHOLD=600
+DELIVERY_CHARGE=49
+
+# Ekart Logistics (shipping/serviceability — see src/services/external/EkartClient.js)
+EKART_BASE_URL=https://api.ekartlogistics.com
+EKART_API_KEY=your_ekart_api_key
+EKART_MERCHANT_ID=your_ekart_merchant_id
+EKART_WEBHOOK_SECRET=your_ekart_webhook_secret
+EKART_PICKUP_LOCATION_CODE=your_ekart_pickup_location_code
+EKART_PICKUP_PINCODE=your_warehouse_pincode
+EKART_REQUEST_TIMEOUT_MS=8000
+
+# What to do when the Ekart serviceability check itself fails to answer at
+# all (timeout/network/5xx) right before an order is placed — see
+# shipping.service.js's checkDeliveryEligibility. 'fail_open' (default)
+# never blocks checkout on a carrier hiccup; 'fail_closed' blocks it rather
+# than guessing. Optional — defaults to 'fail_open' if unset.
+SHIPPING_SERVICEABILITY_FALLBACK_POLICY=fail_open
 ```
 
 > `PORT` and `DATABASE_URL` are strictly required — the app throws an error on boot if either is missing (see `src/config/env.js`). All other variables are required only for the features that use them (OTP, payments, image upload).

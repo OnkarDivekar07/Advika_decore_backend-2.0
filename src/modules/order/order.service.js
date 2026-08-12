@@ -1,6 +1,7 @@
 const prisma = require('@config/prisma');
 const CustomError = require('@utils/customError');
 const { calculateDeliveryCharge, calculateDiscount } = require('@constants/pricing');
+const shippingService = require('@modules/shipping/shipping.service');
 
 
 /**
@@ -97,12 +98,21 @@ exports.detectOrderConflicts = async (orderItems, client = prisma) => {
  * what makes an address deleted mid-checkout a clean, refusable 409
  * instead of a crash discovered downstream after the fact.
  *
+ * As of the delivery-serviceability check below, this also covers an
+ * address that still exists but sits in a pincode Ekart doesn't (or no
+ * longer) deliver to — e.g. a pincode that was covered when the address
+ * was saved, or one that never was and just slipped past the *shape*-only
+ * check the address form does (see user.validation.js — that only checks
+ * "6 digits", never whether Ekart actually recognizes or covers it). Same
+ * checkpoints, same reasoning: refused before payment/stock, not after.
+ *
  * @param {string} addressId
  * @param {string} userId
  * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} [client]
- * @returns {Promise<Array<object>>} conflicts — empty array if the address is still valid
+ * @param {'COD'|'PREPAID'} [paymentMode] - which payment path is calling this, so a COD order whose pincode only supports prepaid is caught here rather than surfacing later at shipment creation
+ * @returns {Promise<Array<object>>} conflicts — empty array if the address is still valid and deliverable
  */
-exports.detectAddressConflict = async (addressId, userId, client = prisma) => {
+exports.detectAddressConflict = async (addressId, userId, client = prisma, paymentMode = 'PREPAID') => {
   const address = addressId
     ? await client.address.findUnique({ where: { id: addressId } })
     : null;
@@ -113,6 +123,111 @@ exports.detectAddressConflict = async (addressId, userId, client = prisma) => {
         type: 'address_unavailable',
         message:
           'The delivery address for this order is no longer available. Please choose a different address.',
+      },
+    ];
+  }
+
+  const eligibility = await shippingService.checkDeliveryEligibility({
+    destinationPincode: address.pincode,
+    paymentMode,
+  });
+
+  // checkDeliveryEligibility already fully encodes the block/pass decision
+  // in `serviceable`/`codAvailable` themselves — including the fail-open
+  // vs fail-closed choice for a carrier check that couldn't get an answer
+  // at all (see SHIPPING_SERVICEABILITY_FALLBACK_POLICY / its own docs).
+  // No separate `skippedCheck` guard is needed here: under the default
+  // fail-open policy skippedCheck:true always comes paired with
+  // serviceable:true/codAvailable:true (so these conditions naturally
+  // don't fire), and under fail-closed it comes paired with
+  // serviceable:false (so this correctly blocks). `skippedCheck` itself is
+  // kept on the result purely for observability, not as a gating input.
+  if (!eligibility.serviceable) {
+    // All three mean "we can't confirm this order is deliverable" from the
+    // customer's point of view, but read very differently and need
+    // different next steps — see shipping.service.js's UNSERVICEABLE_REASON:
+    //   INVALID_FORMAT / INVALID_PINCODE — not a real, recognized pincode
+    //     at all; the address itself needs fixing.
+    //   CHECK_UNAVAILABLE — the carrier check never got an answer (an
+    //     outage/timeout) and the configured fallback policy is
+    //     fail-closed; nothing wrong with the address, just try again.
+    //   AREA_NOT_COVERED (the default/fallback case below) — a real,
+    //     checked pincode Ekart just doesn't cover.
+    const invalidPincode =
+      eligibility.reason === 'INVALID_FORMAT' || eligibility.reason === 'INVALID_PINCODE';
+    const checkUnavailable = eligibility.reason === 'CHECK_UNAVAILABLE';
+    return [
+      {
+        type: invalidPincode
+          ? 'invalid_pincode'
+          : checkUnavailable
+            ? 'delivery_check_unavailable'
+            : 'delivery_unavailable',
+        message: invalidPincode
+          ? "The pincode on this address doesn't look valid. Please update your address."
+          : checkUnavailable
+            ? "We couldn't confirm delivery availability for this address right now. Please try again in a moment."
+            : "We don't currently deliver to this address's pincode. Please choose a different address.",
+      },
+    ];
+  }
+
+  if (paymentMode === 'COD' && !eligibility.codAvailable) {
+    return [
+      {
+        type: 'cod_unavailable',
+        message:
+          'Cash on Delivery is not available for this address. Please choose a different payment method or address.',
+      },
+    ];
+  }
+
+  return [];
+};
+
+
+/**
+ * Companion check to detectOrderConflicts/detectAddressConflict above, but
+ * for the delivery-charge/total side of a draft order rather than its line
+ * items or address. A draft order's `deliveryCharge`/`total` are computed
+ * once, at draft-creation time (see createDraftOrderService below), from
+ * whatever FREE_DELIVERY_THRESHOLD/DELIVERY_CHARGE were in src/config/env.js
+ * at that moment. Those are ops-configurable env vars, not immutable
+ * constants — ops can edit and restart between when a draft order was
+ * created and when the customer actually places/pays for it, and a draft
+ * can sit around for a while in between (same "customer steps away
+ * mid-checkout" window detectOrderConflicts's own docs describe).
+ *
+ * That drift isn't caught by detectOrderConflicts: item prices/stock can be
+ * completely unchanged (no price_changed/insufficient_stock conflict) while
+ * the delivery-charge rule itself has moved, silently leaving the stored
+ * total wrong. Left unchecked, that stale total is exactly what
+ * payment.controller.js's createOrderid charges via Razorpay and what
+ * payment.service.js's handleCODOrder confirms the order for.
+ *
+ * Deliberately does NOT re-derive subtotal from live product prices here —
+ * that's detectOrderConflicts's job; this only re-runs the flat
+ * subtotal -> deliveryCharge -> total arithmetic (calculateDeliveryCharge,
+ * src/constants/pricing.js — the same single source of truth
+ * createDraftOrderService itself uses) against the order's own stored
+ * subtotal/discount, so a live config change is caught even when nothing
+ * about the items themselves has changed.
+ *
+ * @param {{ subtotal: number, discount: number, deliveryCharge: number, total: number }} order
+ * @returns {Array<object>} conflicts — empty array if the stored delivery charge/total still match the current rule
+ */
+exports.detectPricingConflict = (order) => {
+  const deliveryCharge = calculateDeliveryCharge(order.subtotal);
+  const total = Math.max(0, order.subtotal + deliveryCharge - (order.discount || 0));
+
+  if (deliveryCharge !== order.deliveryCharge || total !== order.total) {
+    return [
+      {
+        type: 'pricing_changed',
+        message:
+          'The delivery charge or total for this order has changed. Please refresh your order before proceeding.',
+        previousTotal: order.total,
+        currentTotal: total,
       },
     ];
   }

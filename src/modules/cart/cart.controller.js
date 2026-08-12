@@ -1,6 +1,17 @@
 const cartService = require('./cart.service');
 const CustomError = require('@utils/customError');
 
+// SECURITY INVARIANT (applies to every handler below): only productId,
+// quantity, cartItems ([{productId, quantity}]), and couponCode are ever
+// read off req.body. No handler here reads (or should ever read) a
+// price/deliveryCharge/subtotal/total-shaped field from the client — every
+// number in `meta.summary` comes from cartService.summarizeCart, computed
+// from live Product.price + calculateDeliveryCharge (see
+// src/constants/pricing.js), never from anything the request claims.
+// Regression-covered in tests/integration/cart.routes.test.js's "pricing
+// fields in the request body can never override the server-computed
+// charge" block.
+
 // GET /cart — the item list is `data`, as before; the "final payable
 // amount" preview (subtotal/deliveryCharge/total, no client math required
 // to reproduce it) rides along in `meta.summary` so it can't drift from
