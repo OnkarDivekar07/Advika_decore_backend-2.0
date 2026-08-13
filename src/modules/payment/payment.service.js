@@ -1,10 +1,68 @@
 const prisma = require('@config/prisma');
 const customError=  require('@utils/customError')
+const logger = require('@config/logger');
 const inventoryService = require('@modules/inventory/inventory.service');
 const orderService = require('@modules/order/order.service');
 const cartQueue = require('../../jobs/queues/clearCartQueue');
 const notificationQueue = require('../../jobs/queues/notificationQueue');
 const { PAYMENT_ATTEMPT_TIMEOUT_MS, RECONCILABLE_PAYMENT_STATUSES } = require('@constants/payment');
+
+/**
+ * Runs the fulfillment side-effects for an order that has just been marked
+ * paid+confirmed (stock decrement, cart clear, confirmation notification).
+ *
+ * Deliberately isolated from the paymentStatus/status write that calls it
+ * (see updateOrderAfterPayment and handleRazorpayWebhookEvent's
+ * 'payment.captured' case): "the payment was captured and this order is
+ * confirmed" and "every fulfillment side-effect for it has run" are two
+ * different facts, and only the first one is what "payment success" means.
+ * Razorpay has already taken the customer's money by the time either of
+ * this function's callers run — that can't be undone by a bug in, say,
+ * pushing a notification job — so a failure here must never be allowed to
+ * read back to the caller as "the payment didn't go through" or "the order
+ * wasn't created". It's caught and logged instead, as an operational
+ * problem to reconcile out of band, not a payment-flow error to surface to
+ * the customer.
+ *
+ * This matters even more for the webhook path specifically: Razorpay only
+ * retries a delivery on a non-2xx response, but handleRazorpayWebhookEvent
+ * de-dupes by eventId *before* this would ever run again (see the
+ * WebhookEvent ledger check) — so letting an error here escape and fail
+ * the webhook request wouldn't even get a retry that could fix it; it
+ * would just silently drop these side-effects for good while the order
+ * itself sits there already marked paid. Logging loudly and returning
+ * normally is what keeps that from happening invisibly.
+ */
+const finalizeConfirmedOrder = async (order) => {
+  try {
+    const insufficient = await inventoryService.decrementStockForOrder(
+      order.orderItems,
+      prisma,
+      { throwOnInsufficientStock: false }
+    );
+
+    if (insufficient.length > 0) {
+      logger.warn(`Order ${order.id} was paid but oversold`, { orderId: order.id, insufficient });
+    }
+
+    // The cart is only cleared once payment is actually confirmed — this is
+    // the first point either the /verify flow or the webhook can say that.
+    await cartQueue.add('clear-cart', { userId: order.userId });
+    await notificationQueue.add('order-confirmation', { orderId: order.id });
+  } catch (err) {
+    // The order is already correctly paid+confirmed in the DB regardless —
+    // that write already committed before this function was ever called.
+    // This is a fulfillment-side-effect failure (stock sync, queue/Redis
+    // outage, etc.), not a payment failure, and needs an operator to look
+    // at it rather than surfacing as an error to the customer or, worse,
+    // this call's caller (see the comment above).
+    logger.error(`Post-payment finalization failed for order ${order.id}`, {
+      orderId: order.id,
+      error: err?.message,
+      stack: err?.stack,
+    });
+  }
+};
 // The only Razorpay-specific dependency left in this file is this line.
 // Every SDK call, HMAC signature, and raw webhook/response shape lives
 // behind ./gateways instead — see ./gateways/paymentGateway.contract.js for
@@ -154,30 +212,12 @@ exports.updateOrderAfterPayment = async (order_id, payment_id) => {
 
   if (result.count > 0) {
     // This call is the one that actually flipped the order to paid (not a
-    // retry/race that lost) — decrement stock exactly once for it. Razorpay
-    // has already captured the money by this point, so unlike COD we can't
-    // just reject the order on a shortfall; we decrement what's available
-    // and flag the rest for manual handling (refund/backorder) instead.
-    const insufficient = await inventoryService.decrementStockForOrder(
-      order.orderItems,
-      prisma,
-      { throwOnInsufficientStock: false }
-    );
-
-    if (insufficient.length > 0) {
-      console.warn(
-        `Order ${order.id} was paid but oversold — insufficient stock for:`,
-        insufficient
-      );
-    }
-
-    // The cart is only cleared once payment is actually confirmed — this is
-    // the first point in the /verify flow where that's true.
-    await cartQueue.add('clear-cart', { userId: order.userId });
-    // Same "only the call that actually flipped it" guard — a duplicate
-    // /verify call or a race with the webhook can't queue a second
-    // confirmation SMS for the same order.
-    await notificationQueue.add('order-confirmation', { orderId: order.id });
+    // retry/race that lost) — run fulfillment exactly once for it. Razorpay
+    // has already captured the money by this point (the updateMany above
+    // already committed that), so a failure anywhere in here is a
+    // fulfillment problem, not a reason to tell the caller the payment
+    // didn't go through — see finalizeConfirmedOrder's own comment.
+    await finalizeConfirmedOrder(order);
   }
 
   // count === 0 means either this exact call raced a previous one and lost,
@@ -267,32 +307,22 @@ exports.handleRazorpayWebhookEvent = async (event, eventId) => {
       });
 
       if (result.count > 0) {
-        // Same "actually flipped it" guard as /verify — decrement stock
-        // exactly once, on whichever of /verify or this webhook won the race.
+        // Same "actually flipped it" guard as /verify — run fulfillment
+        // exactly once, on whichever of /verify or this webhook won the
+        // race. Wrapped by finalizeConfirmedOrder so a fulfillment failure
+        // here can't throw back out of this handler: an uncaught error at
+        // this point would make razorpayWebhook return a non-2xx, and
+        // because the WebhookEvent ledger check above already de-dupes on
+        // eventId, Razorpay's own retry of that same delivery would just
+        // be swallowed as a duplicate — silently losing these side-effects
+        // for good instead of ever getting a second chance to run them.
         const order = await prisma.order.findUnique({
           where: { payment_order_id: payment.order_id },
           include: { orderItems: true },
         });
 
         if (order) {
-          const insufficient = await inventoryService.decrementStockForOrder(
-            order.orderItems,
-            prisma,
-            { throwOnInsufficientStock: false }
-          );
-
-          if (insufficient.length > 0) {
-            console.warn(
-              `Order ${order.id} was paid but oversold — insufficient stock for:`,
-              insufficient
-            );
-          }
-
-          // Same guard as /verify — only the call that actually flipped the
-          // order to paid clears the cart, so a duplicate webhook delivery
-          // can't queue redundant clear jobs.
-          await cartQueue.add('clear-cart', { userId: order.userId });
-          await notificationQueue.add('order-confirmation', { orderId: order.id });
+          await finalizeConfirmedOrder(order);
         }
       }
       break;
