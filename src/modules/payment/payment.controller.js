@@ -2,6 +2,7 @@ const paymentService = require('./payment.service');
 const orderService = require('@modules/order/order.service');
 const CustomError = require('@utils/customError');
 const prisma = require('@config/prisma');
+const { RECONCILABLE_PAYMENT_STATUSES } = require('@constants/payment');
 
 exports.createOrderid = async (req, res, next) => {
   try {
@@ -63,7 +64,7 @@ exports.createOrderid = async (req, res, next) => {
     // thing /verify and the webhook use to find it again. That silently
     // orphans a payment already captured against the old id: Razorpay
     // still has the money, but nothing in our DB points at it anymore.
-    if (draftOrder.payment_order_id && draftOrder.paymentStatus === 'pending') {
+    if (draftOrder.payment_order_id && RECONCILABLE_PAYMENT_STATUSES.includes(draftOrder.paymentStatus)) {
       const existing = await paymentService.fetchRazorpayOrder(draftOrder.payment_order_id);
 
       if (existing && existing.amount === expectedAmountPaise) {
@@ -96,7 +97,7 @@ exports.createOrderid = async (req, res, next) => {
           // safe to hand back as-is instead of minting a new one.
           return res.sendResponse({
             message: 'Razorpay order created successfully',
-            data: { order: existing, key_id: process.env.RAZORPAY_KEY_ID },
+            data: { order: existing, key_id: paymentService.getGatewayPublicConfig().key_id },
           });
         }
       }
@@ -105,19 +106,49 @@ exports.createOrderid = async (req, res, next) => {
       // — fall through to minting a new one below.
     }
 
-    // 🟡 Step 4: Create a fresh Razorpay Order ID with amount
-    const razorpayOrder = await paymentService.createRazorpayOrder({
+    // 🟡 Step 4: Create a fresh Razorpay Order ID with amount. Tell it what
+    // payment_order_id we read the draft order as having (possibly none) so
+    // it can detect losing a race against a concurrent call for this same
+    // draft order — see createRazorpayOrder's own comment for why that
+    // matters here specifically.
+    const created = await paymentService.createRazorpayOrder({
       amount: expectedAmountPaise,
       currency: 'INR',
       receipt: `order_${draftOrder.id}`,
       order_id: draftOrder.id,
+      previousPaymentOrderId: draftOrder.payment_order_id ?? null,
     });
+
+    if (!created.persisted) {
+      // Lost the race: some other concurrent call for this same draft
+      // order won and already persisted its own Razorpay order id first.
+      // The order we just created on Razorpay's side was never linked to
+      // this draft order, so it must never be handed to the client — if
+      // they paid against it, nothing could ever find this order by that
+      // id again. Fall back to whatever the winner actually persisted,
+      // same as the reuse-or-reconcile path in Step 3 above.
+      const current = await prisma.order.findUnique({ where: { id: draftOrder.id } });
+      const winningOrder = current?.payment_order_id
+        ? await paymentService.fetchRazorpayOrder(current.payment_order_id)
+        : null;
+
+      if (winningOrder) {
+        return res.sendResponse({
+          message: 'Razorpay order created successfully',
+          data: { order: winningOrder, key_id: paymentService.getGatewayPublicConfig().key_id },
+        });
+      }
+
+      // Couldn't resolve the winner either (lookup failed) — safer to ask
+      // the client to retry than to hand back an order id nothing points at.
+      throw new CustomError('Could not create a payment order for this draft. Please try again.', 409);
+    }
 
     res.sendResponse({
       message: 'Razorpay order created successfully',
       data: {
-        order: razorpayOrder,
-        key_id: process.env.RAZORPAY_KEY_ID,
+        order: created.razorpayOrder,
+        key_id: paymentService.getGatewayPublicConfig().key_id,
       },
     });
   } catch (error) {
@@ -154,7 +185,7 @@ exports.verifyPayment = async (req, res, next) => {
     // the COD path.
     const owningOrder = await prisma.order.findUnique({
       where: { payment_order_id: razorpay_order_id },
-      select: { userId: true },
+      select: { userId: true, total: true },
     });
 
     if (!owningOrder) {
@@ -163,6 +194,31 @@ exports.verifyPayment = async (req, res, next) => {
 
     if (owningOrder.userId !== req.user.userId) {
       throw new CustomError('This payment does not belong to your account', 403);
+    }
+
+    // A valid signature only proves the order_id/payment_id/signature triple
+    // is authentic — it does NOT independently prove Razorpay actually
+    // captured money against this payment_id, or that it captured the
+    // right amount. Fetch the payment straight from Razorpay (not the
+    // client-supplied req.body) and check its real status/amount against
+    // our own server-side order total before trusting any of this.
+    const payment = await paymentService.fetchRazorpayPayment(razorpay_payment_id);
+
+    if (!payment) {
+      throw new CustomError('Unable to verify payment with Razorpay. Please try again.', 502);
+    }
+
+    if (payment.order_id !== razorpay_order_id) {
+      throw new CustomError('Payment does not match this order', 400);
+    }
+
+    if (payment.status !== 'captured') {
+      throw new CustomError('Payment has not been captured', 400);
+    }
+
+    const expectedAmountPaise = Math.round(owningOrder.total * 100);
+    if (payment.amount !== expectedAmountPaise) {
+      throw new CustomError('Payment amount does not match order total', 400);
     }
 
     // Idempotent: a second call for the same order (client retry, double
@@ -191,6 +247,10 @@ exports.verifyPayment = async (req, res, next) => {
 exports.razorpayWebhook = async (req, res, next) => {
   try {
     const signature = req.headers['x-razorpay-signature'];
+    // Razorpay's own header for telling two deliveries of the exact same
+    // event apart from two different events — see handleRazorpayWebhookEvent
+    // for why this is checked before anything else the payload says.
+    const eventId = req.headers['x-razorpay-event-id'];
 
     if (!signature || !req.rawBody) {
       throw new CustomError('Missing signature or request body', 400);
@@ -207,7 +267,7 @@ exports.razorpayWebhook = async (req, res, next) => {
 
     // req.body is already the parsed JSON event (see verify() in app.js,
     // which captures raw bytes alongside the normal express.json() parse).
-    await paymentService.handleRazorpayWebhookEvent(req.body);
+    await paymentService.handleRazorpayWebhookEvent(req.body, eventId);
 
     // Razorpay retries (exponential backoff, up to ~24h) on anything but a
     // 2xx, and expects a fast response — we've already applied the update,
@@ -239,4 +299,31 @@ exports.placeCODOrder = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * Explicitly cancels the in-flight payment attempt on the caller's own
+ * draft order — e.g. the customer closed the Razorpay Checkout.js modal
+ * without attempting anything (see paymentService.js on the frontend's
+ * RazorpayCheckoutError with reason 'cancelled'). See
+ * payment.service.js's cancelPaymentAttempt for exactly what this does and
+ * doesn't change.
+ */
+exports.cancelPayment = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const { orderId } = req.body;
+
+    const result = await paymentService.cancelPaymentAttempt(orderId, userId);
+
+    res.sendResponse({
+      message: result.cancelled
+        ? 'Payment attempt cancelled'
+        : 'Payment attempt was already resolved',
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 

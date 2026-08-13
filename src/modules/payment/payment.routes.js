@@ -5,13 +5,15 @@ const {
   createOrderid,
   verifyPayment,
   placeCODOrder,
-  razorpayWebhook
+  razorpayWebhook,
+  cancelPayment
 } = require('./payment.controller');
 
 const authenticate = require('@middlewares/authenticate');
 const {
   validateVerifyPayment,
-  validateCODOrder
+  validateCODOrder,
+  validateCancelPayment
 } = require('./payment.validation');
 
 const validateRequest = require('@middlewares/validateRequest');
@@ -57,6 +59,20 @@ router.post(
   validateCODOrder,
   validateRequest,
   placeCODOrder
+);
+
+/**
+ * @route   POST /api/payment/cancel
+ * @desc    Cancel the caller's own in-flight payment attempt (e.g. the
+ *          customer closed the Razorpay checkout modal) without cancelling
+ *          the underlying draft order itself
+ * @access  Authenticated Users
+ */
+router.post(
+  '/cancel',
+  validateCancelPayment,
+  validateRequest,
+  cancelPayment
 );
 
 module.exports = router;

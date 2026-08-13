@@ -29,3 +29,11 @@ exports.validateCODOrder = [
     .equals("cod")
     .withMessage("Method must be 'cod'"),
 ];
+
+exports.validateCancelPayment = [
+  body("orderId")
+    .notEmpty()
+    .withMessage("Order ID is required")
+    .isString()
+    .withMessage("Order ID must be a string"),
+];

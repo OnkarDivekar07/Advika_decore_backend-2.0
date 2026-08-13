@@ -17,11 +17,21 @@ const mockOrder = {
   update: jest.fn(),
   updateMany: jest.fn(),
   findUnique: jest.fn(),
+  findMany: jest.fn(),
 };
 const mockTx = { order: mockOrder };
 
+// Backs the WebhookEvent ledger's `create` call — handleRazorpayWebhookEvent
+// uses this to detect an exact-duplicate event delivery (see its own tests
+// below). Defaults to resolving (a fresh event id) so every other existing
+// test in this file — none of which pass an eventId — is unaffected.
+const mockWebhookEvent = {
+  create: jest.fn().mockResolvedValue({}),
+};
+
 jest.mock('@config/prisma', () => ({
   order: mockOrder,
+  webhookEvent: mockWebhookEvent,
   $transaction: jest.fn(async (cb) => cb(mockTx)),
 }));
 
@@ -129,7 +139,7 @@ describe('payment.service', () => {
   describe('createRazorpayOrder', () => {
     beforeEach(() => {
       razorpayInstance.orders.create.mockReset();
-      mockOrder.update.mockReset();
+      mockOrder.updateMany.mockReset();
     });
 
     it('creates a Razorpay order and stashes the id on our order', async () => {
@@ -137,19 +147,51 @@ describe('payment.service', () => {
         id: 'rzp_order_1',
         amount: 50000,
       });
-      mockOrder.update.mockResolvedValue({});
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
 
       const result = await paymentService.createRazorpayOrder({
         amount: 50000,
         receipt: 'order_1',
         order_id: 'order_1',
+        previousPaymentOrderId: null,
       });
 
-      expect(result).toEqual({ id: 'rzp_order_1', amount: 50000 });
-      expect(mockOrder.update).toHaveBeenCalledWith({
-        where: { id: 'order_1' },
-        data: { payment_order_id: 'rzp_order_1' },
+      // razorpayOrder now comes back through the gateway adapter's
+      // normalized shape (see gateways/razorpay.gateway.js) — id/amount
+      // pass through unchanged, plus currency/status/raw from the
+      // (here-undefined) fields the mocked SDK response didn't set.
+      expect(result).toEqual({
+        razorpayOrder: expect.objectContaining({ id: 'rzp_order_1', amount: 50000 }),
+        persisted: true,
       });
+      expect(mockOrder.updateMany).toHaveBeenCalledWith({
+        where: { id: 'order_1', payment_order_id: null },
+        data: { payment_order_id: 'rzp_order_1', paymentStatus: 'attempted' },
+      });
+    });
+
+    // Two concurrent create-orderid calls for the same draft order (see
+    // payment.controller.js) — this call created a Razorpay order but lost
+    // the compare-and-swap because some other call already linked a
+    // different payment_order_id to this draft order first.
+    it('reports persisted: false when another concurrent call already linked a different payment_order_id', async () => {
+      razorpayInstance.orders.create.mockResolvedValue({
+        id: 'rzp_order_loser',
+        amount: 50000,
+      });
+      mockOrder.updateMany.mockResolvedValue({ count: 0 });
+
+      const result = await paymentService.createRazorpayOrder({
+        amount: 50000,
+        receipt: 'order_1',
+        order_id: 'order_1',
+        previousPaymentOrderId: null,
+      });
+
+      expect(result.persisted).toBe(false);
+      expect(result.razorpayOrder).toEqual(
+        expect.objectContaining({ id: 'rzp_order_loser', amount: 50000 })
+      );
     });
 
     it('wraps a Razorpay failure in a 500 CustomError', async () => {
@@ -238,6 +280,8 @@ describe('payment.service', () => {
       mockOrder.findUnique.mockReset();
       inventoryService.decrementStockForOrder.mockReset();
       cartQueue.add.mockReset();
+      mockWebhookEvent.create.mockReset();
+      mockWebhookEvent.create.mockResolvedValue({});
     });
 
     it('ignores events with no payment order id (nothing to reconcile)', async () => {
@@ -298,6 +342,23 @@ describe('payment.service', () => {
       });
     });
 
+    it('marks the order processing on payment.authorized, only moving it forward from a non-terminal state', async () => {
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
+
+      await paymentService.handleRazorpayWebhookEvent({
+        event: 'payment.authorized',
+        payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+      });
+
+      expect(mockOrder.updateMany).toHaveBeenCalledWith({
+        where: {
+          payment_order_id: 'rzp_order_1',
+          paymentStatus: { in: ['pending', 'attempted', 'processing'] },
+        },
+        data: { paymentStatus: 'processing', payment_id: 'pay_1' },
+      });
+    });
+
     it('acks unhandled event types without touching the order', async () => {
       await paymentService.handleRazorpayWebhookEvent({
         event: 'order.paid',
@@ -305,6 +366,92 @@ describe('payment.service', () => {
       });
 
       expect(mockOrder.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('logs a verified event to the WebhookEvent ledger before processing it', async () => {
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
+      mockOrder.findUnique.mockResolvedValue({
+        id: 'order_1',
+        userId: 'user_1',
+        orderItems: [],
+      });
+      inventoryService.decrementStockForOrder.mockResolvedValue([]);
+
+      await paymentService.handleRazorpayWebhookEvent(
+        {
+          event: 'payment.captured',
+          payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+        },
+        'evt_123'
+      );
+
+      expect(mockWebhookEvent.create).toHaveBeenCalledWith({
+        data: {
+          source: 'razorpay',
+          eventId: 'evt_123',
+          eventType: 'payment.captured',
+          orderId: 'rzp_order_1',
+          paymentId: 'pay_1',
+          payload: expect.objectContaining({ event: 'payment.captured' }),
+        },
+      });
+      expect(mockOrder.updateMany).toHaveBeenCalled();
+    });
+
+    it('skips all processing for an event id already in the ledger (exact-duplicate delivery)', async () => {
+      const duplicateError = new Error('Unique constraint failed');
+      duplicateError.code = 'P2002';
+      mockWebhookEvent.create.mockRejectedValue(duplicateError);
+
+      await paymentService.handleRazorpayWebhookEvent(
+        {
+          event: 'payment.captured',
+          payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+        },
+        'evt_already_seen'
+      );
+
+      expect(mockOrder.updateMany).not.toHaveBeenCalled();
+      expect(cartQueue.add).not.toHaveBeenCalled();
+    });
+
+    it('still processes the event if the ledger write fails for a non-duplicate reason', async () => {
+      mockWebhookEvent.create.mockRejectedValue(new Error('DB unavailable'));
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
+      mockOrder.findUnique.mockResolvedValue({
+        id: 'order_1',
+        userId: 'user_1',
+        orderItems: [],
+      });
+      inventoryService.decrementStockForOrder.mockResolvedValue([]);
+
+      await paymentService.handleRazorpayWebhookEvent(
+        {
+          event: 'payment.captured',
+          payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+        },
+        'evt_456'
+      );
+
+      expect(mockOrder.updateMany).toHaveBeenCalled();
+    });
+
+    it('skips the ledger write entirely when no event id is provided (falls back to order-level idempotency only)', async () => {
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
+      mockOrder.findUnique.mockResolvedValue({
+        id: 'order_1',
+        userId: 'user_1',
+        orderItems: [],
+      });
+      inventoryService.decrementStockForOrder.mockResolvedValue([]);
+
+      await paymentService.handleRazorpayWebhookEvent({
+        event: 'payment.captured',
+        payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+      });
+
+      expect(mockWebhookEvent.create).not.toHaveBeenCalled();
+      expect(mockOrder.updateMany).toHaveBeenCalled();
     });
   });
 
@@ -539,6 +686,144 @@ describe('payment.service', () => {
       expect(inventoryService.decrementStockForOrder).not.toHaveBeenCalled();
       expect(mockOrder.update).not.toHaveBeenCalled();
       expect(cartQueue.add).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cancelPaymentAttempt', () => {
+    beforeEach(() => {
+      mockOrder.findUnique.mockReset();
+      mockOrder.updateMany.mockReset();
+    });
+
+    it('throws a 404 if the order does not exist', async () => {
+      mockOrder.findUnique.mockResolvedValue(null);
+
+      await expect(
+        paymentService.cancelPaymentAttempt('order_1', 'user_1')
+      ).rejects.toMatchObject({ statusCode: 404 });
+    });
+
+    it("throws a 403 if the order doesn't belong to the requesting user", async () => {
+      mockOrder.findUnique.mockResolvedValue({
+        id: 'order_1',
+        userId: 'someone_else',
+        status: 'draft',
+      });
+
+      await expect(
+        paymentService.cancelPaymentAttempt('order_1', 'user_1')
+      ).rejects.toMatchObject({ statusCode: 403 });
+    });
+
+    it('throws a 409 if the order is no longer awaiting payment', async () => {
+      mockOrder.findUnique.mockResolvedValue({
+        id: 'order_1',
+        userId: 'user_1',
+        status: 'confirmed',
+      });
+
+      await expect(
+        paymentService.cancelPaymentAttempt('order_1', 'user_1')
+      ).rejects.toMatchObject({ statusCode: 409 });
+    });
+
+    it('cancels an in-flight attempt and reports cancelled: true', async () => {
+      mockOrder.findUnique
+        .mockResolvedValueOnce({ id: 'order_1', userId: 'user_1', status: 'draft' })
+        .mockResolvedValueOnce({ id: 'order_1', userId: 'user_1', status: 'draft', paymentStatus: 'cancelled' });
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
+
+      const result = await paymentService.cancelPaymentAttempt('order_1', 'user_1');
+
+      expect(mockOrder.updateMany).toHaveBeenCalledWith({
+        where: { id: 'order_1', paymentStatus: { in: ['pending', 'attempted', 'processing'] } },
+        data: { paymentStatus: 'cancelled' },
+      });
+      expect(result.cancelled).toBe(true);
+    });
+
+    it('is idempotent — a repeat call for an already-resolved attempt reports cancelled: false', async () => {
+      mockOrder.findUnique
+        .mockResolvedValueOnce({ id: 'order_1', userId: 'user_1', status: 'draft', paymentStatus: 'cancelled' })
+        .mockResolvedValueOnce({ id: 'order_1', userId: 'user_1', status: 'draft', paymentStatus: 'cancelled' });
+      mockOrder.updateMany.mockResolvedValue({ count: 0 });
+
+      const result = await paymentService.cancelPaymentAttempt('order_1', 'user_1');
+
+      expect(result.cancelled).toBe(false);
+    });
+  });
+
+  describe('reconcileStalePaymentAttempts', () => {
+    beforeEach(() => {
+      mockOrder.findMany.mockReset();
+      mockOrder.updateMany.mockReset();
+      razorpayInstance.orders.create.mockReset();
+    });
+
+    it('marks a stale, never-captured attempt as timeout', async () => {
+      mockOrder.findMany.mockResolvedValue([
+        { id: 'order_1', payment_order_id: 'rzp_order_1', paymentStatus: 'attempted' },
+      ]);
+      jest.spyOn(paymentService, 'fetchRazorpayOrder').mockResolvedValue({
+        id: 'rzp_order_1',
+        status: 'created',
+      });
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
+
+      const results = await paymentService.reconcileStalePaymentAttempts();
+
+      expect(mockOrder.updateMany).toHaveBeenCalledWith({
+        where: { id: 'order_1', paymentStatus: { in: ['pending', 'attempted', 'processing'] } },
+        data: { paymentStatus: 'timeout' },
+      });
+      expect(results).toEqual({ timedOut: 1, reconciledPaid: 0, unknown: 0 });
+    });
+
+    it('reconciles a stale attempt Razorpay actually captured, instead of timing out real money', async () => {
+      mockOrder.findMany.mockResolvedValue([
+        { id: 'order_1', payment_order_id: 'rzp_order_1', paymentStatus: 'attempted' },
+      ]);
+      jest.spyOn(paymentService, 'fetchRazorpayOrder').mockResolvedValue({
+        id: 'rzp_order_1',
+        status: 'paid',
+      });
+      jest
+        .spyOn(paymentService, 'fetchOrderPayments')
+        .mockResolvedValue([{ id: 'pay_1', status: 'captured' }]);
+      const updateSpy = jest
+        .spyOn(paymentService, 'updateOrderAfterPayment')
+        .mockResolvedValue({ order: { id: 'order_1' }, alreadyProcessed: false });
+
+      const results = await paymentService.reconcileStalePaymentAttempts();
+
+      expect(updateSpy).toHaveBeenCalledWith('rzp_order_1', 'pay_1');
+      expect(results).toEqual({ timedOut: 0, reconciledPaid: 1, unknown: 0 });
+    });
+
+    it('marks an attempt unknown rather than guessing when Razorpay cannot be reached', async () => {
+      mockOrder.findMany.mockResolvedValue([
+        { id: 'order_1', payment_order_id: 'rzp_order_1', paymentStatus: 'attempted' },
+      ]);
+      jest.spyOn(paymentService, 'fetchRazorpayOrder').mockResolvedValue(null);
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
+
+      const results = await paymentService.reconcileStalePaymentAttempts();
+
+      expect(mockOrder.updateMany).toHaveBeenCalledWith({
+        where: { id: 'order_1', paymentStatus: { in: ['pending', 'attempted', 'processing'] } },
+        data: { paymentStatus: 'unknown' },
+      });
+      expect(results).toEqual({ timedOut: 0, reconciledPaid: 0, unknown: 1 });
+    });
+
+    it('is a no-op when nothing is stale', async () => {
+      mockOrder.findMany.mockResolvedValue([]);
+
+      const results = await paymentService.reconcileStalePaymentAttempts();
+
+      expect(mockOrder.updateMany).not.toHaveBeenCalled();
+      expect(results).toEqual({ timedOut: 0, reconciledPaid: 0, unknown: 0 });
     });
   });
 });

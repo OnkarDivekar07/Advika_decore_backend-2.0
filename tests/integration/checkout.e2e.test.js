@@ -17,6 +17,7 @@ const request = require('supertest');
 jest.mock('razorpay', () =>
   jest.fn().mockImplementation(() => ({
     orders: { create: jest.fn() },
+    payments: { fetch: jest.fn() },
   }))
 );
 
@@ -456,6 +457,15 @@ describe('checkout flow — Razorpay online payment', () => {
       .update('rzp_order_1|pay_1')
       .digest('hex');
 
+    // /verify now independently fetches the payment from Razorpay and
+    // checks its real captured status/amount against the order total
+    // (750 * 100 paise) before trusting the signature-valid ids.
+    razorpayInstance.payments.fetch.mockResolvedValue({
+      order_id: 'rzp_order_1',
+      status: 'captured',
+      amount: 75000,
+    });
+
     const verifyRes = await request(app)
       .post('/api/payment/verify')
       .set('x-user-id', 'user_1')
@@ -509,7 +519,64 @@ describe('checkout flow — Razorpay online payment', () => {
 
     expect(verifyRes.status).toBe(400);
     expect(db.orders[orderId].status).toBe('draft');
-    expect(db.orders[orderId].paymentStatus).toBe('pending');
+    // paymentStatus moved to 'attempted' the moment create-orderid minted a
+    // Razorpay order for this draft — a forged-signature /verify call never
+    // gets far enough to change it further.
+    expect(db.orders[orderId].paymentStatus).toBe('attempted');
+    expect(db.products[product.id].stock).toBe(10);
+  });
+
+  it('rejects verification when the actual Razorpay payment amount is short of the order total', async () => {
+    const product = seedProduct({ price: 750, stock: 10 });
+    const address = seedAddress('user_1');
+
+    await request(app)
+      .post('/api/cart')
+      .set('x-user-id', 'user_1')
+      .send({ cartItems: [{ productId: product.id, quantity: 1 }] });
+
+    const draftRes = await request(app)
+      .post('/api/order')
+      .set('x-user-id', 'user_1')
+      .send({ selectedAddressId: address.id });
+    const orderId = draftRes.body.data.id;
+
+    razorpayInstance.orders.create.mockResolvedValue({ id: 'rzp_order_3' });
+    await request(app)
+      .post('/api/payment/create-orderid')
+      .set('x-user-id', 'user_1')
+      .send();
+
+    const signature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update('rzp_order_3|pay_1')
+      .digest('hex');
+
+    // A valid signature, but the payment Razorpay actually captured (if
+    // any) doesn't match what this order is for — e.g. tampered client
+    // amount, or a captured payment for a different, cheaper order reused
+    // here. This must be caught independently of the signature.
+    razorpayInstance.payments.fetch.mockResolvedValue({
+      order_id: 'rzp_order_3',
+      status: 'captured',
+      amount: 1,
+    });
+
+    const verifyRes = await request(app)
+      .post('/api/payment/verify')
+      .set('x-user-id', 'user_1')
+      .send({
+        razorpay_order_id: 'rzp_order_3',
+        razorpay_payment_id: 'pay_1',
+        razorpay_signature: signature,
+      });
+
+    expect(verifyRes.status).toBe(400);
+    expect(verifyRes.body.message).toBe('Payment amount does not match order total');
+    expect(db.orders[orderId].status).toBe('draft');
+    // Same as the forged-signature case above — create-orderid already
+    // moved this to 'attempted'; a rejected /verify call doesn't change it.
+    expect(db.orders[orderId].paymentStatus).toBe('attempted');
     expect(db.products[product.id].stock).toBe(10);
   });
 });

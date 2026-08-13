@@ -111,11 +111,20 @@
  *       client never called /api/payment/verify (e.g. the tab closed right
  *       after paying). Configure this URL in the Razorpay Dashboard under
  *       Settings > Webhooks, subscribed to payment.captured and
- *       payment.failed.
+ *       payment.failed. Every verified delivery is additionally logged to a
+ *       WebhookEvent ledger keyed on X-Razorpay-Event-Id, giving event-level
+ *       deduplication (a retried/resent delivery is a no-op) and an audit
+ *       trail independent of the order's own row.
  *     parameters:
  *       - in: header
  *         name: X-Razorpay-Signature
  *         required: true
+ *         schema:
+ *           type: string
+ *       - in: header
+ *         name: X-Razorpay-Event-Id
+ *         required: false
+ *         description: Unique per event; used for event-level webhook deduplication.
  *         schema:
  *           type: string
  *     requestBody:
@@ -181,4 +190,60 @@
  *                       description: Updated order data
  *       401:
  *         description: Unauthorized or invalid method
+ */
+
+/**
+ * @swagger
+ * /api/payment/cancel:
+ *   post:
+ *     tags:
+ *       - Payment
+ *     summary: Cancel an in-flight payment attempt
+ *     description: >
+ *       Cancels the caller's own in-flight payment attempt on a draft order
+ *       (e.g. the customer closed the Razorpay checkout modal before
+ *       attempting anything) without cancelling the draft order itself —
+ *       the customer can still retry payment for the same order afterwards.
+ *       Idempotent: calling this again for an attempt that's already been
+ *       resolved (cancelled, paid, failed, timed out, etc.) is a no-op.
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - orderId
+ *             properties:
+ *               orderId:
+ *                 type: string
+ *                 example: order_xyz123
+ *     responses:
+ *       200:
+ *         description: Payment attempt cancelled (or was already resolved)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Payment attempt cancelled
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     cancelled:
+ *                       type: boolean
+ *                       example: true
+ *                     order:
+ *                       type: object
+ *                       description: Updated order data
+ *       403:
+ *         description: Order does not belong to this user
+ *       404:
+ *         description: Order not found
+ *       409:
+ *         description: Order is no longer awaiting payment
  */

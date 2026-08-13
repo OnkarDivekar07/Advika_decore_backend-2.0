@@ -105,6 +105,19 @@ if (!ALLOWED_SHIPPING_FALLBACK_POLICIES.includes(shippingServiceabilityFallbackP
   );
 }
 
+// --- Payment attempt timeout (optional) --------------------------------
+// How long a Razorpay payment attempt (paymentStatus 'pending'/'attempted'/
+// 'processing') can sit un-reconciled before reconcileStalePaymentAttempts
+// (payment.service.js) gives up on it and marks it 'timeout'. Optional,
+// same reasoning as the delivery-pricing defaults above: a sane default
+// keeps every existing deployment working unchanged if it's never set.
+const DEFAULT_PAYMENT_ATTEMPT_TIMEOUT_MINUTES = 30;
+const paymentAttemptTimeoutMinutes = parseNonNegativeNumber(
+  process.env.PAYMENT_ATTEMPT_TIMEOUT_MINUTES,
+  DEFAULT_PAYMENT_ATTEMPT_TIMEOUT_MINUTES,
+  'PAYMENT_ATTEMPT_TIMEOUT_MINUTES'
+);
+
 module.exports = {
   port: process.env.PORT,
   dbUrl: process.env.DATABASE_URL,
@@ -122,5 +135,6 @@ module.exports = {
   freeDeliveryThreshold,
   deliveryCharge,
   shippingServiceabilityFallbackPolicy,
+  paymentAttemptTimeoutMinutes,
   // Add more as needed
 };

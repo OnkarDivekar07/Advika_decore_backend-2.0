@@ -1,40 +1,75 @@
-const Razorpay = require("razorpay");
-const crypto = require("crypto");
 const prisma = require('@config/prisma');
 const customError=  require('@utils/customError')
 const inventoryService = require('@modules/inventory/inventory.service');
 const orderService = require('@modules/order/order.service');
 const cartQueue = require('../../jobs/queues/clearCartQueue');
 const notificationQueue = require('../../jobs/queues/notificationQueue');
+const { PAYMENT_ATTEMPT_TIMEOUT_MS, RECONCILABLE_PAYMENT_STATUSES } = require('@constants/payment');
+// The only Razorpay-specific dependency left in this file is this line.
+// Every SDK call, HMAC signature, and raw webhook/response shape lives
+// behind ./gateways instead — see ./gateways/paymentGateway.contract.js for
+// the full contract. Swapping providers means writing a new adapter there
+// and pointing ./gateways/index.js at it, not editing anything below.
+const paymentGateway = require('./gateways');
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
-
-exports.createRazorpayOrder = async ({ amount, currency = "INR", receipt, order_id }) => {
+/**
+ * Creates a Razorpay order and links it to our draft order.
+ *
+ * `previousPaymentOrderId` is a compare-and-swap guard against a duplicate
+ * *creation* attempt racing itself: two concurrent create-orderid calls for
+ * the same draft order (two tabs/devices submitting at once — the
+ * frontend's own in-flight request dedupe in apiClient.js only covers a
+ * single tab, so it can't catch this) would otherwise both mint a Razorpay
+ * order and both blindly `update` the same row, with whichever write lands
+ * last silently overwriting the other's payment_order_id. That orphans the
+ * loser's Razorpay order: if the customer ends up paying against it,
+ * neither /verify nor the webhook can ever find an order to reconcile it
+ * against (both look it up by payment_order_id), so a captured payment
+ * would go permanently unrecorded — exactly the kind of "duplicate payment
+ * attempt" this needs to not lose. Passing the payment_order_id the caller
+ * read the draft order as having *before* creating this new one, and only
+ * persisting if it still matches, makes at most one of two racing calls
+ * win; the loser reports `persisted: false` instead of silently clobbering
+ * the winner, so the caller can fall back to whatever actually got saved
+ * rather than handing the customer a Razorpay order our own DB doesn't
+ * point at.
+ */
+exports.createRazorpayOrder = async ({
+  amount,
+  currency = "INR",
+  receipt,
+  order_id,
+  previousPaymentOrderId = null,
+}) => {
   try {
-    // 1. Create Razorpay order
-    const razorpayOrder = await razorpay.orders.create({
+    // 1. Create the order with whichever gateway is configured (see
+    // ./gateways) — this file never talks to Razorpay (or any other
+    // provider) directly.
+    const razorpayOrder = await paymentGateway.createOrder({
       amount,       // in paise
       currency,
       receipt,
     });
 
-    // 2. Update your DB with the Razorpay order ID
-    const updateOrderPromise = prisma.order.update({
-      where: { id: order_id },
+    // 2. Update our DB with the gateway order ID — but only if nothing
+    // else has changed it since we read it (see the CAS reasoning above).
+    // paymentStatus moves to 'attempted' here too: this is the moment a
+    // real payment attempt exists (a Razorpay order was actually minted for
+    // it), as distinct from 'pending' (a draft order that hasn't started
+    // paying yet). Downstream code that used to treat "payment_order_id set
+    // but paymentStatus still 'pending'" as "an attempt is in flight" reads
+    // this new state instead — see createOrderid's reuse-or-reconcile check.
+    const updateResult = await prisma.order.updateMany({
+      where: { id: order_id, payment_order_id: previousPaymentOrderId },
       data: {
         payment_order_id: razorpayOrder.id,
+        paymentStatus: 'attempted',
       },
     });
 
-    // 3. Wait for update (useful if you plan to expand with more parallel promises later)
-    await Promise.all([updateOrderPromise]);
-
-    return razorpayOrder;
+    return { razorpayOrder, persisted: updateResult.count > 0 };
   } catch (err) {
-    
+
     throw new customError("Unable to create payment order.",500);
   }
 };
@@ -42,57 +77,52 @@ exports.createRazorpayOrder = async ({ amount, currency = "INR", receipt, order_
 
 
 /**
- * Looks up a previously-created Razorpay order by id. Used by createOrderid
- * to decide whether an existing (not-yet-paid) Razorpay order can be reused
- * for a retry instead of minting a new one — see the reuse-or-reconcile
- * comment there for why that matters. Returns null (rather than throwing)
- * on any failure — an unrecognized/expired id, a network blip talking to
- * Razorpay, etc. — so callers can just fall through to creating a fresh
- * order instead of having to special-case this.
+ * Looks up a previously-created payment-gateway order by id. Used by
+ * createOrderid to decide whether an existing (not-yet-paid) order can be
+ * reused for a retry instead of minting a new one — see the
+ * reuse-or-reconcile comment there for why that matters. Resolves null
+ * (rather than throwing) on any failure — an unrecognized/expired id, a
+ * network blip talking to the gateway, etc. — so callers can just fall
+ * through to creating a fresh order instead of having to special-case this.
+ * (The gateway itself already guarantees this — see
+ * ./gateways/paymentGateway.contract.js — so there's nothing left for this
+ * wrapper to catch.)
  */
-exports.fetchRazorpayOrder = async (razorpayOrderId) => {
-  try {
-    return await razorpay.orders.fetch(razorpayOrderId);
-  } catch (err) {
-    return null;
-  }
-};
+exports.fetchRazorpayOrder = (razorpayOrderId) => paymentGateway.fetchOrder(razorpayOrderId);
 
 /**
- * Lists the payment attempts made against a Razorpay order. Used to find a
- * `captured` payment when a Razorpay order comes back `status: "paid"` but
- * our own Order record hasn't been reconciled yet (the client never made it
- * back to call /verify, and the webhook hasn't landed yet either) — see
- * createOrderid. Returns [] on failure rather than throwing, same reasoning
- * as fetchRazorpayOrder above.
+ * Lists the payment attempts made against a gateway order. Used to find a
+ * `captured` payment when an order comes back `status: "paid"` but our own
+ * Order record hasn't been reconciled yet (the client never made it back to
+ * call /verify, and the webhook hasn't landed yet either) — see
+ * createOrderid. Resolves [] on failure rather than throwing, same
+ * reasoning as fetchRazorpayOrder above.
  */
-exports.fetchOrderPayments = async (razorpayOrderId) => {
-  try {
-    const result = await razorpay.orders.fetchPayments(razorpayOrderId);
-    return result?.items ?? [];
-  } catch (err) {
-    return [];
-  }
-};
+exports.fetchOrderPayments = (razorpayOrderId) => paymentGateway.fetchOrderPayments(razorpayOrderId);
 
-exports.verifyRazorpaySignature = (order_id, payment_id, signature) => {
-  const generatedSignature = crypto
-    .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-    .update(order_id + "|" + payment_id)
-    .digest("hex");
+/**
+ * Fetches a payment directly from the gateway by its id. Used by /verify as
+ * the independent source of truth for "was this actually captured, and for
+ * how much" — a valid signature only proves the order_id/payment_id/
+ * signature triple is authentic, it says nothing about whether the gateway
+ * ever actually captured money against it or how much. Resolves null
+ * (rather than throwing) on any failure — network blip, unrecognized id,
+ * etc. — so the caller can treat "couldn't verify" as its own failure case
+ * instead of a crash.
+ */
+exports.fetchRazorpayPayment = (paymentId) => paymentGateway.fetchPayment(paymentId);
 
-  // Use a constant-time comparison so response timing can't leak how many
-  // leading characters of the signature matched (defense-in-depth on a
-  // payment-security code path).
-  const generatedBuffer = Buffer.from(generatedSignature, "utf8");
-  const providedBuffer = Buffer.from(String(signature || ""), "utf8");
+exports.verifyRazorpaySignature = (order_id, payment_id, signature) =>
+  paymentGateway.verifyPaymentSignature({ orderId: order_id, paymentId: payment_id, signature });
 
-  if (generatedBuffer.length !== providedBuffer.length) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(generatedBuffer, providedBuffer);
-};
+/**
+ * Config the frontend needs to open its checkout widget for whichever
+ * gateway is configured (today: `{ key_id }`, for Razorpay Checkout.js —
+ * see payment.controller.js's createOrderid response). Exists so the
+ * controller never reads a RAZORPAY_* env var or otherwise needs to know
+ * which gateway is active — it just forwards this opaque object.
+ */
+exports.getGatewayPublicConfig = () => paymentGateway.publicConfig;
 
 
 exports.updateOrderAfterPayment = async (order_id, payment_id) => {
@@ -158,22 +188,8 @@ exports.updateOrderAfterPayment = async (order_id, payment_id) => {
 
 
 
-exports.verifyWebhookSignature = (rawBody, signature) => {
-  const generatedSignature = crypto
-    .createHmac("sha256", process.env.RAZORPAY_WEBHOOK_SECRET)
-    .update(rawBody) // Buffer of the exact bytes Razorpay sent — do not use a re-stringified req.body
-    .digest("hex");
-
-  // Constant-time comparison, same defense-in-depth as verifyRazorpaySignature above.
-  const generatedBuffer = Buffer.from(generatedSignature, "utf8");
-  const providedBuffer = Buffer.from(String(signature || ""), "utf8");
-
-  if (generatedBuffer.length !== providedBuffer.length) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(generatedBuffer, providedBuffer);
-};
+exports.verifyWebhookSignature = (rawBody, signature) =>
+  paymentGateway.verifyWebhookSignature(rawBody, signature);
 
 /**
  * Applies a verified Razorpay webhook event to our order record. This is the
@@ -183,10 +199,51 @@ exports.verifyWebhookSignature = (rawBody, signature) => {
  *
  * Every branch is written to be safely re-appliable, since Razorpay retries
  * webhook delivery (same event more than once) whenever it doesn't get a 2xx.
+ * That re-appliability is order-level, though (keyed on the order's current
+ * paymentStatus) — it can't distinguish a genuine retry of one event from a
+ * second, different event that happens to resolve to the same no-op, and it
+ * keeps no record of what was actually delivered. `eventId` (Razorpay's
+ * x-razorpay-event-id header — see payment.controller.js) adds a true
+ * event-level check ahead of that: every verified delivery is logged to the
+ * WebhookEvent ledger keyed on (source, eventId) before any handler logic
+ * runs, so an exact-duplicate delivery is caught and skipped outright, and
+ * the ledger itself becomes the audit trail — independent of whatever the
+ * order's own row later gets overwritten with by a later event.
+ *
+ * `event` is the gateway's raw (already signature-verified) webhook body —
+ * parseWebhookEvent (see ./gateways) is what turns it into the normalized
+ * { eventType, payment } shape everything below actually works with, so
+ * this function (like the rest of the file) never reads a
+ * provider-specific payload shape directly.
  */
-exports.handleRazorpayWebhookEvent = async (event) => {
-  const eventType = event?.event;
-  const payment = event?.payload?.payment?.entity;
+exports.handleRazorpayWebhookEvent = async (event, eventId) => {
+  const { eventType, payment } = paymentGateway.parseWebhookEvent(event);
+
+  if (eventId) {
+    try {
+      await prisma.webhookEvent.create({
+        data: {
+          source: paymentGateway.name,
+          eventId,
+          eventType: eventType ?? 'unknown',
+          orderId: payment?.order_id ?? null,
+          paymentId: payment?.id ?? null,
+          payload: event,
+        },
+      });
+    } catch (err) {
+      if (err?.code === 'P2002') {
+        // Already have a ledger row for this exact event id — a Razorpay
+        // retry or a dashboard "resend" of a delivery we've already
+        // processed. Ack without repeating anything below.
+        return;
+      }
+      // Ledger write failed for some other reason (transient DB blip,
+      // etc.) — don't let bookkeeping block reconciling a real payment;
+      // fall through and rely on the order-level idempotency below, same
+      // as before this ledger existed.
+    }
+  }
 
   if (!payment?.order_id) {
     // Nothing to reconcile against (e.g. non-payment events) — ack and ignore.
@@ -241,6 +298,26 @@ exports.handleRazorpayWebhookEvent = async (event) => {
       break;
     }
 
+    case "payment.authorized":
+      // Authorized but not yet captured (some payment methods/flows need a
+      // separate capture step before the money actually lands) — distinct
+      // from both 'attempted' (nothing confirmed yet) and 'paid' (captured).
+      // Only moves an attempt forward from a non-terminal state: never
+      // downgrades an order a 'captured' event already marked paid (webhook
+      // delivery order isn't guaranteed), and never resurrects an attempt
+      // that was already explicitly cancelled or timed out.
+      await prisma.order.updateMany({
+        where: {
+          payment_order_id: payment.order_id,
+          paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES },
+        },
+        data: {
+          paymentStatus: "processing",
+          payment_id: payment.id,
+        },
+      });
+      break;
+
     case "payment.failed":
       // Guard against ever downgrading an order a 'captured' event already
       // marked paid — Razorpay doesn't guarantee webhook delivery order.
@@ -257,9 +334,9 @@ exports.handleRazorpayWebhookEvent = async (event) => {
       break;
 
     default:
-      // Other event types (authorized, refunded, order.paid, etc.) aren't
-      // needed for "did the money land" reconciliation — ack and ignore so
-      // Razorpay doesn't keep retrying them.
+      // Other event types (refunded, order.paid, etc.) aren't needed for
+      // "did the money land" reconciliation — ack and ignore so Razorpay
+      // doesn't keep retrying them.
       break;
   }
 };
@@ -338,4 +415,149 @@ exports.handleCODOrder = async (orderId, userId) => {
 
     return { success: true, order: updatedOrder, alreadyProcessed: false };
   });
+};
+
+/**
+ * Explicitly cancels the *payment attempt* on a draft order — e.g. the
+ * customer closed the Razorpay Checkout.js modal without ever attempting a
+ * payment (Razorpay has nothing to report for this, so there's no webhook
+ * that would otherwise ever reconcile it — see paymentService.js on the
+ * frontend's RazorpayCheckoutError with reason 'cancelled'). Without this,
+ * that order would simply sit at 'attempted' until either a retry replaces
+ * it or reconcileStalePaymentAttempts eventually times it out — this makes
+ * the customer's own "I backed out" signal count immediately instead of
+ * waiting on a stale-order sweep.
+ *
+ * Deliberately narrow: only cancels the attempt (paymentStatus), never the
+ * order itself (status stays 'draft') — the customer can still come back
+ * and pay for the same draft order, and the next createOrderid call simply
+ * mints a fresh Razorpay order for it (cancelled isn't in
+ * RECONCILABLE_PAYMENT_STATUSES, so it won't be reused — see createOrderid's
+ * reuse-or-reconcile check).
+ *
+ * Idempotent: calling this again for an order that's already 'cancelled'
+ * (or has since moved to any other state) is a no-op rather than an error —
+ * mirrors handleCODOrder/updateOrderAfterPayment's own "already handled,
+ * not a failure" treatment of a duplicate call.
+ */
+exports.cancelPaymentAttempt = async (orderId, userId) => {
+  const order = await prisma.order.findUnique({ where: { id: orderId } });
+
+  if (!order) {
+    throw new customError('Order not found', 404);
+  }
+  if (order.userId !== userId) {
+    throw new customError('Unauthorized: Order does not belong to this user', 403);
+  }
+  if (order.status !== 'draft') {
+    // Already confirmed (paid/COD) or otherwise past the point a payment
+    // attempt could still meaningfully be "cancelled" — nothing to do.
+    throw new customError('This order is no longer awaiting payment', 409);
+  }
+
+  // Never downgrades a status this app can't safely walk back from a
+  // client-reported cancel (paid/failed/timeout/unknown/cod_pending) —
+  // only an attempt still genuinely in flight moves to 'cancelled' here.
+  const result = await prisma.order.updateMany({
+    where: {
+      id: orderId,
+      paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES },
+    },
+    data: { paymentStatus: 'cancelled' },
+  });
+
+  const updated = await prisma.order.findUnique({ where: { id: orderId } });
+  return { order: updated, cancelled: result.count > 0 };
+};
+
+/**
+ * Sweeps draft orders whose payment attempt has gone stale — still
+ * pending/attempted/processing, with a Razorpay order linked, and not
+ * touched in over PAYMENT_ATTEMPT_TIMEOUT_MS (see src/constants/payment.js)
+ * — and resolves each one instead of leaving it in limbo forever. Meant to
+ * be called periodically (see jobs/workers/paymentReconciliationWorker.js),
+ * not from a request path.
+ *
+ * For each stale order this double-checks with Razorpay directly rather
+ * than assuming the silence means the payment never happened — the same
+ * "webhook/verify never landed, but the money actually did" gap
+ * createOrderid's own reuse-or-reconcile logic already guards against:
+ *   - Razorpay confirms it was never captured -> 'timeout'.
+ *   - Razorpay confirms it WAS captured -> reconciled as paid, same as any
+ *     other late reconciliation (stock decremented, cart cleared, etc. via
+ *     updateOrderAfterPayment).
+ *   - Razorpay can't be reached, or says paid but the captured payment
+ *     can't be found -> 'unknown' rather than guessing either way, so an
+ *     operator can look at it instead of a real payment silently timing out.
+ *
+ * Every write is a conditional updateMany keyed on the order still being in
+ * a reconcilable state, so this is safe to run concurrently with a customer
+ * paying/cancelling the same order at the same moment — whichever happens
+ * first wins, the other becomes a no-op.
+ *
+ * @returns {Promise<{ timedOut: number, reconciledPaid: number, unknown: number }>}
+ */
+exports.reconcileStalePaymentAttempts = async () => {
+  const staleBefore = new Date(Date.now() - PAYMENT_ATTEMPT_TIMEOUT_MS);
+
+  const staleOrders = await prisma.order.findMany({
+    where: {
+      status: 'draft',
+      paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES },
+      payment_order_id: { not: null },
+      updatedAt: { lt: staleBefore },
+    },
+  });
+
+  const results = { timedOut: 0, reconciledPaid: 0, unknown: 0 };
+
+  for (const order of staleOrders) {
+    // eslint-disable-next-line no-await-in-loop
+    const razorpayOrder = await exports.fetchRazorpayOrder(order.payment_order_id);
+
+    if (!razorpayOrder) {
+      // Couldn't reach Razorpay to confirm one way or the other — don't
+      // guess at a real payment's fate.
+      // eslint-disable-next-line no-await-in-loop
+      await prisma.order.updateMany({
+        where: { id: order.id, paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES } },
+        data: { paymentStatus: 'unknown' },
+      });
+      results.unknown += 1;
+      continue;
+    }
+
+    if (razorpayOrder.status === 'paid') {
+      // Missed both /verify and the webhook, but Razorpay did capture the
+      // money — reconcile it now rather than timing out a real payment.
+      // eslint-disable-next-line no-await-in-loop
+      const payments = await exports.fetchOrderPayments(order.payment_order_id);
+      const captured = payments.find((p) => p.status === 'captured');
+
+      if (captured) {
+        // eslint-disable-next-line no-await-in-loop
+        await exports.updateOrderAfterPayment(order.payment_order_id, captured.id);
+        results.reconciledPaid += 1;
+      } else {
+        // eslint-disable-next-line no-await-in-loop
+        await prisma.order.updateMany({
+          where: { id: order.id, paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES } },
+          data: { paymentStatus: 'unknown' },
+        });
+        results.unknown += 1;
+      }
+      continue;
+    }
+
+    // Razorpay confirms this attempt never got captured and it's been
+    // stale long enough — safe to close it out.
+    // eslint-disable-next-line no-await-in-loop
+    await prisma.order.updateMany({
+      where: { id: order.id, paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES } },
+      data: { paymentStatus: 'timeout' },
+    });
+    results.timedOut += 1;
+  }
+
+  return results;
 };

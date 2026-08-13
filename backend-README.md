@@ -41,7 +41,8 @@ backend 2.0/
 │   │   ├── inventory/         # Inventory management (stub)
 │   │   ├── order/             # Draft orders, order history, admin order views
 │   │   ├── otp/                # Send/verify OTP login
-│   │   ├── payment/           # Razorpay order creation, verification, COD
+│   │   ├── payment/           # Order creation, verification, COD — see
+│   │   │   └── gateways/      #   payment/gateways for the provider adapter (Razorpay today)
 │   │   ├── product/           # Product CRUD, related products
 │   │   └── user/              # Addresses, user profile
 │   ├── routes/apiRoutes.js    # Mounts all module routes under /api

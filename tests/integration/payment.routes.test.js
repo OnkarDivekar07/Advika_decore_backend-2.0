@@ -19,6 +19,15 @@ jest.mock('@modules/payment/payment.service', () => ({
   handleRazorpayWebhookEvent: jest.fn(),
   handleCODOrder: jest.fn(),
   createRazorpayOrder: jest.fn(),
+  fetchRazorpayOrder: jest.fn(),
+  fetchRazorpayPayment: jest.fn(),
+  fetchOrderPayments: jest.fn(),
+  cancelPaymentAttempt: jest.fn(),
+  // createOrderid always reads this for `key_id` on every success path —
+  // without it the mock returns undefined, the controller throws calling
+  // it as a function, and every create-orderid test 500s instead of
+  // getting to its assertions.
+  getGatewayPublicConfig: jest.fn(() => ({ key_id: process.env.RAZORPAY_KEY_ID })),
 }));
 
 jest.mock('@modules/order/order.service', () => ({
@@ -42,6 +51,11 @@ const orderService = require('@modules/order/order.service');
 const paymentRoutes = require('@modules/payment/payment.routes');
 const responseMiddleware = require('@middlewares/responseMiddleware');
 const errorHandler = require('@middlewares/errorHandler');
+
+// paymentService.createRazorpayOrder now resolves { razorpayOrder, persisted }
+// (see payment.service.js) — this helper builds the "won the race, safe to
+// hand straight back to the client" case that most create-orderid tests want.
+const persistedRazorpayOrder = (razorpayOrder) => ({ razorpayOrder, persisted: true });
 
 const buildApp = () => {
   const app = express();
@@ -81,9 +95,14 @@ describe('POST /api/payment/verify', () => {
     expect(paymentService.updateOrderAfterPayment).not.toHaveBeenCalled();
   });
 
-  it('confirms the order on a valid signature', async () => {
+  it('confirms the order on a valid signature and a matching captured payment', async () => {
     paymentService.verifyRazorpaySignature.mockReturnValue(true);
-    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'user_1' });
+    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'user_1', total: 500 });
+    paymentService.fetchRazorpayPayment.mockResolvedValue({
+      order_id: 'order_1',
+      status: 'captured',
+      amount: 50000,
+    });
     paymentService.updateOrderAfterPayment.mockResolvedValue({
       order: { id: 'order_1' },
       alreadyProcessed: false,
@@ -95,6 +114,7 @@ describe('POST /api/payment/verify', () => {
       razorpay_signature: 'good-signature',
     });
 
+    expect(paymentService.fetchRazorpayPayment).toHaveBeenCalledWith('pay_1');
     expect(res.status).toBe(200);
     expect(res.body.message).toBe('Payment verified successfully');
     expect(res.body.data).toMatchObject({
@@ -120,7 +140,7 @@ describe('POST /api/payment/verify', () => {
 
   it("403s when the order belongs to a different user (can't replay someone else's payment ids)", async () => {
     paymentService.verifyRazorpaySignature.mockReturnValue(true);
-    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'someone_else' });
+    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'someone_else', total: 500 });
 
     const res = await request(app).post('/api/payment/verify').send({
       razorpay_order_id: 'order_1',
@@ -129,6 +149,81 @@ describe('POST /api/payment/verify', () => {
     });
 
     expect(res.status).toBe(403);
+    expect(paymentService.updateOrderAfterPayment).not.toHaveBeenCalled();
+  });
+
+  it('502s when the payment cannot be independently fetched from Razorpay', async () => {
+    paymentService.verifyRazorpaySignature.mockReturnValue(true);
+    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'user_1', total: 500 });
+    paymentService.fetchRazorpayPayment.mockResolvedValue(null);
+
+    const res = await request(app).post('/api/payment/verify').send({
+      razorpay_order_id: 'order_1',
+      razorpay_payment_id: 'pay_1',
+      razorpay_signature: 'good-signature',
+    });
+
+    expect(res.status).toBe(502);
+    expect(paymentService.updateOrderAfterPayment).not.toHaveBeenCalled();
+  });
+
+  it("400s when the fetched payment's order_id does not match", async () => {
+    paymentService.verifyRazorpaySignature.mockReturnValue(true);
+    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'user_1', total: 500 });
+    paymentService.fetchRazorpayPayment.mockResolvedValue({
+      order_id: 'order_other',
+      status: 'captured',
+      amount: 50000,
+    });
+
+    const res = await request(app).post('/api/payment/verify').send({
+      razorpay_order_id: 'order_1',
+      razorpay_payment_id: 'pay_1',
+      razorpay_signature: 'good-signature',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('Payment does not match this order');
+    expect(paymentService.updateOrderAfterPayment).not.toHaveBeenCalled();
+  });
+
+  it('400s when the fetched payment is not captured', async () => {
+    paymentService.verifyRazorpaySignature.mockReturnValue(true);
+    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'user_1', total: 500 });
+    paymentService.fetchRazorpayPayment.mockResolvedValue({
+      order_id: 'order_1',
+      status: 'authorized',
+      amount: 50000,
+    });
+
+    const res = await request(app).post('/api/payment/verify').send({
+      razorpay_order_id: 'order_1',
+      razorpay_payment_id: 'pay_1',
+      razorpay_signature: 'good-signature',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('Payment has not been captured');
+    expect(paymentService.updateOrderAfterPayment).not.toHaveBeenCalled();
+  });
+
+  it("400s when the captured payment's amount does not match the order total", async () => {
+    paymentService.verifyRazorpaySignature.mockReturnValue(true);
+    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'user_1', total: 500 });
+    paymentService.fetchRazorpayPayment.mockResolvedValue({
+      order_id: 'order_1',
+      status: 'captured',
+      amount: 1, // far below the order's 50000-paise total
+    });
+
+    const res = await request(app).post('/api/payment/verify').send({
+      razorpay_order_id: 'order_1',
+      razorpay_payment_id: 'pay_1',
+      razorpay_signature: 'good-signature',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('Payment amount does not match order total');
     expect(paymentService.updateOrderAfterPayment).not.toHaveBeenCalled();
   });
 });
@@ -168,7 +263,28 @@ describe('POST /api/payment/webhook', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ received: true });
     expect(paymentService.handleRazorpayWebhookEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'payment.captured' })
+      expect.objectContaining({ event: 'payment.captured' }),
+      undefined
+    );
+  });
+
+  // x-razorpay-event-id is what makes event-level deduplication possible
+  // (see handleRazorpayWebhookEvent) — this guards against the controller
+  // ever regressing to silently dropping it.
+  it('forwards the x-razorpay-event-id header for event-level deduplication', async () => {
+    paymentService.verifyWebhookSignature.mockReturnValue(true);
+    paymentService.handleRazorpayWebhookEvent.mockResolvedValue();
+
+    const res = await request(app)
+      .post('/api/payment/webhook')
+      .set('x-razorpay-signature', 'good-sig')
+      .set('x-razorpay-event-id', 'evt_123')
+      .send({ event: 'payment.captured' });
+
+    expect(res.status).toBe(200);
+    expect(paymentService.handleRazorpayWebhookEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'payment.captured' }),
+      'evt_123'
     );
   });
 
@@ -234,6 +350,61 @@ describe('POST /api/payment/cod', () => {
   });
 });
 
+describe('POST /api/payment/cancel', () => {
+  it('422s when orderId is missing', async () => {
+    const res = await request(app).post('/api/payment/cancel').send({});
+
+    expect(res.status).toBe(422);
+    expect(paymentService.cancelPaymentAttempt).not.toHaveBeenCalled();
+  });
+
+  it('cancels the in-flight attempt for a valid request', async () => {
+    paymentService.cancelPaymentAttempt.mockResolvedValue({
+      order: { id: 'order_1', paymentStatus: 'cancelled' },
+      cancelled: true,
+    });
+
+    const res = await request(app)
+      .post('/api/payment/cancel')
+      .send({ orderId: 'order_1' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.message).toBe('Payment attempt cancelled');
+    expect(paymentService.cancelPaymentAttempt).toHaveBeenCalledWith(
+      'order_1',
+      'user_1'
+    );
+  });
+
+  it('reports the already-resolved case without erroring', async () => {
+    paymentService.cancelPaymentAttempt.mockResolvedValue({
+      order: { id: 'order_1', paymentStatus: 'paid' },
+      cancelled: false,
+    });
+
+    const res = await request(app)
+      .post('/api/payment/cancel')
+      .send({ orderId: 'order_1' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.message).toBe('Payment attempt was already resolved');
+  });
+
+  it('propagates a service error (e.g. order not found) through the error handler', async () => {
+    const CustomError = require('@utils/customError');
+    paymentService.cancelPaymentAttempt.mockRejectedValue(
+      new CustomError('Order not found', 404)
+    );
+
+    const res = await request(app)
+      .post('/api/payment/cancel')
+      .send({ orderId: 'order_1' });
+
+    expect(res.status).toBe(404);
+    expect(res.body.message).toBe('Order not found');
+  });
+});
+
 describe('POST /api/payment/create-orderid', () => {
   beforeEach(() => {
     mockDraftOrder.findFirst.mockReset();
@@ -265,9 +436,9 @@ describe('POST /api/payment/create-orderid', () => {
       addressId: 'addr_1',
       orderItems: [{ productId: 'p1', quantity: 1, price: 499 }],
     });
-    paymentService.createRazorpayOrder.mockResolvedValue({
-      id: 'rzp_order_1',
-    });
+    paymentService.createRazorpayOrder.mockResolvedValue(
+      persistedRazorpayOrder({ id: 'rzp_order_1' })
+    );
 
     const res = await request(app).post('/api/payment/create-orderid').send();
 
@@ -283,7 +454,37 @@ describe('POST /api/payment/create-orderid', () => {
       currency: 'INR',
       receipt: 'order_order_1',
       order_id: 'order_1',
+      previousPaymentOrderId: null,
     });
+  });
+
+  // Two concurrent create-orderid calls for the same draft order (e.g. two
+  // tabs/devices submitting at once — the frontend's own in-flight request
+  // dedupe in apiClient.js only covers a single tab, so it can't catch
+  // this). This call's own Razorpay order lost the compare-and-swap in
+  // payment.service.js's createRazorpayOrder because another call already
+  // linked a different payment_order_id first — it must fall back to
+  // whatever that winner persisted rather than handing the client a
+  // Razorpay order our own DB doesn't point at.
+  it('falls back to the winning order when this call loses a create-orderid race', async () => {
+    mockDraftOrder.findFirst.mockResolvedValue({
+      id: 'order_1',
+      total: 499,
+      addressId: 'addr_1',
+      orderItems: [{ productId: 'p1', quantity: 1, price: 499 }],
+    });
+    paymentService.createRazorpayOrder.mockResolvedValue({
+      razorpayOrder: { id: 'rzp_order_loser' },
+      persisted: false,
+    });
+    mockDraftOrder.findUnique.mockResolvedValue({ payment_order_id: 'rzp_order_winner' });
+    paymentService.fetchRazorpayOrder.mockResolvedValue({ id: 'rzp_order_winner' });
+
+    const res = await request(app).post('/api/payment/create-orderid').send();
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.order).toEqual({ id: 'rzp_order_winner' });
+    expect(paymentService.fetchRazorpayOrder).toHaveBeenCalledWith('rzp_order_winner');
   });
 
   // Regression coverage for one specific invariant: the amount actually
@@ -299,7 +500,9 @@ describe('POST /api/payment/create-orderid', () => {
       addressId: 'addr_1',
       orderItems: [{ productId: 'p1', quantity: 1, price: 499 }],
     });
-    paymentService.createRazorpayOrder.mockResolvedValue({ id: 'rzp_order_1' });
+    paymentService.createRazorpayOrder.mockResolvedValue(
+      persistedRazorpayOrder({ id: 'rzp_order_1' })
+    );
 
     const res = await request(app)
       .post('/api/payment/create-orderid')
@@ -313,6 +516,7 @@ describe('POST /api/payment/create-orderid', () => {
       currency: 'INR',
       receipt: 'order_order_1',
       order_id: 'order_1',
+      previousPaymentOrderId: null,
     });
   });
 

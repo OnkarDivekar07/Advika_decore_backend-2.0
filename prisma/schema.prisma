@@ -25,10 +25,37 @@ enum OrderStatus {
 }
 
 
+// Payment lifecycle, in the order an online (Razorpay) payment normally
+// moves through it — see payment.service.js for exactly where each
+// transition happens:
+//
+//   pending -> attempted -> [processing ->] paid
+//                        \-> failed
+//                        \-> cancelled   (customer closed the checkout
+//                                         modal before Razorpay had
+//                                         anything to report — see
+//                                         cancelPaymentAttempt)
+//                        \-> timeout     (attempt went stale and was never
+//                                         captured — see
+//                                         reconcileStalePaymentAttempts)
+//                        \-> unknown     (reconciliation couldn't confirm
+//                                         either way, e.g. Razorpay was
+//                                         unreachable — needs a human look
+//                                         rather than a guess)
+//
+// `pending` is also the terminal state for a draft order that never even
+// started a payment attempt. `cod_pending` is COD's own separate terminal
+// state (no online attempt is ever made for it). `refunded` is set outside
+// this app today (no refund flow exists yet) but is reserved for one.
 enum PaymentStatus {
   pending
+  attempted
+  processing
   paid
   failed
+  cancelled
+  timeout
+  unknown
   refunded
   cod_pending
 }
@@ -101,6 +128,11 @@ model Order {
   paymentStatus PaymentStatus  @default(pending) // 'pending', 'paid', etc.
   orderItems  OrderItem[]
   createdAt  DateTime  @default(now())
+  // Optional (rather than a plain required @updatedAt) so existing orders
+  // predating this field keep working unchanged — same convention as
+  // subtotal/deliveryCharge above. Used by reconcileStalePaymentAttempts
+  // (payment.service.js) to find payment attempts that have gone stale.
+  updatedAt  DateTime? @updatedAt
 }
 
 
@@ -192,6 +224,41 @@ model Address {
   @@index([userId])
 }
 
+
+// Event-level webhook ledger — deliberately separate from Order's own
+// order-level idempotency (payment.service.js's "paymentStatus: { not:
+// 'paid' }" guards). That guard only dedupes the side effects of a single
+// event *type* against the order's current state; it can't tell two
+// deliveries of the exact same webhook event apart from two different
+// events that both happen to resolve to a no-op, and it leaves no record of
+// what Razorpay actually sent or when. This table is keyed on Razorpay's own
+// x-razorpay-event-id header (unique per event — see
+// https://razorpay.com/docs/webhooks/best-practices/), so a retried/resent
+// delivery of the same event is recognized and skipped before any handler
+// logic runs at all, and the raw payload is kept as an audit trail
+// independent of whatever the order's row later gets overwritten with.
+model WebhookEvent {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  // 'razorpay' today; kept as a field (not hardcoded) so another provider's
+  // webhook (e.g. Ekart shipping) could reuse this table later without a
+  // schema change — @@unique below is scoped per-source accordingly.
+  source      String
+  // Razorpay's x-razorpay-event-id header value.
+  eventId     String
+  eventType   String
+  // Denormalized out of `payload` purely so a duplicate/audit lookup
+  // doesn't need to inspect the JSON — the payload itself remains the
+  // source of truth for these.
+  orderId     String?
+  paymentId   String?
+  payload     Json
+  receivedAt  DateTime  @default(now())
+
+  // One record per (source, eventId) — this is what makes a duplicate
+  // delivery detectable at all; see handleRazorpayWebhookEvent.
+  @@unique([source, eventId])
+  @@index([orderId])
+}
 
 // --- Shipping module (Ekart Logistics) ---
 // No formal Prisma relation to Order is declared here on purpose, so
