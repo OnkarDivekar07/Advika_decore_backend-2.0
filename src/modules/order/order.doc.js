@@ -138,6 +138,113 @@
 
 /**
  * @swagger
+ * /api/orders/history:
+ *   get:
+ *     summary: Get a paginated list of the logged-in user's placed orders ("My Orders")
+ *     description: >
+ *       Never includes the in-progress draft order (see GET /api/orders for
+ *       that) - only orders that have actually been placed (pending,
+ *       confirmed, shipped, delivered, cancelled, or returned), newest first.
+ *     tags:
+ *       - Orders
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 50
+ *           default: 10
+ *     responses:
+ *       200:
+ *         description: Order history fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                   example: Order history fetched successfully
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       total:
+ *                         type: number
+ *                       subtotal:
+ *                         type: number
+ *                       deliveryCharge:
+ *                         type: number
+ *                       discount:
+ *                         type: number
+ *                       status:
+ *                         type: string
+ *                       paymentStatus:
+ *                         type: string
+ *                       payment_order_id:
+ *                         type: string
+ *                         nullable: true
+ *                       createdAt:
+ *                         type: string
+ *                         format: date-time
+ *                       orderItems:
+ *                         type: array
+ *                         items:
+ *                           type: object
+ *                           properties:
+ *                             quantity:
+ *                               type: integer
+ *                             price:
+ *                               type: number
+ *                             product:
+ *                               type: object
+ *                               properties:
+ *                                 id:
+ *                                   type: string
+ *                                 name:
+ *                                   type: string
+ *                                 images:
+ *                                   type: array
+ *                                   items:
+ *                                     type: string
+ *                 meta:
+ *                   type: object
+ *                   properties:
+ *                     total:
+ *                       type: integer
+ *                     page:
+ *                       type: integer
+ *                     limit:
+ *                       type: integer
+ *                     totalPages:
+ *                       type: integer
+ *       401:
+ *         description: Unauthorized
+ *       422:
+ *         description: Invalid page/limit
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
+
+
+/**
+ * @swagger
  * /api/orders/{id}:
  *   get:
  *     summary: Get a specific order by ID (owner or admin)

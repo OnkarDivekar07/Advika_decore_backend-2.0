@@ -4,6 +4,8 @@ const mockOrder = {
   update: jest.fn(),
   create: jest.fn(),
   findUnique: jest.fn(),
+  findMany: jest.fn(),
+  count: jest.fn(),
 };
 const mockOrderItem = { deleteMany: jest.fn(), create: jest.fn() };
 const mockAddress = { findUnique: jest.fn() };
@@ -58,6 +60,8 @@ beforeEach(() => {
   mockOrder.update.mockReset();
   mockOrder.create.mockReset();
   mockOrder.findUnique.mockReset();
+  mockOrder.findMany.mockReset();
+  mockOrder.count.mockReset();
   mockOrderItem.deleteMany.mockReset();
   mockOrderItem.create.mockReset();
   mockAddress.findUnique.mockReset();
@@ -731,5 +735,65 @@ describe('detectPricingConflict', () => {
         currentTotal: 600,
       }),
     ]);
+  });
+});
+
+describe('getUserOrderHistory', () => {
+  it('excludes draft orders and scopes to the given user', async () => {
+    mockOrder.count.mockResolvedValue(2);
+    mockOrder.findMany.mockResolvedValue([
+      { id: 'order_1', status: 'confirmed', total: 500 },
+      { id: 'order_2', status: 'delivered', total: 900 },
+    ]);
+
+    const result = await orderService.getUserOrderHistory('user_1', {});
+
+    expect(mockOrder.count).toHaveBeenCalledWith({
+      where: { userId: 'user_1', status: { not: 'draft' } },
+    });
+    expect(mockOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: 'user_1', status: { not: 'draft' } },
+        orderBy: { createdAt: 'desc' },
+        skip: 0,
+        take: 10,
+      })
+    );
+    expect(result.orders).toHaveLength(2);
+    expect(result.meta).toEqual({ total: 2, page: 1, limit: 10, totalPages: 1 });
+  });
+
+  it('applies page/limit to compute the correct skip and meta', async () => {
+    mockOrder.count.mockResolvedValue(23);
+    mockOrder.findMany.mockResolvedValue([]);
+
+    const result = await orderService.getUserOrderHistory('user_1', { page: 3, limit: 5 });
+
+    expect(mockOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 10, take: 5 })
+    );
+    expect(result.meta).toEqual({ total: 23, page: 3, limit: 5, totalPages: 5 });
+  });
+
+  it('clamps a non-positive page and an out-of-range limit to safe defaults', async () => {
+    mockOrder.count.mockResolvedValue(0);
+    mockOrder.findMany.mockResolvedValue([]);
+
+    const result = await orderService.getUserOrderHistory('user_1', { page: -5, limit: 500 });
+
+    expect(mockOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 0, take: 50 })
+    );
+    expect(result.meta).toEqual({ total: 0, page: 1, limit: 50, totalPages: 0 });
+  });
+
+  it('returns an empty page (not an error) when the user has no placed orders', async () => {
+    mockOrder.count.mockResolvedValue(0);
+    mockOrder.findMany.mockResolvedValue([]);
+
+    const result = await orderService.getUserOrderHistory('user_1', {});
+
+    expect(result.orders).toEqual([]);
+    expect(result.meta.totalPages).toBe(0);
   });
 });

@@ -1,4 +1,4 @@
-const { body, param } = require('express-validator');
+const { body, param, query } = require('express-validator');
 
 const mongoose = require('mongoose');
 
@@ -55,6 +55,25 @@ const validateDraftOrder = [
     .toInt(),
 ];
 
+// GET /api/orders/history — page/limit are optional; service-level
+// defaults/caps (see order.service.js's ORDER_HISTORY_DEFAULT_LIMIT /
+// ORDER_HISTORY_MAX_LIMIT) still apply even if this middleware is ever
+// bypassed, but validating here means a bad value 422s with a clear
+// message instead of just being silently clamped.
+const validateOrderHistoryQuery = [
+  query('page')
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage('page must be a positive integer')
+    .toInt(),
+
+  query('limit')
+    .optional()
+    .isInt({ min: 1, max: 50 })
+    .withMessage('limit must be an integer between 1 and 50')
+    .toInt(),
+];
+
 const validateOrderIdParam = [
   param('id')
     .trim()
@@ -66,6 +85,7 @@ const validateOrderIdParam = [
 
 module.exports = {
   validateDraftOrder,
+  validateOrderHistoryQuery,
   validateOrderIdParam,
   MAX_BUY_NOW_QUANTITY,
 };

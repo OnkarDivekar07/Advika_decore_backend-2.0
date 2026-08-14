@@ -75,6 +75,29 @@ exports.getUserOrders = async (req, res, next) => {
 };
 
 
+// GET /api/order/history
+// Paginated "My Orders" list for the logged-in user — placed orders only
+// (never the in-progress draft order GET /api/order returns). page/limit
+// are already shape-validated by validateOrderHistoryQuery; the service
+// layer still clamps them defensively (see order.service.js).
+exports.getOrderHistory = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const { page, limit } = req.query;
+
+    const { orders, meta } = await orderService.getUserOrderHistory(userId, { page, limit });
+
+    res.sendResponse({
+      message: 'Order history fetched successfully',
+      data: orders,
+      meta,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
 // GET /api/order
 exports.getOrders = async (req, res, next) => {
   try {

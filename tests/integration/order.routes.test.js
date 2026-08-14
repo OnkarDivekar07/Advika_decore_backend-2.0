@@ -18,6 +18,7 @@ jest.mock('@middlewares/authenticate', () =>
 jest.mock('@modules/order/order.service', () => ({
   createDraftOrderService: jest.fn(),
   getUserDraftOrder: jest.fn(),
+  getUserOrderHistory: jest.fn(),
   getAllOrders: jest.fn(),
   fetchOrderById: jest.fn(),
 }));
@@ -308,6 +309,78 @@ describe('GET /api/order', () => {
     expect(res.body.message).toBe('Draft order fetched successfully');
     expect(orderService.getUserDraftOrder).toHaveBeenCalledWith('user_1');
     expect(res.body.data.id).toBe(VALID_ORDER_ID);
+  });
+});
+
+describe('GET /api/order/history', () => {
+  it('200s with the paginated order history for the logged-in user only', async () => {
+    orderService.getUserOrderHistory.mockResolvedValue({
+      orders: [{ id: VALID_ORDER_ID, total: 500, status: 'confirmed' }],
+      meta: { total: 1, page: 1, limit: 10, totalPages: 1 },
+    });
+
+    const res = await request(app)
+      .get('/api/order/history')
+      .set('x-user-id', 'user_1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.message).toBe('Order history fetched successfully');
+    expect(orderService.getUserOrderHistory).toHaveBeenCalledWith('user_1', {
+      page: undefined,
+      limit: undefined,
+    });
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.meta).toMatchObject({ total: 1, page: 1, limit: 10, totalPages: 1 });
+  });
+
+  it('passes page/limit query params through to the service', async () => {
+    orderService.getUserOrderHistory.mockResolvedValue({
+      orders: [],
+      meta: { total: 0, page: 2, limit: 5, totalPages: 0 },
+    });
+
+    const res = await request(app)
+      .get('/api/order/history?page=2&limit=5')
+      .set('x-user-id', 'user_1');
+
+    expect(res.status).toBe(200);
+    // Express 5 makes req.query a read-only getter, so express-validator's
+    // .toInt() sanitizer (still useful for its *validation* pass) can't
+    // mutate it in place here — page/limit arrive at the controller as the
+    // raw query strings. That's fine: getUserOrderHistory itself
+    // defensively parseInt()s whatever it's given (see
+    // order.service.js), so this is still safe end-to-end even though the
+    // controller passes strings through rather than already-coerced
+    // numbers.
+    expect(orderService.getUserOrderHistory).toHaveBeenCalledWith('user_1', {
+      page: '2',
+      limit: '5',
+    });
+  });
+
+  it('422s when page is not a positive integer', async () => {
+    const res = await request(app).get('/api/order/history?page=0');
+
+    expect(res.status).toBe(422);
+    expect(orderService.getUserOrderHistory).not.toHaveBeenCalled();
+  });
+
+  it('422s when limit exceeds the max of 50', async () => {
+    const res = await request(app).get('/api/order/history?limit=51');
+
+    expect(res.status).toBe(422);
+    expect(orderService.getUserOrderHistory).not.toHaveBeenCalled();
+  });
+
+  it('never matches getOrderById (the literal "history" segment wins over :id)', async () => {
+    orderService.getUserOrderHistory.mockResolvedValue({
+      orders: [],
+      meta: { total: 0, page: 1, limit: 10, totalPages: 0 },
+    });
+
+    await request(app).get('/api/order/history');
+
+    expect(orderService.fetchOrderById).not.toHaveBeenCalled();
   });
 });
 

@@ -469,6 +469,90 @@ exports.getUserDraftOrder = async (userId) => {
 };
 
 
+// Paginated order-placement history for the logged-in user — their own
+// non-draft orders (pending/confirmed/shipped/delivered/cancelled/
+// returned), newest first. Deliberately a *separate* function from
+// getUserDraftOrder above rather than a repurposing of it: the draft
+// order (GET /api/order) is a single, singular, in-progress cart-order the
+// checkout flow reads/writes, while this is the "My Orders" list of
+// orders the user has actually placed — mixing the two would make the
+// draft order intermittently show up in (or vanish from) the "My Orders"
+// list depending on whether one happens to exist, which is not what
+// either caller wants.
+//
+// Only a light product projection (id/name/images) is selected per line
+// item — enough for an order-history card to show a thumbnail + name per
+// item without pulling the full product document (price/stock/etc. are
+// irrelevant here; the order's own locked-in OrderItem.price is what's
+// shown, same invariant as everywhere else — see OrderSummaryCard.jsx /
+// fetchOrderById above).
+const ORDER_HISTORY_DEFAULT_LIMIT = 10;
+const ORDER_HISTORY_MAX_LIMIT = 50;
+
+exports.getUserOrderHistory = async (userId, { page = 1, limit = ORDER_HISTORY_DEFAULT_LIMIT } = {}) => {
+  const safePage = Math.max(1, parseInt(page, 10) || 1);
+  const safeLimit = Math.min(
+    ORDER_HISTORY_MAX_LIMIT,
+    Math.max(1, parseInt(limit, 10) || ORDER_HISTORY_DEFAULT_LIMIT)
+  );
+  const skip = (safePage - 1) * safeLimit;
+
+  const where = { userId, status: { not: 'draft' } };
+
+  const [total, orders] = await Promise.all([
+    prisma.order.count({ where }),
+    prisma.order.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: safeLimit,
+      select: {
+        id: true,
+        total: true,
+        subtotal: true,
+        deliveryCharge: true,
+        discount: true,
+        status: true,
+        paymentStatus: true,
+        // Needed by the frontend's "My Orders" list (OrderCard) to tell a
+        // COD order apart from an online one for the same paymentStatus
+        // value — same payment_order_id-prefix convention OrderSuccessPage
+        // already relies on for its own detail-page badge (see
+        // features/orders/utils/paymentStatus.js). Already exposed as-is
+        // via GET /api/order/:id (fetchOrderById below); adding it here
+        // just extends the same non-sensitive field to the list endpoint.
+        payment_order_id: true,
+        createdAt: true,
+        orderItems: {
+          select: {
+            id: true,
+            quantity: true,
+            price: true,
+            product: {
+              select: {
+                id: true,
+                name: true,
+                images: true,
+              },
+            },
+          },
+        },
+      },
+    }),
+  ]);
+
+  return {
+    orders,
+    meta: {
+      total,
+      page: safePage,
+      limit: safeLimit,
+      totalPages: total === 0 ? 0 : Math.ceil(total / safeLimit),
+    },
+  };
+};
+
+
 exports.getAllOrders = async () => {
   const ordersRaw = await prisma.order.findMany({
     include: {

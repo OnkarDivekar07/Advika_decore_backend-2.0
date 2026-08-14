@@ -4,6 +4,7 @@ const router = express.Router();
 const {
   createDraftOrder,
   getUserOrders,
+  getOrderHistory,
   getOrders,
   getOrderById,
 } = require('./order.controller');
@@ -11,7 +12,11 @@ const {
 const authenticate = require('@middlewares/authenticate');
 const authorizeAdminOnly = require('@middlewares/authorizeAdminOnly');
 const validateRequest = require('@middlewares/validateRequest');
-const { validateDraftOrder, validateOrderIdParam } = require('./order.validation'); // renamed from admin.validation to avoid confusion
+const {
+  validateDraftOrder,
+  validateOrderHistoryQuery,
+  validateOrderIdParam,
+} = require('./order.validation'); // renamed from admin.validation to avoid confusion
 
 // -----------------------------------------------------------------------------
 // @route   POST /api/orders
@@ -47,6 +52,22 @@ router.get(
   authenticate,
   authorizeAdminOnly,
   getOrders
+);
+
+// -----------------------------------------------------------------------------
+// @route   GET /api/orders/history
+// @desc    Get a paginated list of the logged-in user's placed orders
+//          ("My Orders" — never the in-progress draft order GET /api/orders
+//          returns). Registered before /:id so the literal 'history'
+//          segment is never swallowed by the :id param match below.
+// @access  Authenticated User
+// -----------------------------------------------------------------------------
+router.get(
+  '/history',
+  authenticate,
+  validateOrderHistoryQuery,
+  validateRequest,
+  getOrderHistory
 );
 
 // -----------------------------------------------------------------------------
