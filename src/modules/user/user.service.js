@@ -1,5 +1,7 @@
 const prisma = require('@config/prisma');
 const customError = require('@utils/customError');
+const otpService = require('@modules/otp/otp.service');
+const formatNumber = require('@utils/formatNumber');
 
 // Address ordering used everywhere the list is returned: default address
 // first (so it's always what checkout/the address book defaults to
@@ -156,9 +158,9 @@ exports.getUserProfile = async (userId) => {
       id: true,
       name: true,
       email: true,
-      address: true,
-      createdAt: true
-    }
+      phone: true,
+      createdAt: true,
+    },
   });
 
   if (!user) {
@@ -166,4 +168,100 @@ exports.getUserProfile = async (userId) => {
   }
 
   return user;
+};
+
+// PATCH /api/user/profile — currently just the display name (email is a
+// synthetic placeholder derived from phone at signup — see
+// otp.service.js's verifyOtpService — and phone has its own dedicated,
+// OTP-verified change flow below; neither belongs on this generic
+// profile-edit endpoint).
+exports.updateUserProfile = async (userId, data) => {
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: { name: data.name },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      phone: true,
+      createdAt: true,
+    },
+  });
+
+  return user;
+};
+
+// --- Change mobile number -------------------------------------------------
+// Two-step, OTP-verified flow (mirrors login's send/verify shape) but
+// deliberately NOT built on top of otpService.sendOtpService /
+// verifyOtpService directly for the verify half: those are login
+// primitives — verifyOtpService looks up-or-creates a *User* by whatever
+// phone was verified, which is exactly wrong here (confirming a new
+// number for the currently signed-in user must never log them into a
+// different, unrelated account, nor silently create one). Sending an OTP
+// has no such side effect, so that half is reused as-is; verifying reuses
+// otpService.verifyOtpWithProvider — the same MSG91 call, just without the
+// login side effects — instead of duplicating the provider integration.
+
+// POST /api/user/phone/send-otp — sends an OTP to the *new* number the
+// user wants to switch to. Checked for availability up front so an
+// already-taken number fails fast, before spending an OTP send on it (the
+// only real enforcement of uniqueness is still the DB write in
+// confirmPhoneChange below, which re-checks — this is purely a fast-path).
+exports.sendPhoneChangeOtp = async (userId, newPhoneE164) => {
+  const normalized = formatNumber(newPhoneE164);
+
+  const currentUser = await prisma.user.findUnique({ where: { id: userId } });
+  if (!currentUser) {
+    throw new customError('User not found', 404);
+  }
+  if (currentUser.phone === normalized) {
+    throw new customError('This is already your mobile number.', 400);
+  }
+
+  const existing = await prisma.user.findUnique({ where: { phone: normalized } });
+  if (existing) {
+    throw new customError('This mobile number is already in use.', 409);
+  }
+
+  await otpService.sendOtpService(newPhoneE164);
+};
+
+// POST /api/user/phone/verify-otp — verifies the OTP against MSG91, then
+// updates the signed-in user's phone once confirmed. Re-checks uniqueness
+// right before the write (rather than trusting the send-step's check,
+// which could now be stale) and relies on the DB's own unique constraint
+// on User.phone as the final word, in case of a race between two
+// requests.
+exports.confirmPhoneChange = async (userId, newPhoneE164, otp) => {
+  await otpService.verifyOtpWithProvider(newPhoneE164, otp);
+
+  const normalized = formatNumber(newPhoneE164);
+
+  const existing = await prisma.user.findUnique({ where: { phone: normalized } });
+  if (existing && existing.id !== userId) {
+    throw new customError('This mobile number is already in use.', 409);
+  }
+
+  try {
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { phone: normalized },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        createdAt: true,
+      },
+    });
+    return user;
+  } catch (err) {
+    // P2022/P2002-style unique constraint race — someone else claimed
+    // this number between the check above and this write.
+    if (err.code === 'P2002') {
+      throw new customError('This mobile number is already in use.', 409);
+    }
+    throw err;
+  }
 };

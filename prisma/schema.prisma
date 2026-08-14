@@ -75,6 +75,7 @@ model User {
   reviews        Review[]
   contactQueries ContactQuery[]
   addresses      Address[]
+  wishlists      Wishlist[]
 }
 
 
@@ -94,6 +95,7 @@ model Product {
   carts       Cart[]     // One product can be in many cart items
   reviews     Review[]   // One product can have many reviews
   orderItems  OrderItem[]
+  wishlists   Wishlist[]
 }
 
 model Order {
@@ -149,6 +151,23 @@ model Cart {
   // insert-then-hope, and makes it structurally impossible for the same
   // product to appear twice in one user's cart (which duplicate createMany
   // calls, retries, or double-taps could otherwise produce).
+  @@unique([userId, productId])
+}
+
+// Customer "save for later" list — deliberately separate from Cart (a
+// wishlisted item isn't a purchase intent the way a cart line is, and
+// carries no quantity). Same "one row per (user, product)" shape as Cart
+// for the same reason: it makes adding an already-wishlisted product an
+// upsert/no-op instead of a duplicate row, and makes membership a simple
+// unique lookup for the frontend's heart-icon toggle state.
+model Wishlist {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  createdAt DateTime @default(now())
+
   @@unique([userId, productId])
 }
 

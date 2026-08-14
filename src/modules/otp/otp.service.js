@@ -65,7 +65,15 @@ exports.sendOtpService = async (phone) => {
   }
 };
 
-exports.verifyOtpService = async (phone, otp) => {
+// Talks to MSG91's verify endpoint only — no user lookup/creation/login
+// side effects. Split out of verifyOtpService so any flow that needs "is
+// this OTP actually correct for this phone?" (e.g. the user module's
+// change-mobile-number flow, which must NOT log the caller into whichever
+// account the new phone happens to belong to) can reuse the exact same
+// MSG91 call/parsing/error-shaping instead of re-implementing it.
+// Throws a CustomError (404 for expired/not-found, 400 for invalid) on
+// failure; resolves with nothing on success.
+const verifyOtpWithProvider = async (phone, otp) => {
   const { authKey } = getMsg91Config();
   const mobile = toIndianE164(phone);
 
@@ -99,6 +107,12 @@ exports.verifyOtpService = async (phone, otp) => {
 
     throw new CustomError(normalizedMessage, /expired/i.test(message) ? 404 : 400);
   }
+};
+
+exports.verifyOtpWithProvider = verifyOtpWithProvider;
+
+exports.verifyOtpService = async (phone, otp) => {
+  await verifyOtpWithProvider(phone, otp);
 
   const normalizedPhone = formatNumber(phone);
   let user = await prisma.user.findUnique({

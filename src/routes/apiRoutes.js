@@ -13,6 +13,7 @@ const ROUTES = {
   otp: require('@modules/otp').routes,
   inventory: require('@modules/inventory').routes,
   shipping: require('@modules/shipping').routes,
+  wishlist: require('@modules/wishlist').routes,
 };
 
 // Mount active routes
@@ -26,6 +27,7 @@ router.use('/payment', ROUTES.payment);
 router.use('/homepage', ROUTES.homepage);
 router.use('/inventory', ROUTES.inventory);
 router.use('/shipping', ROUTES.shipping);
+router.use('/wishlist', ROUTES.wishlist);
 
 // Fallback route (404)
 router.use((req, res) => {

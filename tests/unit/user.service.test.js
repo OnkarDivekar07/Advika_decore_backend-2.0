@@ -286,7 +286,7 @@ describe('user.service', () => {
         id: 'user1',
         name: 'Jane',
         email: 'jane@x.com',
-        address: [],
+        phone: '+919876543210',
         createdAt: new Date('2026-01-01'),
       };
       mockPrisma.user.findUnique.mockResolvedValue(profile);
@@ -299,7 +299,7 @@ describe('user.service', () => {
           id: true,
           name: true,
           email: true,
-          address: true,
+          phone: true,
           createdAt: true,
         },
       });

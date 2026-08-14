@@ -1,6 +1,12 @@
 const express = require('express');
 const request = require('supertest');
 
+// user.routes -> @middlewares/rateLimiter (for the phone-change OTP
+// endpoints) -> @config/redis, which would otherwise open a real Redis
+// connection just from requiring the routes below.
+const mockRedis = { incr: jest.fn(), expire: jest.fn() };
+jest.mock('@config/redis', () => mockRedis);
+
 jest.mock('@middlewares/authenticate', () =>
   jest.fn((req, res, next) => {
     req.user = { userId: 'user_1', role: 'customer' };

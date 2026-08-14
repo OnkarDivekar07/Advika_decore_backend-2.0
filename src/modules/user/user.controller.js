@@ -114,3 +114,57 @@ exports.getUserProfile = async (req, res, next) => {
     next(err);
   }
 };
+
+// @desc    Update the logged-in user's profile (display name)
+// @route   PATCH /api/user/profile
+// @access  User
+exports.updateProfile = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const profile = await userService.updateUserProfile(userId, req.body);
+
+    res.sendResponse({
+      message: 'Profile updated successfully',
+      data: profile,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @desc    Send an OTP to a new mobile number, as the first step of
+//          changing the logged-in user's phone
+// @route   POST /api/user/phone/send-otp
+// @access  User
+exports.sendPhoneChangeOtp = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const { phone } = req.body;
+    await userService.sendPhoneChangeOtp(userId, phone);
+
+    res.sendResponse({
+      message: 'OTP sent successfully',
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @desc    Verify the OTP sent to the new mobile number and update the
+//          logged-in user's phone
+// @route   POST /api/user/phone/verify-otp
+// @access  User
+exports.verifyPhoneChangeOtp = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const { phone, otp } = req.body;
+    const profile = await userService.confirmPhoneChange(userId, phone, otp);
+
+    res.sendResponse({
+      message: 'Mobile number updated successfully',
+      data: profile,
+    });
+  } catch (err) {
+    next(err);
+  }
+};

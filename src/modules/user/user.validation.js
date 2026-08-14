@@ -88,8 +88,20 @@ const updateAddressValidator = [
 
 const addressIdParamValidator = [param('id').notEmpty().withMessage('Address id is required')];
 
+// For PATCH /api/user/profile — name is the only editable field here (see
+// user.service.js#updateUserProfile for why email/phone aren't).
+const updateProfileValidator = [
+  body('name')
+    .trim()
+    .notEmpty()
+    .withMessage('Name is required')
+    .isLength({ min: 2, max: 80 })
+    .withMessage('Name must be between 2 and 80 characters'),
+];
+
 module.exports = {
   createAddressValidator,
   updateAddressValidator,
   addressIdParamValidator,
+  updateProfileValidator,
 };

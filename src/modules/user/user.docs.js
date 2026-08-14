@@ -306,9 +306,9 @@
  *                     email:
  *                       type: string
  *                       example: "onkar@example.com"
- *                     address:
+ *                     phone:
  *                       type: string
- *                       example: "123 Main St, Pune, India"
+ *                       example: "9876543210"
  *                     createdAt:
  *                       type: string
  *                       format: date-time
@@ -319,4 +319,97 @@
  *         description: User not found
  *       500:
  *         description: Internal server error
+ */
+
+/**
+ * @swagger
+ * /api/user/profile:
+ *   patch:
+ *     summary: Update the logged-in user's display name
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Profile updated successfully
+ *       422:
+ *         description: Validation error
+ *       401:
+ *         description: Unauthorized
+ */
+
+/**
+ * @swagger
+ * /api/user/phone/send-otp:
+ *   post:
+ *     summary: Send an OTP to a new mobile number (step 1 of changing phone)
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               phone:
+ *                 type: string
+ *                 example: "+919876543210"
+ *     responses:
+ *       200:
+ *         description: OTP sent successfully
+ *       400:
+ *         description: This is already your mobile number
+ *       409:
+ *         description: This mobile number is already in use
+ *       422:
+ *         description: Validation error
+ *       401:
+ *         description: Unauthorized
+ */
+
+/**
+ * @swagger
+ * /api/user/phone/verify-otp:
+ *   post:
+ *     summary: Verify the OTP and update the logged-in user's phone (step 2)
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               phone:
+ *                 type: string
+ *                 example: "+919876543210"
+ *               otp:
+ *                 type: string
+ *                 example: "123456"
+ *     responses:
+ *       200:
+ *         description: Mobile number updated successfully
+ *       400:
+ *         description: Invalid OTP
+ *       404:
+ *         description: OTP not found or expired
+ *       409:
+ *         description: This mobile number is already in use
+ *       422:
+ *         description: Validation error
+ *       401:
+ *         description: Unauthorized
  */
