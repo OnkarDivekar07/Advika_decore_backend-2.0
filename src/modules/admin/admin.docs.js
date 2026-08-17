@@ -1,5 +1,52 @@
 /**
  * @swagger
+ * /api/admin/me:
+ *   get:
+ *     summary: Get the currently-authenticated admin's profile
+ *     description: >
+ *       Re-verifies the session against the database (not just the JWT
+ *       payload), so a deleted or demoted admin account gets a 401 even
+ *       within an otherwise-unexpired token's lifetime.
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Current admin fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Current admin fetched successfully
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       example: 64f1c2b3e4b0a2d3c4e5f6a7
+ *                     name:
+ *                       type: string
+ *                       example: Admin User
+ *                     email:
+ *                       type: string
+ *                       example: admin@example.com
+ *                     role:
+ *                       type: string
+ *                       example: admin
+ *       401:
+ *         description: Missing/invalid/expired token, or the account is no longer an admin
+ *       403:
+ *         description: Forbidden
+ */
+
+/**
+ * @swagger
  * /api/admin/stats:
  *   get:
  *     summary: Get platform-wide statistics
@@ -220,8 +267,8 @@
  *                 message:
  *                   type: string
  *                   example: Login successful
- *       400:
- *         description: Validation error or incorrect credentials
+ *       401:
+ *         description: Invalid email/password, or the account is not an admin
  *         content:
  *           application/json:
  *             schema:
@@ -232,7 +279,37 @@
  *                   example: false
  *                 message:
  *                   type: string
- *                   example: Invalid email or password
+ *                   example: Incorrect password
+ *       422:
+ *         description: Validation error (missing/malformed email or password)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 message:
+ *                   type: string
+ *                   example: Validation failed
+ *                 errors:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *       429:
+ *         description: Too many login attempts for this email — retry later
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 message:
+ *                   type: string
+ *                   example: Too many login attempts. Please try again later.
  */
 
 /**

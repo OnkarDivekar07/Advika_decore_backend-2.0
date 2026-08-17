@@ -5,9 +5,11 @@ const {
   getStats,
   getAllUsersWithStats,
   loginAdmin,
+  getCurrentAdmin,
 } = require('./admin.controller');
 const authenticate = require('@middlewares/authenticate');
 const authorizeAdminOnly = require('@middlewares/authorizeAdminOnly');
+const { adminLoginRateLimiter } = require('@middlewares/rateLimiter');
 const {
   validateAdminQueries,
   validateAdminLogin,
@@ -19,10 +21,26 @@ const validateRequest = require('@middlewares/validateRequest');
  * /api/admin/login:
  * ...
  */
-router.post('/login', validateAdminLogin, validateRequest, loginAdmin);
+router.post(
+  '/login',
+  adminLoginRateLimiter,
+  validateAdminLogin,
+  validateRequest,
+  loginAdmin
+);
 
 // Protect all admin routes
 router.use(authenticate, authorizeAdminOnly);
+
+/**
+ * @route   GET /api/admin/me
+ * @desc    Re-verify the current session against the database and return
+ *          the current admin's profile. Used by the admin panel on
+ *          load/refresh so a stored token is never treated as proof of
+ *          authorization by itself.
+ * @access  Admin
+ */
+router.get('/me', getCurrentAdmin);
 
 /**
  * @route   GET /api/admin/stats

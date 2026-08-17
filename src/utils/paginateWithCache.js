@@ -12,6 +12,13 @@ const paginateWithCache = async ({
   cache = true, // NEW flag to enable/disable caching
   searchableFields = [], // e.g., ['name', 'description']
   filterableFields = [], // e.g., ['category', 'brand']
+  // Extra values to fold into the cache key when a caller builds part of
+  // `where` itself (e.g. a price range or an array-contains category
+  // filter) instead of going through `filterableFields`. Without this,
+  // two requests that differ only in that custom filtering — but agree on
+  // page/limit/sort/search — would collide on the same cache key and
+  // silently serve each other's results.
+  cacheKeyExtra = {},
   formatter, // optional (item) => transformedItem
 }) => {
   const page = parseInt(req.query.page) || 1;
@@ -55,6 +62,7 @@ const paginateWithCache = async ({
         return acc;
       }, {}),
     searchQuery,
+    ...cacheKeyExtra,
   })}`;
 
   if (cache) {

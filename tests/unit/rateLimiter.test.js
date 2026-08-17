@@ -5,7 +5,7 @@ const mockRedis = {
 
 jest.mock('@config/redis', () => mockRedis);
 
-const { createRateLimiter } = require('@middlewares/rateLimiter');
+const { createRateLimiter, adminLoginRateLimiter } = require('@middlewares/rateLimiter');
 
 const buildReqRes = (phone) => ({
   req: { body: { phone } },
@@ -100,5 +100,64 @@ describe('rateLimiter.createRateLimiter', () => {
     const second = buildReqRes('+919999999999');
     await limiter(second.req, second.res, second.next);
     expect(mockRedis.expire).not.toHaveBeenCalled();
+  });
+
+  describe('keyBy option', () => {
+    it('keys on whatever keyBy(req) returns instead of req.body.phone', async () => {
+      mockRedis.incr.mockResolvedValue(1);
+      const custom = createRateLimiter({
+        prefix: 'custom-limit',
+        keyBy: (req) => req.body.email,
+      });
+
+      const req = { body: { email: 'Admin@Example.com' } };
+      const next = jest.fn();
+      await custom(req, {}, next);
+
+      expect(mockRedis.incr).toHaveBeenCalledWith('custom-limit:Admin@Example.com');
+      expect(next).toHaveBeenCalledWith();
+    });
+
+    it('falls back to an "invalid" bucket when keyBy returns an empty value', async () => {
+      mockRedis.incr.mockResolvedValue(1);
+      const custom = createRateLimiter({
+        prefix: 'custom-limit',
+        keyBy: (req) => req.body.email,
+      });
+
+      const req = { body: {} };
+      const next = jest.fn();
+      await custom(req, {}, next);
+
+      expect(mockRedis.incr).toHaveBeenCalledWith('custom-limit:invalid');
+    });
+  });
+
+  describe('adminLoginRateLimiter', () => {
+    it('keys on the lowercased, trimmed email', async () => {
+      mockRedis.incr.mockResolvedValue(1);
+      const req = { body: { email: '  Admin@Advika.com  ', password: 'x' } };
+      const next = jest.fn();
+
+      await adminLoginRateLimiter(req, {}, next);
+
+      expect(mockRedis.incr).toHaveBeenCalledWith('admin-login-limit:admin@advika.com');
+      expect(next).toHaveBeenCalledWith();
+    });
+
+    it('429s once the per-email attempt cap is exceeded', async () => {
+      mockRedis.incr.mockResolvedValue(11); // maxAttempts is 10
+      const req = { body: { email: 'admin@advika.com', password: 'x' } };
+      const next = jest.fn();
+
+      await adminLoginRateLimiter(req, {}, next);
+
+      expect(next).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Too many login attempts. Please try again later.',
+          statusCode: 429,
+        })
+      );
+    });
   });
 });

@@ -9,6 +9,7 @@ const {
   createProduct,
   updateProduct,
   deleteProduct,
+  getProductJobStatus,
 } = require('./product.controller');
 
 const authenticate = require('@middlewares/authenticate');
@@ -57,6 +58,17 @@ router.get('/:id/related', getRelatedProducts);
 
 // Admin-only Routes
 router.use(authenticate, authorizeAdminOnly);
+
+/**
+ * @route   GET /api/products/jobs/:jobId
+ * @desc    Poll the status of an async create/update job (see
+ *          product.service's queueProductCreation/queueProductUpdate and
+ *          jobs/workers/imageWorker.js). Registered as a 2-segment path
+ *          ('jobs' + jobId) so it never collides with the public
+ *          single-segment GET /:id above.
+ * @access  Admin
+ */
+router.get('/jobs/:jobId', getProductJobStatus);
 
 // /**
 //  * @route   POST /api/products

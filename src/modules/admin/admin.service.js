@@ -76,6 +76,32 @@ exports.getAllUsersWithStats = (req) => {
   });
 };
 
+/**
+ * Re-verify the currently-authenticated admin against the database.
+ *
+ * authenticate/authorizeAdminOnly (see @middlewares) only check the role
+ * embedded in the JWT payload at the time it was signed — they never look
+ * the user back up. That's fine as the per-request security boundary, but
+ * it means a token stays "valid" for its full 1h lifetime even if the
+ * admin's account is deleted or demoted in the meantime. This is the
+ * backend-authoritative check the admin panel calls on load/refresh so a
+ * stored token is never treated as proof of authorization by itself —
+ * 401 here (via CustomError) is exactly the "session no longer valid"
+ * signal the panel's apiClient already knows how to handle.
+ */
+exports.getCurrentAdmin = async (userId) => {
+  const admin = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, name: true, email: true, role: true },
+  });
+
+  if (!admin || admin.role !== 'admin') {
+    throw new CustomError('Admin session is no longer valid', 401);
+  }
+
+  return admin;
+};
+
 exports.login = async ({ email, password }) => {
   const admin = await prisma.user.findUnique({
     where: { email },

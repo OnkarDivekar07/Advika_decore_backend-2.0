@@ -1,19 +1,78 @@
 const prisma = require('@config/prisma');
 const paginateWithCache = require('@utils/paginateWithCache');
 const CustomError = require('@utils/customError');
+const invalidateCacheByPrefix = require('@utils/invalidateCacheByPrefix');
 const imageQueue = require('../../jobs/queues/imageQueue');
 const { validateMultipleImages } = require('@utils/bannerHelpers');
 
+// Cache prefixes that need invalidating whenever product data changes.
+// 'allProducts' backs GET /api/products (this module and the admin
+// panel); 'newArrivalProducts' backs GET /api/homepage/new-arrivals,
+// which reads from the same Product rows filtered by isNewArrival and
+// would otherwise keep serving a stale list for up to its own
+// cacheExpiry after an admin flips isNewArrival on/off.
+const PRODUCT_CACHE_PREFIXES = ['allProducts', 'newArrivalProducts'];
+
+const invalidateProductCaches = () =>
+  Promise.all(PRODUCT_CACHE_PREFIXES.map((prefix) => invalidateCacheByPrefix(prefix)));
+
 const getAllProducts = (req) => {
+  const { category, minPrice, maxPrice, inStock, isNewArrival } = req.query;
+
+  const where = { isDeleted: false };
+
+  // `category` is a String[] field on Product (prisma/schema.prisma), not
+  // a relation with its own id — there is no categoryId/brandId field to
+  // filter on (the old filterableFields: ['categoryId', 'brandId'] below
+  // could never match anything). The storefront's fetchProducts sends one
+  // or more comma-joined category names
+  // (frontend-improved/src/services/productsService.js); `hasSome`
+  // matches a product carrying ANY of the requested categories.
+  if (category) {
+    const categories = String(category)
+      .split(',')
+      .map((c) => c.trim())
+      .filter(Boolean);
+    if (categories.length > 0) {
+      where.category = { hasSome: categories };
+    }
+  }
+
+  const min = minPrice !== undefined ? parseFloat(minPrice) : NaN;
+  const max = maxPrice !== undefined ? parseFloat(maxPrice) : NaN;
+  if (!Number.isNaN(min) || !Number.isNaN(max)) {
+    where.price = {};
+    if (!Number.isNaN(min)) where.price.gte = min;
+    if (!Number.isNaN(max)) where.price.lte = max;
+  }
+
+  if (inStock === 'true') {
+    where.stock = { gt: 0 };
+  } else if (inStock === 'false') {
+    where.stock = { lte: 0 };
+  }
+
+  if (isNewArrival === 'true') {
+    where.isNewArrival = true;
+  } else if (isNewArrival === 'false') {
+    where.isNewArrival = false;
+  }
+
   return paginateWithCache({
     model: prisma.product,
     req,
-    where: { isDeleted: false },
+    where,
     cachePrefix: 'allProducts',
     cache: true,
     cacheExpiry: 300,
-    searchableFields: ['name'], // search by product name
-    filterableFields: ['categoryId', 'brandId'], // optional filters
+    searchableFields: ['name', 'brand'], // search by product name or brand
+    filterableFields: ['brand'], // exact-match filters (brand is a plain string field)
+    // category/minPrice/maxPrice/inStock/isNewArrival are folded into
+    // `where` above rather than `filterableFields`, so they must be
+    // reflected in the cache key explicitly — otherwise two different
+    // filtered queries with the same page/limit/sort/search would
+    // collide on the same cache entry.
+    cacheKeyExtra: { category, minPrice, maxPrice, inStock, isNewArrival },
   });
 };
 
@@ -98,6 +157,8 @@ const deleteProduct = async (id) => {
     where: { id },
     data: { isDeleted: true },
   });
+
+  await invalidateProductCaches();
 };
 
 const queueProductCreation = async (productData, images) => {
@@ -136,6 +197,37 @@ const queueProductUpdate = async (productId, updateData, images) => {
   });
 };
 
+// GET /api/products/jobs/:jobId — lets the admin panel poll the outcome of
+// a queueProductCreation/queueProductUpdate job instead of guessing with a
+// fixed timeout. Image processing + the S3 upload + the Prisma write all
+// happen in imageWorker.js, off the request/response cycle, so this is the
+// only truthful way to know whether a given create/update actually landed.
+const getProductJobStatus = async (jobId) => {
+  if (!jobId) {
+    throw new CustomError('Job ID is required', 400);
+  }
+
+  const job = await imageQueue.getJob(jobId);
+  if (!job) {
+    throw new CustomError('Job not found', 404);
+  }
+
+  const state = await job.getState();
+
+  const status = { jobId: job.id, state };
+
+  if (state === 'completed') {
+    // imageWorker resolves with { id, images } for both create-product and
+    // update-product (see imageWorker.js) — surfaced here so the admin UI
+    // can confirm which product was affected without a second round trip.
+    status.result = job.returnvalue;
+  } else if (state === 'failed') {
+    status.failedReason = job.failedReason || 'Job failed';
+  }
+
+  return status;
+};
+
 module.exports = {
   getAllProducts,
   getProductById,
@@ -144,4 +236,6 @@ module.exports = {
   queueProductCreation,
   deleteProduct,
   queueProductUpdate,
+  getProductJobStatus,
+  PRODUCT_CACHE_PREFIXES,
 };

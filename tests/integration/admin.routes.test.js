@@ -1,6 +1,12 @@
 const express = require('express');
 const request = require('supertest');
 
+// admin.routes.js now runs POST /login through adminLoginRateLimiter, which
+// talks to @config/redis directly (not through admin.service.js), so it
+// needs its own mock here — same pattern as otp.routes.test.js.
+const mockRedis = { incr: jest.fn(), expire: jest.fn() };
+jest.mock('@config/redis', () => mockRedis);
+
 // Explicit factory (not automock) — the real admin.service.js pulls in
 // paginateWithCache -> @config/redis, which would open a real Redis
 // connection attempt just to introspect the module's shape.
@@ -25,6 +31,11 @@ const buildApp = () => {
 };
 
 const app = buildApp();
+
+beforeEach(() => {
+  mockRedis.incr.mockReset().mockResolvedValue(1);
+  mockRedis.expire.mockReset().mockResolvedValue(1);
+});
 
 const jwt = require('jsonwebtoken');
 const adminToken = jwt.sign(
@@ -71,6 +82,28 @@ describe('POST /api/admin/login', () => {
       .send({ email: 'admin@advika.com', password: 'wrong-password' });
 
     expect(res.status).toBe(401);
+  });
+
+  it('429s once the per-email login attempt cap is exceeded, without calling the service', async () => {
+    mockRedis.incr.mockResolvedValue(11); // adminLoginRateLimiter maxAttempts is 10
+
+    const res = await request(app)
+      .post('/api/admin/login')
+      .send({ email: 'admin@advika.com', password: 'wrong-password' });
+
+    expect(res.status).toBe(429);
+    expect(res.body.message).toBe('Too many login attempts. Please try again later.');
+    expect(adminService.login).not.toHaveBeenCalled();
+  });
+
+  it('rate-limits missing-password requests too, since limiter runs before validation', async () => {
+    mockRedis.incr.mockResolvedValue(11);
+
+    const res = await request(app)
+      .post('/api/admin/login')
+      .send({ email: 'admin@advika.com' });
+
+    expect(res.status).toBe(429);
   });
 });
 

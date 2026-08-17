@@ -18,6 +18,12 @@ const createRateLimiter = ({
   maxAttempts = 5,
   windowSeconds = 60,
   message = 'Too many requests. Please try again later.',
+  // Optional (req) => string. Lets call sites key the limiter on something
+  // other than req.body.phone (e.g. admin login keys on email) without
+  // touching the phone-keying default every existing caller relies on.
+  // When omitted, behavior is byte-for-byte identical to before this
+  // option existed.
+  keyBy,
 }) => {
   return async (req, res, next) => {
     // This middleware runs *before* validateSendOtp/validateVerifyOtp, so
@@ -32,8 +38,10 @@ const createRateLimiter = ({
     // representation of the same number down to the same bare 10 digits
     // this app stores/looks users up by, so the limit is actually per
     // phone number rather than per exact string.
-    const normalized = normalizePhone(String(req.body.phone || ''));
-    const key = `${prefix}:${normalized || 'invalid'}`;
+    const rawKey = keyBy
+      ? keyBy(req)
+      : normalizePhone(String(req.body.phone || ''));
+    const key = `${prefix}:${rawKey || 'invalid'}`;
 
     const count = await redis.incr(key);
     if (count === 1) await redis.expire(key, windowSeconds);
@@ -44,6 +52,22 @@ const createRateLimiter = ({
     next();
   };
 };
+
+// Throttles POST /api/admin/login attempts, keyed per-email (lowercased +
+// trimmed, so "Admin@x.com " and "admin@x.com" share a bucket) rather than
+// per-phone — admin login has no phone field. 10 attempts / 5 minutes is
+// generous enough not to lock out a genuine admin fumbling their password
+// a couple of times, while still making credential-stuffing against a
+// known admin email impractical. Missing/malformed email bodies (already
+// invalid — validateAdminLogin will 422 them anyway) share an 'invalid'
+// bucket rather than bypassing the limiter entirely.
+const adminLoginRateLimiter = createRateLimiter({
+  prefix: 'admin-login-limit',
+  maxAttempts: 10,
+  windowSeconds: 300,
+  message: 'Too many login attempts. Please try again later.',
+  keyBy: (req) => String(req.body?.email || '').trim().toLowerCase(),
+});
 
 // Existing default export kept for backwards compatibility — used for
 // throttling OTP *send* requests (prevents SMS spam / cost abuse).
@@ -68,3 +92,4 @@ module.exports = otpRateLimiter;
 module.exports.createRateLimiter = createRateLimiter;
 module.exports.otpRateLimiter = otpRateLimiter;
 module.exports.otpVerifyRateLimiter = otpVerifyRateLimiter;
+module.exports.adminLoginRateLimiter = adminLoginRateLimiter;

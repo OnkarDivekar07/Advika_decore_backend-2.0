@@ -8,10 +8,18 @@ const mockPrisma = {
 };
 jest.mock('@config/prisma', () => mockPrisma);
 
-const mockRedis = { get: jest.fn(), set: jest.fn() };
+const mockRedis = {
+  get: jest.fn(),
+  set: jest.fn(),
+  // invalidateCacheByPrefix walks the keyspace with SCAN then DEL — an
+  // empty first page (cursor '0', no keys) is a safe default so tests
+  // that don't care about cache invalidation don't need to stub this.
+  scan: jest.fn().mockResolvedValue(['0', []]),
+  del: jest.fn(),
+};
 jest.mock('@config/redis', () => mockRedis);
 
-const mockImageQueue = { add: jest.fn() };
+const mockImageQueue = { add: jest.fn(), getJob: jest.fn() };
 jest.mock('../../src/jobs/queues/imageQueue', () => mockImageQueue);
 
 const productService = require('@modules/product/product.service');
@@ -21,7 +29,10 @@ describe('product.service', () => {
     Object.values(mockPrisma.product).forEach((fn) => fn.mockReset());
     mockRedis.get.mockReset();
     mockRedis.set.mockReset();
+    mockRedis.scan.mockReset().mockResolvedValue(['0', []]);
+    mockRedis.del.mockReset();
     mockImageQueue.add.mockReset();
+    mockImageQueue.getJob.mockReset();
   });
 
   describe('getAllProducts', () => {
@@ -46,6 +57,76 @@ describe('product.service', () => {
 
       expect(result).toEqual(cached);
       expect(mockPrisma.product.findMany).not.toHaveBeenCalled();
+    });
+
+    it('filters by category using hasSome, since category is a String[] field', async () => {
+      mockPrisma.product.count.mockResolvedValue(1);
+      mockPrisma.product.findMany.mockResolvedValue([{ id: 'p1' }]);
+      mockRedis.get.mockResolvedValue(null);
+
+      await productService.getAllProducts({ query: { category: 'Truck, Tempo' } });
+
+      const callArgs = mockPrisma.product.findMany.mock.calls[0][0];
+      expect(callArgs.where.AND).toContainEqual({
+        isDeleted: false,
+        category: { hasSome: ['Truck', 'Tempo'] },
+      });
+    });
+
+    it('filters by price range', async () => {
+      mockPrisma.product.count.mockResolvedValue(0);
+      mockPrisma.product.findMany.mockResolvedValue([]);
+      mockRedis.get.mockResolvedValue(null);
+
+      await productService.getAllProducts({ query: { minPrice: '100', maxPrice: '500' } });
+
+      const callArgs = mockPrisma.product.findMany.mock.calls[0][0];
+      expect(callArgs.where.AND).toContainEqual({ isDeleted: false, price: { gte: 100, lte: 500 } });
+    });
+
+    it('filters by inStock', async () => {
+      mockPrisma.product.count.mockResolvedValue(0);
+      mockPrisma.product.findMany.mockResolvedValue([]);
+      mockRedis.get.mockResolvedValue(null);
+
+      await productService.getAllProducts({ query: { inStock: 'true' } });
+
+      const callArgs = mockPrisma.product.findMany.mock.calls[0][0];
+      expect(callArgs.where.AND).toContainEqual({ isDeleted: false, stock: { gt: 0 } });
+    });
+
+    it('filters by isNewArrival', async () => {
+      mockPrisma.product.count.mockResolvedValue(0);
+      mockPrisma.product.findMany.mockResolvedValue([]);
+      mockRedis.get.mockResolvedValue(null);
+
+      await productService.getAllProducts({ query: { isNewArrival: 'true' } });
+
+      const callArgs = mockPrisma.product.findMany.mock.calls[0][0];
+      expect(callArgs.where.AND).toContainEqual({ isDeleted: false, isNewArrival: true });
+    });
+
+    it('caches different category filters under different keys (no cross-filter bleed)', async () => {
+      mockPrisma.product.count.mockResolvedValue(0);
+      mockPrisma.product.findMany.mockResolvedValue([]);
+      mockRedis.get.mockResolvedValue(null);
+
+      await productService.getAllProducts({ query: { category: 'Truck' } });
+      await productService.getAllProducts({ query: { category: 'Car' } });
+
+      const keysWritten = mockRedis.set.mock.calls.map((call) => call[0]);
+      expect(keysWritten[0]).not.toEqual(keysWritten[1]);
+    });
+
+    it('filters by brand via the generic filterableFields mechanism', async () => {
+      mockPrisma.product.count.mockResolvedValue(0);
+      mockPrisma.product.findMany.mockResolvedValue([]);
+      mockRedis.get.mockResolvedValue(null);
+
+      await productService.getAllProducts({ query: { brand: 'Advika' } });
+
+      const callArgs = mockPrisma.product.findMany.mock.calls[0][0];
+      expect(callArgs.where.AND).toContainEqual({ brand: 'Advika' });
     });
   });
 
@@ -151,6 +232,89 @@ describe('product.service', () => {
         where: { id: 'p1' },
         data: { isDeleted: true },
       });
+    });
+
+    it('invalidates the allProducts and newArrivalProducts caches after deleting', async () => {
+      mockPrisma.product.findUnique.mockResolvedValue({ id: 'p1' });
+      mockPrisma.product.update.mockResolvedValue({ id: 'p1', isDeleted: true });
+      mockRedis.scan.mockResolvedValue(['0', ['allProducts:{}', 'newArrivalProducts:{}']]);
+
+      await productService.deleteProduct('p1');
+
+      expect(mockRedis.scan).toHaveBeenCalledWith(
+        '0',
+        'MATCH',
+        'allProducts:*',
+        'COUNT',
+        100
+      );
+      expect(mockRedis.scan).toHaveBeenCalledWith(
+        '0',
+        'MATCH',
+        'newArrivalProducts:*',
+        'COUNT',
+        100
+      );
+      expect(mockRedis.del).toHaveBeenCalledWith('allProducts:{}', 'newArrivalProducts:{}');
+    });
+  });
+
+  describe('getProductJobStatus', () => {
+    it('400s when no jobId is given', async () => {
+      await expect(productService.getProductJobStatus(undefined)).rejects.toMatchObject({
+        statusCode: 400,
+      });
+    });
+
+    it('404s when the job does not exist', async () => {
+      mockImageQueue.getJob.mockResolvedValue(null);
+
+      await expect(productService.getProductJobStatus('missing')).rejects.toMatchObject({
+        statusCode: 404,
+      });
+    });
+
+    it('returns the result payload once the job has completed', async () => {
+      mockImageQueue.getJob.mockResolvedValue({
+        id: 'job1',
+        getState: jest.fn().mockResolvedValue('completed'),
+        returnvalue: { id: 'p1', images: ['https://cdn/img.webp'] },
+      });
+
+      const result = await productService.getProductJobStatus('job1');
+
+      expect(result).toEqual({
+        jobId: 'job1',
+        state: 'completed',
+        result: { id: 'p1', images: ['https://cdn/img.webp'] },
+      });
+    });
+
+    it('surfaces the failure reason when the job has failed', async () => {
+      mockImageQueue.getJob.mockResolvedValue({
+        id: 'job1',
+        getState: jest.fn().mockResolvedValue('failed'),
+        failedReason: 'S3 upload timed out',
+      });
+
+      const result = await productService.getProductJobStatus('job1');
+
+      expect(result).toEqual({
+        jobId: 'job1',
+        state: 'failed',
+        failedReason: 'S3 upload timed out',
+      });
+    });
+
+    it('reports in-progress states without a result yet', async () => {
+      mockImageQueue.getJob.mockResolvedValue({
+        id: 'job1',
+        getState: jest.fn().mockResolvedValue('active'),
+      });
+
+      const result = await productService.getProductJobStatus('job1');
+
+      expect(result).toEqual({ jobId: 'job1', state: 'active' });
     });
   });
 

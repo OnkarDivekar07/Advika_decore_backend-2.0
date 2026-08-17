@@ -27,6 +27,22 @@ exports.getAllUsersWithStats = async (req, res, next) => {
   }
 };
 
+// GET /api/admin/me
+// Lets the admin panel re-confirm, on load/refresh, that the stored token
+// still belongs to a real admin account — see admin.service.getCurrentAdmin
+// for why this differs from the authenticate/authorizeAdminOnly checks.
+exports.getCurrentAdmin = async (req, res, next) => {
+  try {
+    const admin = await adminService.getCurrentAdmin(req.user.userId);
+    res.sendResponse({
+      message: 'Current admin fetched successfully',
+      data: admin,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.loginAdmin = async (req, res, next) => {
   try {
     const { email, password } = req.body;

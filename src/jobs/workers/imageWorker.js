@@ -4,6 +4,15 @@ const awsService = require('../../services/external/AWSUploads');
 const { compressImageBuffer } = require('@utils/imageUtils');
 const { generateUniqueProductFilenames } = require('@utils/bannerHelpers');
 const Prisma = require('@config/prisma');
+const invalidateCacheByPrefix = require('@utils/invalidateCacheByPrefix');
+const { PRODUCT_CACHE_PREFIXES } = require('@modules/product/product.service');
+
+// See product.service.js's invalidateProductCaches for why both prefixes
+// need clearing — this worker is the only place a create/update job
+// actually lands in Prisma, so it's the only place that can know the
+// write has happened and it's safe to drop the stale cached list.
+const invalidateProductCaches = () =>
+  Promise.all(PRODUCT_CACHE_PREFIXES.map((prefix) => invalidateCacheByPrefix(prefix)));
 
 const imageWorker = new Worker(
   'image-processing-queue',
@@ -27,7 +36,7 @@ const imageWorker = new Worker(
         uploadedUrls.push(s3Url);
       }
 
-      await Prisma.product.create({
+      const created = await Prisma.product.create({
         data: {
           ...productInfo,
           price: parseFloat(productInfo.price),
@@ -36,7 +45,16 @@ const imageWorker = new Worker(
         },
       });
 
-      return uploadedUrls;
+      // Drop the cached product list(s) now that a new row actually
+      // exists — without this, GET /api/products (and the storefront's
+      // new-arrivals rail) could keep serving a list without this
+      // product for up to their cacheExpiry.
+      await invalidateProductCaches();
+
+      // Returned as job.returnvalue — see product.service's
+      // getProductJobStatus, which the admin panel polls after a create
+      // to learn the real product id once this job completes.
+      return { id: created.id, images: uploadedUrls };
     }
 
     if (name === 'update-product') {
@@ -62,7 +80,9 @@ const imageWorker = new Worker(
         data: updateData,
       });
 
-      return uploadedUrls;
+      await invalidateProductCaches();
+
+      return { id: productId, images: uploadedUrls };
     }
 
     throw new Error(`Unknown job type: ${name}`);
