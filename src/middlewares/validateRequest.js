@@ -10,7 +10,6 @@ const validateRequest = (req, res, next) => {
       field: err.param,
       message: err.msg,
     }));
-     console.log("Validation errors:", errors);
     throw new CustomError('Validation failed', 422, errorDetails);
   }
   
