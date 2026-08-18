@@ -553,35 +553,160 @@ exports.getUserOrderHistory = async (userId, { page = 1, limit = ORDER_HISTORY_D
 };
 
 
-exports.getAllOrders = async () => {
-  const ordersRaw = await prisma.order.findMany({
-    include: {
-      user: true,
-      orderItems: true,
-    },
-    orderBy: {
-      createdAt: 'desc',
-    },
+// Admin order workbench — GET /api/orders/all. Paginated (never an
+// unbounded dump — same reasoning as getUserOrderHistory above) and
+// filterable by status/paymentStatus/date range/search. Query params are
+// already shape/enum-validated by validateOrderListQuery; the safePage/
+// safeLimit clamps below are a defensive second line, same convention as
+// getUserOrderHistory.
+const ORDER_LIST_DEFAULT_LIMIT = 20;
+const ORDER_LIST_MAX_LIMIT = 100;
+
+// Kept in sync with order.validation.js's ADMIN_ORDER_STATUSES /
+// ADMIN_PAYMENT_STATUSES — duplicated here (rather than imported) only to
+// keep this module's only dependency on order.validation.js at zero;
+// both lists mirror the OrderStatus/PaymentStatus Prisma enums (minus
+// `draft`, which is never a real order — see below) and validation has
+// already rejected anything else before this function is ever called with
+// caller-supplied input. re-checked here anyway so a direct/unit-test call
+// with a bogus value can't leak into the `where` clause.
+const ORDER_LIST_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'returned'];
+const ORDER_LIST_PAYMENT_STATUSES = [
+  'pending', 'attempted', 'processing', 'paid', 'failed', 'cancelled', 'timeout', 'unknown', 'refunded', 'cod_pending',
+];
+
+exports.getAllOrders = async ({
+  page = 1,
+  limit = ORDER_LIST_DEFAULT_LIMIT,
+  status,
+  paymentStatus,
+  dateFrom,
+  dateTo,
+  search,
+} = {}) => {
+  const safePage = Math.max(1, parseInt(page, 10) || 1);
+  const safeLimit = Math.min(
+    ORDER_LIST_MAX_LIMIT,
+    Math.max(1, parseInt(limit, 10) || ORDER_LIST_DEFAULT_LIMIT)
+  );
+  const skip = (safePage - 1) * safeLimit;
+
+  // A `draft` order is an in-progress cart/checkout-in-flight row (see
+  // createDraftOrderService/getUserDraftOrder above), never something a
+  // customer actually placed — it has no meaningful payment/shipment
+  // state yet, and showing it in an admin order workbench would just be
+  // confusing noise. Same treatment getUserOrderHistory already gives the
+  // customer-facing list. There's no filter combination that can bring
+  // drafts back in: `status` below is only ever honored when it's one of
+  // ORDER_LIST_STATUSES, which never includes 'draft'.
+  const where = { status: { not: 'draft' } };
+
+  if (status && ORDER_LIST_STATUSES.includes(status)) {
+    where.status = status;
+  }
+
+  if (paymentStatus && ORDER_LIST_PAYMENT_STATUSES.includes(paymentStatus)) {
+    where.paymentStatus = paymentStatus;
+  }
+
+  if (dateFrom || dateTo) {
+    const createdAt = {};
+    if (dateFrom) {
+      const from = new Date(dateFrom);
+      if (!Number.isNaN(from.getTime())) createdAt.gte = from;
+    }
+    if (dateTo) {
+      // Inclusive of the whole calendar day the caller meant, not just
+      // the literal midnight instant `new Date(dateTo)` would parse to.
+      const to = new Date(dateTo);
+      if (!Number.isNaN(to.getTime())) {
+        to.setHours(23, 59, 59, 999);
+        createdAt.lte = to;
+      }
+    }
+    if (Object.keys(createdAt).length > 0) where.createdAt = createdAt;
+  }
+
+  const trimmedSearch = typeof search === 'string' ? search.trim() : '';
+  if (trimmedSearch) {
+    const searchConditions = [
+      { user: { name: { contains: trimmedSearch, mode: 'insensitive' } } },
+      { user: { email: { contains: trimmedSearch, mode: 'insensitive' } } },
+    ];
+    // Order ids are Mongo ObjectIds (24-char hex) — only attempt an exact
+    // id match when the search term is actually shaped like one, so a
+    // plain customer-name search doesn't also pointlessly filter on `id`.
+    if (/^[a-f0-9]{24}$/i.test(trimmedSearch)) {
+      searchConditions.push({ id: trimmedSearch });
+    }
+    where.AND = [...(where.AND || []), { OR: searchConditions }];
+  }
+
+  const [total, ordersRaw] = await Promise.all([
+    prisma.order.count({ where }),
+    prisma.order.findMany({
+      where,
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: safeLimit,
+    }),
+  ]);
+
+  // Shipment isn't a declared Prisma relation on Order (schema.prisma's
+  // Shipment.orderId is a plain unique string, not a `@relation` back to
+  // Order), so it can't be `include`d in the query above — batch-fetched
+  // separately by orderId and joined in memory instead of firing one
+  // query per order (N+1).
+  const orderIds = ordersRaw.map((order) => order.id);
+  const shipments = orderIds.length
+    ? await prisma.shipment.findMany({
+        where: { orderId: { in: orderIds } },
+        select: { orderId: true, status: true, trackingId: true },
+      })
+    : [];
+  const shipmentByOrderId = new Map(shipments.map((s) => [s.orderId, s]));
+
+  // Deliberately keeps `status` (order status) and `paymentStatus`
+  // completely separate fields here, same as everywhere else this shape
+  // is produced (getUserOrderHistory, fetchOrderById) — the admin UI must
+  // never infer one from the other (e.g. an order sitting at
+  // status:'pending' says nothing about whether it was paid for; that's
+  // what paymentStatus is for). shipmentStatus is a third, independently
+  // sourced field for the same reason.
+  const orders = ordersRaw.map((order) => {
+    const shipment = shipmentByOrderId.get(order.id);
+    return {
+      id: order.id,
+      user: {
+        id: order.userId,
+        name: order.user?.name || 'N/A',
+        email: order.user?.email || null,
+      },
+      createdAt: order.createdAt,
+      total: order.total,
+      subtotal: order.subtotal,
+      deliveryCharge: order.deliveryCharge,
+      discount: order.discount,
+      couponCode: order.couponCode,
+      status: order.status,
+      paymentStatus: order.paymentStatus,
+      shipmentStatus: shipment?.status || null,
+      trackingId: shipment?.trackingId || null,
+    };
   });
 
-  // Format the data to match frontend expectations
-  const orders = ordersRaw.map((order) => ({
-  id: order.id,
-  user: {
-    id: order.userId,
-    name: order.user?.name || "N/A",
-  },
-  createdAt: order.createdAt, // needed as-is
-  total: order.total,
-  subtotal: order.subtotal,
-  deliveryCharge: order.deliveryCharge,
-  discount: order.discount,
-  couponCode: order.couponCode,
-  status: order.status,
-  paymentStatus: order.paymentStatus,
-}));
-
-  return orders;
+  return {
+    orders,
+    meta: {
+      total,
+      page: safePage,
+      limit: safeLimit,
+      totalPages: total === 0 ? 0 : Math.ceil(total / safeLimit),
+    },
+  };
 };
 
 

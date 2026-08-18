@@ -16,6 +16,7 @@ const {
   validateDraftOrder,
   validateOrderHistoryQuery,
   validateOrderIdParam,
+  validateOrderListQuery,
 } = require('./order.validation'); // renamed from admin.validation to avoid confusion
 
 // -----------------------------------------------------------------------------
@@ -44,13 +45,19 @@ router.get(
 
 // -----------------------------------------------------------------------------
 // @route   GET /api/orders/all
-// @desc    Get all orders (Admin only)
+// @desc    Get all orders (Admin only) — paginated, filterable order
+//          workbench list. Supports page/limit, status, paymentStatus,
+//          dateFrom/dateTo, and search (customer name/email or order id)
+//          — see order.validation.js's validateOrderListQuery and
+//          order.service.js's getAllOrders.
 // @access  Admin
 // -----------------------------------------------------------------------------
 router.get(
   '/all',
   authenticate,
   authorizeAdminOnly,
+  validateOrderListQuery,
+  validateRequest,
   getOrders
 );
 

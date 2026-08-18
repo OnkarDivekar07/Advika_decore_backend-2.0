@@ -98,14 +98,28 @@ exports.getOrderHistory = async (req, res, next) => {
 };
 
 
-// GET /api/order
+// GET /api/orders/all (Admin) — paginated, filterable order workbench
+// list. page/limit/status/paymentStatus/dateFrom/dateTo/search are already
+// shape/enum-validated by validateOrderListQuery; getAllOrders still
+// clamps/re-checks them defensively (see order.service.js).
 exports.getOrders = async (req, res, next) => {
   try {
-    const orders = await orderService.getAllOrders();
+    const { page, limit, status, paymentStatus, dateFrom, dateTo, search } = req.query;
+
+    const { orders, meta } = await orderService.getAllOrders({
+      page,
+      limit,
+      status,
+      paymentStatus,
+      dateFrom,
+      dateTo,
+      search,
+    });
 
     res.sendResponse({
       message: 'All orders fetched successfully',
       data: orders,
+      meta,
     });
   } catch (error) {
     next(error);

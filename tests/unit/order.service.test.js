@@ -10,12 +10,14 @@ const mockOrder = {
 const mockOrderItem = { deleteMany: jest.fn(), create: jest.fn() };
 const mockAddress = { findUnique: jest.fn() };
 const mockProduct = { findUnique: jest.fn() };
+const mockShipment = { findMany: jest.fn() };
 const mockPrisma = {
   cart: mockCart,
   order: mockOrder,
   orderItem: mockOrderItem,
   address: mockAddress,
   product: mockProduct,
+  shipment: mockShipment,
   // Interactive-transaction style, matching cart.service / the rest of the
   // codebase.
   $transaction: jest.fn((cb) =>
@@ -66,6 +68,7 @@ beforeEach(() => {
   mockOrderItem.create.mockReset();
   mockAddress.findUnique.mockReset();
   mockProduct.findUnique.mockReset();
+  mockShipment.findMany.mockReset();
   mockPrisma.$transaction.mockClear();
 });
 
@@ -795,5 +798,192 @@ describe('getUserOrderHistory', () => {
 
     expect(result.orders).toEqual([]);
     expect(result.meta.totalPages).toBe(0);
+  });
+});
+
+describe('getAllOrders', () => {
+  const orderRow = (overrides = {}) => ({
+    id: 'order_1',
+    userId: 'user_1',
+    user: { id: 'user_1', name: 'Jane Doe', email: 'jane@example.com' },
+    createdAt: new Date('2026-01-15T10:00:00.000Z'),
+    total: 1500,
+    subtotal: 1400,
+    deliveryCharge: 100,
+    discount: 0,
+    couponCode: null,
+    status: 'confirmed',
+    paymentStatus: 'paid',
+    ...overrides,
+  });
+
+  it('always excludes draft orders from the base query', async () => {
+    mockOrder.count.mockResolvedValue(0);
+    mockOrder.findMany.mockResolvedValue([]);
+    mockShipment.findMany.mockResolvedValue([]);
+
+    await orderService.getAllOrders({});
+
+    expect(mockOrder.count).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: { not: 'draft' } }) })
+    );
+    expect(mockOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: { not: 'draft' } }) })
+    );
+  });
+
+  it('applies default page/limit and returns matching meta', async () => {
+    mockOrder.count.mockResolvedValue(1);
+    mockOrder.findMany.mockResolvedValue([orderRow()]);
+    mockShipment.findMany.mockResolvedValue([]);
+
+    const result = await orderService.getAllOrders({});
+
+    expect(mockOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 0, take: 20 })
+    );
+    expect(result.orders).toHaveLength(1);
+    expect(result.meta).toEqual({ total: 1, page: 1, limit: 20, totalPages: 1 });
+  });
+
+  it('clamps a non-positive page and an out-of-range limit to safe defaults', async () => {
+    mockOrder.count.mockResolvedValue(0);
+    mockOrder.findMany.mockResolvedValue([]);
+    mockShipment.findMany.mockResolvedValue([]);
+
+    const result = await orderService.getAllOrders({ page: -5, limit: 5000 });
+
+    expect(mockOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 0, take: 100 })
+    );
+    expect(result.meta).toEqual({ total: 0, page: 1, limit: 100, totalPages: 0 });
+  });
+
+  it('filters by a valid order status', async () => {
+    mockOrder.count.mockResolvedValue(0);
+    mockOrder.findMany.mockResolvedValue([]);
+    mockShipment.findMany.mockResolvedValue([]);
+
+    await orderService.getAllOrders({ status: 'shipped' });
+
+    expect(mockOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: 'shipped' }) })
+    );
+  });
+
+  it('ignores an out-of-enum status rather than passing it through to prisma', async () => {
+    mockOrder.count.mockResolvedValue(0);
+    mockOrder.findMany.mockResolvedValue([]);
+    mockShipment.findMany.mockResolvedValue([]);
+
+    await orderService.getAllOrders({ status: 'draft' });
+
+    expect(mockOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: { not: 'draft' } }) })
+    );
+  });
+
+  it('filters by paymentStatus independently of order status', async () => {
+    mockOrder.count.mockResolvedValue(0);
+    mockOrder.findMany.mockResolvedValue([]);
+    mockShipment.findMany.mockResolvedValue([]);
+
+    await orderService.getAllOrders({ paymentStatus: 'paid' });
+
+    expect(mockOrder.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ paymentStatus: 'paid' }) })
+    );
+  });
+
+  it('builds an inclusive createdAt range from dateFrom/dateTo', async () => {
+    mockOrder.count.mockResolvedValue(0);
+    mockOrder.findMany.mockResolvedValue([]);
+    mockShipment.findMany.mockResolvedValue([]);
+
+    await orderService.getAllOrders({ dateFrom: '2026-01-01', dateTo: '2026-01-31' });
+
+    const call = mockOrder.findMany.mock.calls[0][0];
+    expect(call.where.createdAt.gte).toEqual(new Date('2026-01-01'));
+    expect(call.where.createdAt.lte.getHours()).toBe(23);
+    expect(call.where.createdAt.lte.getMinutes()).toBe(59);
+  });
+
+  it('searches by customer name/email and, when id-shaped, exact order id', async () => {
+    mockOrder.count.mockResolvedValue(0);
+    mockOrder.findMany.mockResolvedValue([]);
+    mockShipment.findMany.mockResolvedValue([]);
+
+    await orderService.getAllOrders({ search: 'jane' });
+
+    const call = mockOrder.findMany.mock.calls[0][0];
+    const orCondition = call.where.AND[0].OR;
+    expect(orCondition).toEqual(
+      expect.arrayContaining([
+        { user: { name: { contains: 'jane', mode: 'insensitive' } } },
+        { user: { email: { contains: 'jane', mode: 'insensitive' } } },
+      ])
+    );
+    // Not id-shaped, so no id condition should be present.
+    expect(orCondition.some((c) => 'id' in c)).toBe(false);
+  });
+
+  it('adds an exact order-id match when the search term is a 24-char hex id', async () => {
+    mockOrder.count.mockResolvedValue(0);
+    mockOrder.findMany.mockResolvedValue([]);
+    mockShipment.findMany.mockResolvedValue([]);
+
+    const objectId = '507f1f77bcf86cd799439099';
+    await orderService.getAllOrders({ search: objectId });
+
+    const call = mockOrder.findMany.mock.calls[0][0];
+    const orCondition = call.where.AND[0].OR;
+    expect(orCondition).toEqual(expect.arrayContaining([{ id: objectId }]));
+  });
+
+  it('attaches shipmentStatus/trackingId from a batched shipment lookup, keyed by orderId', async () => {
+    mockOrder.count.mockResolvedValue(2);
+    mockOrder.findMany.mockResolvedValue([
+      orderRow({ id: 'order_1' }),
+      orderRow({ id: 'order_2', status: 'pending', paymentStatus: 'cod_pending' }),
+    ]);
+    mockShipment.findMany.mockResolvedValue([
+      { orderId: 'order_1', status: 'IN_TRANSIT', trackingId: 'AWB123' },
+    ]);
+
+    const result = await orderService.getAllOrders({});
+
+    expect(mockShipment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { orderId: { in: ['order_1', 'order_2'] } } })
+    );
+    expect(result.orders.find((o) => o.id === 'order_1')).toMatchObject({
+      shipmentStatus: 'IN_TRANSIT',
+      trackingId: 'AWB123',
+    });
+    // No shipment yet (e.g. not shipped) -> null, not undefined/omitted,
+    // and NEVER inferred from order/payment status.
+    expect(result.orders.find((o) => o.id === 'order_2')).toMatchObject({
+      shipmentStatus: null,
+      trackingId: null,
+    });
+  });
+
+  it('never queries shipments when there are no orders on the page', async () => {
+    mockOrder.count.mockResolvedValue(0);
+    mockOrder.findMany.mockResolvedValue([]);
+
+    await orderService.getAllOrders({});
+
+    expect(mockShipment.findMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps status and paymentStatus as separate fields on every returned order', async () => {
+    mockOrder.count.mockResolvedValue(1);
+    mockOrder.findMany.mockResolvedValue([orderRow({ status: 'pending', paymentStatus: 'failed' })]);
+    mockShipment.findMany.mockResolvedValue([]);
+
+    const result = await orderService.getAllOrders({});
+
+    expect(result.orders[0].status).toBe('pending');
+    expect(result.orders[0].paymentStatus).toBe('failed');
   });
 });

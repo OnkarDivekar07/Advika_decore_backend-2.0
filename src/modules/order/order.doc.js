@@ -88,14 +88,61 @@
  * @swagger
  * /api/orders/all:
  *   get:
- *     summary: Get all orders (Admin only)
+ *     summary: Get all orders (Admin only) — paginated order workbench list
+ *     description: >
+ *       Never includes draft orders (in-progress carts that were never
+ *       placed). All filters are optional and combine with AND; `search`
+ *       matches customer name/email, and additionally matches the order id
+ *       exactly when the term is shaped like one.
  *     tags:
  *       - Orders
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *           default: 20
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [pending, confirmed, shipped, delivered, cancelled, returned]
+ *       - in: query
+ *         name: paymentStatus
+ *         schema:
+ *           type: string
+ *           enum: [pending, attempted, processing, paid, failed, cancelled, timeout, unknown, refunded, cod_pending]
+ *       - in: query
+ *         name: dateFrom
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Inclusive lower bound on createdAt (ISO 8601)
+ *       - in: query
+ *         name: dateTo
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Inclusive upper bound on createdAt (ISO 8601), extended to end-of-day
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *           maxLength: 128
+ *         description: Matches customer name/email, or an exact order id
  *     responses:
  *       200:
- *         description: List of all orders fetched successfully
+ *         description: List of orders fetched successfully
  *         content:
  *           application/json:
  *             schema:
@@ -120,6 +167,9 @@
  *                             type: string
  *                           name:
  *                             type: string
+ *                           email:
+ *                             type: string
+ *                             nullable: true
  *                       createdAt:
  *                         type: string
  *                         format: date-time
@@ -129,10 +179,33 @@
  *                         type: string
  *                       paymentStatus:
  *                         type: string
+ *                       shipmentStatus:
+ *                         type: string
+ *                         nullable: true
+ *                       trackingId:
+ *                         type: string
+ *                         nullable: true
+ *                 meta:
+ *                   type: object
+ *                   properties:
+ *                     total:
+ *                       type: integer
+ *                     page:
+ *                       type: integer
+ *                     limit:
+ *                       type: integer
+ *                     totalPages:
+ *                       type: integer
  *       401:
  *         description: Unauthorized
  *       403:
  *         description: Forbidden
+ *       422:
+ *         description: Invalid query parameters
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
  */
 
 

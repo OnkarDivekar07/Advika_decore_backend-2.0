@@ -23,6 +23,16 @@ router.use('/otp', ROUTES.otp);
 router.use('/user', ROUTES.user);
 router.use('/products', ROUTES.product);
 router.use('/order', ROUTES.order);
+// Also mounted under the plural '/orders' — same router, same handlers,
+// same auth. The admin panel's order workbench (Orders.jsx) is built
+// against the plural form (matching order.doc.js's long-documented
+// '/api/orders/...' paths and REST convention for a collection endpoint),
+// while the customer-facing frontend already ships against the singular
+// '/order' (POST /api/order, GET /api/order/history, GET /api/order/:id —
+// see frontend/src/services/orderService.js). Mounting the same router
+// twice keeps both working without duplicating a single line of routing
+// or business logic, and without touching the frozen customer contract.
+router.use('/orders', ROUTES.order);
 router.use('/payment', ROUTES.payment);
 router.use('/homepage', ROUTES.homepage);
 router.use('/inventory', ROUTES.inventory);

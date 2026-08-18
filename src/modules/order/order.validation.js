@@ -83,9 +83,74 @@ const validateOrderIdParam = [
     .withMessage('Invalid MongoDB ObjectId format'),
 ];
 
+// GET /api/orders/all (Admin) — the order workbench's list query. Every
+// filter here is optional; an admin with no filters selected still gets a
+// paginated (never unbounded) list — see order.service.js's
+// ORDER_LIST_DEFAULT_LIMIT/ORDER_LIST_MAX_LIMIT.
+//
+// 'draft' is deliberately excluded from the allowed `status` values: a
+// draft order is an in-progress cart/checkout-in-flight row, never
+// something a customer actually placed, and order.service.js's
+// getAllOrders already always excludes it from the base (unfiltered)
+// query for the same reason — there is no admin-facing "show me drafts"
+// use case to support.
+const ADMIN_ORDER_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'returned'];
+const ADMIN_PAYMENT_STATUSES = [
+  'pending', 'attempted', 'processing', 'paid', 'failed', 'cancelled', 'timeout', 'unknown', 'refunded', 'cod_pending',
+];
+
+const validateOrderListQuery = [
+  query('page')
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage('page must be a positive integer')
+    .toInt(),
+
+  query('limit')
+    .optional()
+    .isInt({ min: 1, max: 100 })
+    .withMessage('limit must be an integer between 1 and 100')
+    .toInt(),
+
+  query('status')
+    .optional()
+    .isIn(ADMIN_ORDER_STATUSES)
+    .withMessage(`status must be one of: ${ADMIN_ORDER_STATUSES.join(', ')}`),
+
+  query('paymentStatus')
+    .optional()
+    .isIn(ADMIN_PAYMENT_STATUSES)
+    .withMessage(`paymentStatus must be one of: ${ADMIN_PAYMENT_STATUSES.join(', ')}`),
+
+  query('dateFrom')
+    .optional()
+    .isISO8601()
+    .withMessage('dateFrom must be a valid ISO 8601 date')
+    .toDate(),
+
+  query('dateTo')
+    .optional()
+    .isISO8601()
+    .withMessage('dateTo must be a valid ISO 8601 date')
+    .toDate(),
+
+  // Matches against customer name/email, and against the order id itself
+  // when the term is shaped like one — see order.service.js's
+  // getAllOrders. Length-capped purely as basic input hygiene.
+  query('search')
+    .optional()
+    .isString()
+    .trim()
+    .isLength({ max: 128 })
+    .withMessage('search must be at most 128 characters'),
+];
+
 module.exports = {
   validateDraftOrder,
   validateOrderHistoryQuery,
   validateOrderIdParam,
+  validateOrderListQuery,
+  ADMIN_ORDER_STATUSES,
+  ADMIN_PAYMENT_STATUSES,
   MAX_BUY_NOW_QUANTITY,
 };

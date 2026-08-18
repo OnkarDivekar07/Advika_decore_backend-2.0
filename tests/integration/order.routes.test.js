@@ -394,10 +394,11 @@ describe('GET /api/order/all', () => {
     expect(orderService.getAllOrders).not.toHaveBeenCalled();
   });
 
-  it('200s with the full order list for an admin', async () => {
-    orderService.getAllOrders.mockResolvedValue([
-      { id: VALID_ORDER_ID, total: 500, status: 'confirmed' },
-    ]);
+  it('200s with the paginated order list for an admin', async () => {
+    orderService.getAllOrders.mockResolvedValue({
+      orders: [{ id: VALID_ORDER_ID, total: 500, status: 'confirmed', paymentStatus: 'paid' }],
+      meta: { total: 1, page: 1, limit: 20, totalPages: 1 },
+    });
 
     const res = await request(app)
       .get('/api/order/all')
@@ -406,6 +407,82 @@ describe('GET /api/order/all', () => {
     expect(res.status).toBe(200);
     expect(res.body.message).toBe('All orders fetched successfully');
     expect(res.body.data).toHaveLength(1);
+    expect(res.body.meta).toEqual(expect.objectContaining({ total: 1, page: 1, limit: 20, totalPages: 1 }));
+  });
+
+  it('passes page/limit/status/paymentStatus/dateFrom/dateTo/search through to the service', async () => {
+    orderService.getAllOrders.mockResolvedValue({ orders: [], meta: { total: 0, page: 2, limit: 5, totalPages: 0 } });
+
+    const res = await request(app)
+      .get('/api/order/all')
+      .query({
+        page: 2,
+        limit: 5,
+        status: 'shipped',
+        paymentStatus: 'paid',
+        dateFrom: '2026-01-01',
+        dateTo: '2026-01-31',
+        search: 'jane',
+      })
+      .set('x-role', 'admin');
+
+    expect(res.status).toBe(200);
+    // Express 5 makes req.query a read-only getter, so express-validator's
+    // .toInt()/.toDate() sanitizers (still useful for their *validation*
+    // pass) can't mutate it in place — page/limit/dateFrom/dateTo arrive
+    // at the controller as raw query strings, same as GET /api/order/history
+    // (see that describe block above). getAllOrders itself defensively
+    // parses/re-validates whatever it's given (see order.service.js), so
+    // this is still safe end-to-end.
+    expect(orderService.getAllOrders).toHaveBeenCalledWith(
+      expect.objectContaining({
+        page: '2',
+        limit: '5',
+        status: 'shipped',
+        paymentStatus: 'paid',
+        search: 'jane',
+      })
+    );
+  });
+
+  it('422s for an invalid status filter', async () => {
+    const res = await request(app)
+      .get('/api/order/all')
+      .query({ status: 'draft' })
+      .set('x-role', 'admin');
+
+    expect(res.status).toBe(422);
+    expect(orderService.getAllOrders).not.toHaveBeenCalled();
+  });
+
+  it('422s for an invalid paymentStatus filter', async () => {
+    const res = await request(app)
+      .get('/api/order/all')
+      .query({ paymentStatus: 'not-a-real-status' })
+      .set('x-role', 'admin');
+
+    expect(res.status).toBe(422);
+    expect(orderService.getAllOrders).not.toHaveBeenCalled();
+  });
+
+  it('422s for a limit above the max', async () => {
+    const res = await request(app)
+      .get('/api/order/all')
+      .query({ limit: 500 })
+      .set('x-role', 'admin');
+
+    expect(res.status).toBe(422);
+    expect(orderService.getAllOrders).not.toHaveBeenCalled();
+  });
+
+  it('422s for a malformed dateFrom', async () => {
+    const res = await request(app)
+      .get('/api/order/all')
+      .query({ dateFrom: 'not-a-date' })
+      .set('x-role', 'admin');
+
+    expect(res.status).toBe(422);
+    expect(orderService.getAllOrders).not.toHaveBeenCalled();
   });
 });
 
