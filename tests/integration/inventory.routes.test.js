@@ -201,4 +201,58 @@ describe('PATCH /api/inventory/:productId', () => {
       insufficientItems: [{ productId: VALID_PRODUCT_ID, quantity: 100 }],
     });
   });
+
+  it('422s when expectedStock is not a non-negative integer', async () => {
+    const res = await request(app)
+      .patch(`/api/inventory/${VALID_PRODUCT_ID}`)
+      .send({ action: 'set', quantity: 20, expectedStock: -1 });
+
+    expect(res.status).toBe(422);
+    expect(inventoryService.adjustStock).not.toHaveBeenCalled();
+  });
+
+  it('omits expectedStock from the service call when not provided (previous behavior)', async () => {
+    inventoryService.adjustStock.mockResolvedValue({ id: VALID_PRODUCT_ID, stock: 20 });
+
+    await request(app)
+      .patch(`/api/inventory/${VALID_PRODUCT_ID}`)
+      .send({ action: 'set', quantity: 20 });
+
+    expect(inventoryService.adjustStock).toHaveBeenCalledWith(
+      VALID_PRODUCT_ID,
+      'set',
+      20
+    );
+  });
+
+  it('forwards expectedStock to the service as an optimistic-concurrency precondition', async () => {
+    inventoryService.adjustStock.mockResolvedValue({ id: VALID_PRODUCT_ID, stock: 20 });
+
+    const res = await request(app)
+      .patch(`/api/inventory/${VALID_PRODUCT_ID}`)
+      .send({ action: 'set', quantity: 20, expectedStock: 8 });
+
+    expect(res.status).toBe(200);
+    expect(inventoryService.adjustStock).toHaveBeenCalledWith(
+      VALID_PRODUCT_ID,
+      'set',
+      20,
+      8
+    );
+  });
+
+  it('409s with the authoritative current stock when expectedStock is stale', async () => {
+    inventoryService.adjustStock.mockRejectedValue(
+      new CustomError('Stock has changed since it was loaded. Refresh and try again.', 409, {
+        currentStock: 14,
+      })
+    );
+
+    const res = await request(app)
+      .patch(`/api/inventory/${VALID_PRODUCT_ID}`)
+      .send({ action: 'set', quantity: 20, expectedStock: 8 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.errors).toEqual({ currentStock: 14 });
+  });
 });

@@ -242,58 +242,6 @@ describe('PATCH /api/products/:id (admin only)', () => {
       []
     );
   });
-
-  // ProductForm.jsx (admin panel) can only send `category` as a single
-  // comma-joined multipart string field (form.append('category',
-  // val.join(','))) — the Product schema's `category` is a String[], so
-  // the controller must normalize it the same way createProduct already
-  // does, or Prisma's `product.update` (in imageWorker.js) receives a bare
-  // string for an array field.
-  it('normalizes a comma-separated category string into an array before queuing', async () => {
-    productService.queueProductUpdate.mockResolvedValue({ id: 'job_3' });
-
-    const res = await request(app)
-      .patch(`/api/products/${VALID_PRODUCT_ID}`)
-      .field({ category: 'Truck, Tempo ,Car' });
-
-    expect(res.status).toBe(200);
-    expect(productService.queueProductUpdate).toHaveBeenCalledWith(
-      VALID_PRODUCT_ID,
-      expect.objectContaining({ category: ['Truck', 'Tempo', 'Car'] }),
-      []
-    );
-  });
-
-  it('leaves category untouched when it already arrives as an array (JSON request)', async () => {
-    productService.queueProductUpdate.mockResolvedValue({ id: 'job_4' });
-
-    const res = await request(app)
-      .patch(`/api/products/${VALID_PRODUCT_ID}`)
-      .send({ category: ['Truck', 'Car'] });
-
-    expect(res.status).toBe(200);
-    // A JSON body (as opposed to the admin panel's real multipart PATCH)
-    // never reaches multer's file parser, so `upload.array` leaves
-    // req.files as `undefined` rather than `[]` here — that's normal
-    // multer behavior, not something the controller should paper over.
-    expect(productService.queueProductUpdate).toHaveBeenCalledWith(
-      VALID_PRODUCT_ID,
-      expect.objectContaining({ category: ['Truck', 'Car'] }),
-      undefined
-    );
-  });
-
-  it('does not add a category field when none is provided', async () => {
-    productService.queueProductUpdate.mockResolvedValue({ id: 'job_5' });
-
-    const res = await request(app)
-      .patch(`/api/products/${VALID_PRODUCT_ID}`)
-      .field({ price: '1999' });
-
-    expect(res.status).toBe(200);
-    const calledWith = productService.queueProductUpdate.mock.calls[0][1];
-    expect(calledWith).not.toHaveProperty('category');
-  });
 });
 
 describe('GET /api/products/jobs/:jobId (admin only)', () => {

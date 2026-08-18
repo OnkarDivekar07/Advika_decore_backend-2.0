@@ -32,9 +32,15 @@ exports.getLowStockProducts = async (req, res, next) => {
 exports.adjustStock = async (req, res, next) => {
   try {
     const { productId } = req.params;
-    const { action, quantity } = req.body;
+    const { action, quantity, expectedStock } = req.body;
 
-    const product = await inventoryService.adjustStock(productId, action, quantity);
+    // Only forwarded when the caller actually sent it, so the service's
+    // default (blind write, previous behavior) is unchanged for any
+    // existing caller that doesn't know about this optional field.
+    const product =
+      expectedStock === undefined
+        ? await inventoryService.adjustStock(productId, action, quantity)
+        : await inventoryService.adjustStock(productId, action, quantity, expectedStock);
 
     res.sendResponse({
       message: 'Stock updated successfully',

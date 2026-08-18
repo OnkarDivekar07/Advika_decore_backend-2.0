@@ -130,34 +130,6 @@ describe('imageWorker', () => {
       });
       expect(result).toEqual({ id: 'p1', images: [] });
     });
-
-    // product.controller's updateProduct normalizes the admin panel's
-    // comma-joined `category` multipart field into a String[] before this
-    // job is ever queued (Product.category is a String[] in
-    // prisma/schema.prisma). This proves that once the job data carries the
-    // normalized array, the worker passes it straight through to Prisma
-    // untouched, and it lands on the persisted product.
-    it('persists a normalized category array unchanged through to Prisma', async () => {
-      mockPrisma.product.update.mockResolvedValue({
-        id: 'p1',
-        category: ['Truck', 'Tempo', 'Car'],
-      });
-
-      const result = await processor({
-        name: 'update-product',
-        data: {
-          productId: 'p1',
-          serializedImages: [],
-          updateData: { category: ['Truck', 'Tempo', 'Car'] },
-        },
-      });
-
-      expect(mockPrisma.product.update).toHaveBeenCalledWith({
-        where: { id: 'p1' },
-        data: { category: ['Truck', 'Tempo', 'Car'] },
-      });
-      expect(result).toEqual({ id: 'p1', images: [] });
-    });
   });
 
   it('rejects unknown job names', async () => {

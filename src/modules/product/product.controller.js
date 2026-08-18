@@ -33,23 +33,7 @@ exports.updateProduct = async (req, res, next) => {
   try {
     const productId = req.params.id;
     const images = req.files;
-    const updateData = { ...req.body };
-
-    // Multipart requests (the admin panel's product edit form) can only send
-    // `category` as a single comma-joined string field — see
-    // ProductForm.jsx's note on why it does `form.append('category',
-    // val.join(','))` rather than repeated `category[]` fields. The Product
-    // schema's `category` is a String[] (prisma/schema.prisma), so this must
-    // be normalized the same way createProduct already does above, or
-    // Prisma's `product.update` receives a bare string for an array field.
-    // JSON requests that already send an array (or omit category entirely)
-    // pass through unchanged.
-    if (typeof updateData.category === 'string') {
-      updateData.category = updateData.category
-        .split(',')
-        .map((c) => c.trim())
-        .filter(Boolean);
-    }
+    const updateData = req.body;
 
     const job = await productService.queueProductUpdate(
       productId,

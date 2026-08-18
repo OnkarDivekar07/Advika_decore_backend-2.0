@@ -94,8 +94,19 @@ exports.listLowStockProducts = async (threshold = 10) => {
  * deliberately reuses it for the 'decrement' action so a manual correction
  * can't drive stock negative either, even if two admins act on the same
  * product at once.
+ *
+ * @param {string} productId
+ * @param {'set'|'increment'|'decrement'} action
+ * @param {number} quantity
+ * @param {number} [expectedStock] - optional optimistic-concurrency
+ *   precondition for 'set': the stock value the caller last read. If the
+ *   product's stock no longer matches this at write time (another admin
+ *   changed it in between), the write is rejected with a 409 instead of
+ *   silently overwriting their change. 'increment'/'decrement' don't need
+ *   this — they're already atomic relative changes — so the parameter is
+ *   ignored for those actions.
  */
-exports.adjustStock = async (productId, action, quantity) => {
+exports.adjustStock = async (productId, action, quantity, expectedStock) => {
   const product = await prisma.product.findUnique({ where: { id: productId } });
 
   if (!product) {
@@ -103,11 +114,42 @@ exports.adjustStock = async (productId, action, quantity) => {
   }
 
   switch (action) {
-    case 'set':
-      return prisma.product.update({
-        where: { id: productId },
+    case 'set': {
+      if (expectedStock === undefined) {
+        return prisma.product.update({
+          where: { id: productId },
+          data: { stock: quantity },
+        });
+      }
+
+      // Conditional update: only applies if stock still equals what the
+      // admin saw when they decided on this value. Mirrors the same
+      // single-document-atomicity guarantee the decrement path below
+      // relies on.
+      const result = await prisma.product.updateMany({
+        where: { id: productId, stock: expectedStock },
         data: { stock: quantity },
       });
+
+      if (result.count === 0) {
+        const latest = await prisma.product.findUnique({
+          where: { id: productId },
+          select: { stock: true },
+        });
+
+        if (!latest) {
+          throw new CustomError('Product not found', 404);
+        }
+
+        throw new CustomError(
+          'Stock has changed since it was loaded. Refresh and try again.',
+          409,
+          { currentStock: latest.stock }
+        );
+      }
+
+      return prisma.product.findUnique({ where: { id: productId } });
+    }
 
     case 'increment':
       return prisma.product.update({

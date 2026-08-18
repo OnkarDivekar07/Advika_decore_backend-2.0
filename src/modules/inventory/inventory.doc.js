@@ -125,13 +125,26 @@
  *                 type: integer
  *                 minimum: 0
  *                 example: 10
+ *               expectedStock:
+ *                 type: integer
+ *                 minimum: 0
+ *                 description: >
+ *                   Optional optimistic-concurrency precondition for the
+ *                   'set' action — the stock value the caller last read.
+ *                   If stock no longer matches this value, the request is
+ *                   rejected with 409 instead of silently overwriting a
+ *                   change made by someone else in the meantime.
  *     responses:
  *       200:
  *         description: Stock updated successfully
  *       404:
  *         description: Product not found
  *       409:
- *         description: Insufficient stock for a decrement
+ *         description: >
+ *           Either a decrement exceeded available stock, or (when
+ *           expectedStock was provided) stock changed since it was read.
+ *           The response body's `errors` field carries `insufficientItems`
+ *           for the former and `currentStock` for the latter.
  *       403:
  *         description: Admin access required
  */
