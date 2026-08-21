@@ -710,13 +710,41 @@ exports.getAllOrders = async ({
 };
 
 
+// GET /api/orders/:id — owner-or-admin order detail. Used both by the
+// customer-facing order-confirmation/success page (checkout-architecture.md
+// §4.2) and, with the same response shape, by the admin order detail view
+// (PHASE 7 — admin needs enough identity/context to act safely on an order:
+// see admin panel's orderviewpage.jsx). Both consumers get the same fields;
+// nothing here is admin-only, so there is no separate admin variant of this
+// query to keep in sync.
+//
+// user.email/phone were added alongside the pre-existing user.name (never
+// replacing it) purely so an admin has real customer identity to work
+// with — a name alone isn't enough to act on an order (contact the
+// customer, cross-reference against a support ticket, etc.). Existing
+// consumers that only ever read order.user.name are unaffected: this is an
+// additive field, not a shape change.
+//
+// `shipment` is a new top-level field, deliberately populated from our own
+// persisted Shipment row (a plain read) rather than by live-polling Ekart
+// the way GET /api/shipping/:orderId/track does — this endpoint is read
+// many times (every order-detail page view, both customer and admin) and
+// must stay cheap/side-effect-free; live tracking stays an explicit,
+// on-demand action via the dedicated /track route. Selected explicitly
+// (not `include: true`) so `raw` — Ekart's last unprocessed
+// webhook/API payload, kept only for internal debugging (see
+// prisma/schema.prisma's comment on Shipment.raw) — never reaches either
+// frontend, mirroring shipping.controller.js's toPublicShipment.
 exports.fetchOrderById = async (id) => {
   const order = await prisma.order.findUnique({
     where: { id },
     include: {
       user: {
         select: {
+          id: true,
           name: true,
+          email: true,
+          phone: true,
         },
       },
       address: true,
@@ -732,5 +760,30 @@ exports.fetchOrderById = async (id) => {
     },
   });
 
-  return order;
+  if (!order) {
+    return null;
+  }
+
+  const shipment = await prisma.shipment.findUnique({
+    where: { orderId: id },
+    select: {
+      id: true,
+      trackingId: true,
+      awbNumber: true,
+      courierPartner: true,
+      status: true,
+      paymentMode: true,
+      codAmount: true,
+      lastLocation: true,
+      estimatedDeliveryDate: true,
+      lastSyncedAt: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+  return {
+    ...order,
+    shipment: shipment || null,
+  };
 };

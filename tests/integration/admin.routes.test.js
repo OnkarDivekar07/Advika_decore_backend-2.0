@@ -13,7 +13,19 @@ jest.mock('@config/redis', () => mockRedis);
 jest.mock('@modules/admin/admin.service', () => ({
   getAdminStats: jest.fn(),
   getAllUsersWithStats: jest.fn(),
+  getUserDetailById: jest.fn(),
   login: jest.fn(),
+}));
+
+// admin.controller.js also pulls in admin.analytics.service.js (PHASE 11)
+// for the /analytics/* routes below — mocked here for the same reason as
+// admin.service.js above: this suite is testing routing/validation/auth
+// wiring, not the real service's Prisma queries, and admin.analytics.
+// service.js's own behavior is covered by admin.analytics.service.test.js
+// and admin.analytics.routes.test.js.
+jest.mock('@modules/admin/admin.analytics.service', () => ({
+  getAnalyticsOverview: jest.fn(),
+  getRevenueTrend: jest.fn(),
 }));
 
 const adminService = require('@modules/admin/admin.service');
@@ -148,6 +160,15 @@ describe('admin-only routes require auth', () => {
     expect(adminService.getAllUsersWithStats).not.toHaveBeenCalled();
   });
 
+  it('422s GET /users with a search string over 100 chars', async () => {
+    const res = await request(app)
+      .get(`/api/admin/users?search=${'a'.repeat(101)}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(422);
+    expect(adminService.getAllUsersWithStats).not.toHaveBeenCalled();
+  });
+
   it('200s GET /users for a valid admin token and valid query', async () => {
     adminService.getAllUsersWithStats.mockResolvedValue({
       data: [{ id: 'u1' }],
@@ -160,5 +181,79 @@ describe('admin-only routes require auth', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([{ id: 'u1' }]);
+  });
+
+  it('200s GET /users with a search term for a valid admin token', async () => {
+    adminService.getAllUsersWithStats.mockResolvedValue({
+      data: [{ id: 'u1', name: 'Jane' }],
+      meta: { total: 1, page: 1, limit: 10, totalPages: 1 },
+    });
+
+    const res = await request(app)
+      .get('/api/admin/users?search=jane')
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(adminService.getAllUsersWithStats).toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/admin/users/:id', () => {
+  const validId = '507f1f77bcf86cd799439011';
+
+  it('401s with no token', async () => {
+    const res = await request(app).get(`/api/admin/users/${validId}`);
+    expect(res.status).toBe(401);
+    expect(adminService.getUserDetailById).not.toHaveBeenCalled();
+  });
+
+  it('403s for a non-admin token', async () => {
+    const res = await request(app)
+      .get(`/api/admin/users/${validId}`)
+      .set('Authorization', `Bearer ${customerToken}`);
+
+    expect(res.status).toBe(403);
+    expect(adminService.getUserDetailById).not.toHaveBeenCalled();
+  });
+
+  it('422s on a malformed id, even with a valid admin token', async () => {
+    const res = await request(app)
+      .get('/api/admin/users/not-a-valid-id')
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(422);
+    expect(adminService.getUserDetailById).not.toHaveBeenCalled();
+  });
+
+  it('404s when the service reports no such user', async () => {
+    adminService.getUserDetailById.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get(`/api/admin/users/${validId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('200s for a valid admin token and a real user, without leaking a password field', async () => {
+    adminService.getUserDetailById.mockResolvedValue({
+      id: validId,
+      name: 'Jane',
+      email: 'jane@x.com',
+      phone: '9876543210',
+      role: 'customer',
+      joinedOn: '2026-01-01T00:00:00.000Z',
+      addresses: [],
+      recentOrders: [],
+      orderSummary: { totalOrders: 0, totalSpent: 0 },
+    });
+
+    const res = await request(app)
+      .get(`/api/admin/users/${validId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.id).toBe(validId);
+    expect(res.body.data.password).toBeUndefined();
   });
 });

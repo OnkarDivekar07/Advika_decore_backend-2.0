@@ -21,6 +21,7 @@ const {
   validateCreateProduct,
   validateUpdateProduct,
   validateGetProductsByIds,
+  validateGetProductsQuery,
 } = require('./product.validation');
 
 // Public Routes
@@ -30,7 +31,7 @@ const {
  * @desc    Get all products
  * @access  Public
  */
-router.get('/', getAllProducts);
+router.get('/', validateGetProductsQuery, validateRequest, getAllProducts);
 
 /**
  * @route   GET /api/products/batch

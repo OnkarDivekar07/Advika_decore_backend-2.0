@@ -3,6 +3,7 @@ const mockPrisma = {
   order: { count: jest.fn(), aggregate: jest.fn() },
   product: { count: jest.fn() },
 };
+
 jest.mock('@config/prisma', () => mockPrisma);
 
 const mockRedis = { get: jest.fn(), set: jest.fn() };
@@ -181,6 +182,130 @@ describe('admin.service', () => {
 
       const callArgs = mockPrisma.user.findMany.mock.calls[0][0];
       expect(callArgs.where.AND).toContainEqual({ role: 'admin' });
+    });
+
+    it('selects role so it can be shown/filtered on in the panel', async () => {
+      mockPrisma.user.count.mockResolvedValue(0);
+      mockPrisma.user.findMany.mockResolvedValue([]);
+
+      await adminService.getAllUsersWithStats({ query: {} });
+
+      const callArgs = mockPrisma.user.findMany.mock.calls[0][0];
+      expect(callArgs.select.role).toBe(true);
+    });
+
+    it('wires ?search= into a name/email/phone OR-contains filter', async () => {
+      mockPrisma.user.count.mockResolvedValue(0);
+      mockPrisma.user.findMany.mockResolvedValue([]);
+
+      await adminService.getAllUsersWithStats({ query: { search: 'jane' } });
+
+      const callArgs = mockPrisma.user.findMany.mock.calls[0][0];
+      expect(callArgs.where.AND).toContainEqual({
+        OR: [
+          { name: { contains: 'jane', mode: 'insensitive' } },
+          { email: { contains: 'jane', mode: 'insensitive' } },
+          { phone: { contains: 'jane', mode: 'insensitive' } },
+        ],
+      });
+    });
+
+    it('never leaks a password field — formatUser is whitelist-only', async () => {
+      mockPrisma.user.count.mockResolvedValue(1);
+      mockPrisma.user.findMany.mockResolvedValue([
+        {
+          id: 'u1',
+          name: 'Jane',
+          email: 'jane@x.com',
+          phone: '9876543210',
+          role: 'customer',
+          password: 'should-never-appear',
+          createdAt: new Date('2026-01-01'),
+          addresses: [],
+          orders: [],
+        },
+      ]);
+
+      const result = await adminService.getAllUsersWithStats({ query: {} });
+
+      expect(result.data[0].password).toBeUndefined();
+    });
+
+    it('summarizes to the default address when one is marked isDefault', async () => {
+      mockPrisma.user.count.mockResolvedValue(1);
+      mockPrisma.user.findMany.mockResolvedValue([
+        {
+          id: 'u1',
+          name: 'Jane',
+          email: 'jane@x.com',
+          phone: '9876543210',
+          role: 'customer',
+          createdAt: new Date('2026-01-01'),
+          addresses: [
+            { city: 'Mumbai', isDefault: false },
+            { city: 'Pune', isDefault: true },
+          ],
+          orders: [],
+        },
+      ]);
+
+      const result = await adminService.getAllUsersWithStats({ query: {} });
+
+      expect(result.data[0].addressSummary).toEqual({ city: 'Pune' });
+    });
+  });
+
+  describe('getUserDetailById', () => {
+    beforeEach(() => {
+      mockPrisma.user.findUnique.mockReset();
+      mockPrisma.order.aggregate.mockReset();
+    });
+
+    it('returns null when no user exists for the given id (controller maps this to 404)', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue(null);
+      mockPrisma.order.aggregate.mockResolvedValue({ _count: { _all: 0 }, _sum: { total: null } });
+
+      const result = await adminService.getUserDetailById('nonexistent');
+      expect(result).toBeNull();
+    });
+
+    it('combines the profile, addresses, recent orders, and a full-history order summary', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        name: 'Jane',
+        email: 'jane@x.com',
+        phone: '9876543210',
+        role: 'customer',
+        createdAt: new Date('2026-01-01'),
+        addresses: [{ id: 'a1', city: 'Pune', isDefault: true }],
+        orders: [{ id: 'o1', status: 'delivered', paymentStatus: 'paid', total: 500, createdAt: new Date('2026-02-01') }],
+      });
+      mockPrisma.order.aggregate.mockResolvedValue({
+        _count: { _all: 42 },
+        _sum: { total: 99999 },
+      });
+
+      const result = await adminService.getUserDetailById('u1');
+
+      expect(result.id).toBe('u1');
+      expect(result.password).toBeUndefined();
+      expect(result.addresses).toEqual([{ id: 'a1', city: 'Pune', isDefault: true }]);
+      expect(result.recentOrders).toEqual([
+        { id: 'o1', status: 'delivered', paymentStatus: 'paid', total: 500, createdAt: new Date('2026-02-01') },
+      ]);
+      // orderSummary comes from the full aggregate, not just recentOrders.length
+      expect(result.orderSummary).toEqual({ totalOrders: 42, totalSpent: 99999 });
+    });
+
+    it('falls back to 0 totalSpent when the customer has no paid orders', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 'u1', name: 'Jane', email: 'jane@x.com', phone: '9', role: 'customer',
+        createdAt: new Date(), addresses: [], orders: [],
+      });
+      mockPrisma.order.aggregate.mockResolvedValue({ _count: { _all: 0 }, _sum: { total: null } });
+
+      const result = await adminService.getUserDetailById('u1');
+      expect(result.orderSummary).toEqual({ totalOrders: 0, totalSpent: 0 });
     });
   });
 });

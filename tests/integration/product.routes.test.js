@@ -64,6 +64,46 @@ describe('GET /api/products (public)', () => {
     expect(res.body.data).toHaveLength(1);
     expect(res.body.meta.total).toBe(1);
   });
+
+  // PHASE 12 — GET /api/products now validates its query params instead
+  // of passing anything straight through to paginateWithCache.
+  it('accepts the full set of params the customer frontend and admin panel actually send', async () => {
+    productService.getAllProducts.mockResolvedValue({
+      data: [],
+      meta: { total: 0, page: 2, limit: 20, totalPages: 1 },
+    });
+
+    const res = await request(app).get('/api/products').query({
+      page: 2,
+      limit: 20,
+      sort: 'stock',
+      order: 'asc',
+      search: 'flap',
+      category: 'Truck,Tempo',
+      brand: 'Advika',
+      minPrice: 10,
+      maxPrice: 500,
+      inStock: 'true',
+      isNewArrival: 'false',
+    });
+
+    expect(res.status).toBe(200);
+    expect(productService.getAllProducts).toHaveBeenCalled();
+  });
+
+  it('422s on an out-of-range limit instead of silently clamping at the controller level', async () => {
+    const res = await request(app).get('/api/products').query({ limit: 500 });
+
+    expect(res.status).toBe(422);
+    expect(productService.getAllProducts).not.toHaveBeenCalled();
+  });
+
+  it('422s on a sort field outside the allow-list', async () => {
+    const res = await request(app).get('/api/products').query({ sort: 'password' });
+
+    expect(res.status).toBe(422);
+    expect(productService.getAllProducts).not.toHaveBeenCalled();
+  });
 });
 
 describe('GET /api/products/:id (public)', () => {

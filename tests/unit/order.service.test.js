@@ -10,7 +10,7 @@ const mockOrder = {
 const mockOrderItem = { deleteMany: jest.fn(), create: jest.fn() };
 const mockAddress = { findUnique: jest.fn() };
 const mockProduct = { findUnique: jest.fn() };
-const mockShipment = { findMany: jest.fn() };
+const mockShipment = { findMany: jest.fn(), findUnique: jest.fn() };
 const mockPrisma = {
   cart: mockCart,
   order: mockOrder,
@@ -69,6 +69,7 @@ beforeEach(() => {
   mockAddress.findUnique.mockReset();
   mockProduct.findUnique.mockReset();
   mockShipment.findMany.mockReset();
+  mockShipment.findUnique.mockReset();
   mockPrisma.$transaction.mockClear();
 });
 
@@ -985,5 +986,123 @@ describe('getAllOrders', () => {
 
     expect(result.orders[0].status).toBe('pending');
     expect(result.orders[0].paymentStatus).toBe('failed');
+  });
+});
+
+
+describe('fetchOrderById', () => {
+  const baseOrder = (overrides = {}) => ({
+    id: 'order_1',
+    userId: 'user_1',
+    total: 1999,
+    subtotal: 1899,
+    deliveryCharge: 100,
+    discount: 0,
+    couponCode: null,
+    status: 'confirmed',
+    paymentStatus: 'paid',
+    payment_order_id: 'order_rzp_1',
+    payment_id: 'pay_rzp_1',
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-01-01T01:00:00.000Z'),
+    user: { id: 'user_1', name: 'Jane Doe', email: 'jane@example.com', phone: '9999999999' },
+    address: { id: 'addr_1', name: 'Jane Doe', phone: '9999999999', city: 'Pune' },
+    orderItems: [{ id: 'item_1', quantity: 2, price: 999, product: { name: 'Running Shoe' } }],
+    ...overrides,
+  });
+
+  it('returns null when the order does not exist, without querying shipment', async () => {
+    mockOrder.findUnique.mockResolvedValue(null);
+
+    const result = await orderService.fetchOrderById('missing_id');
+
+    expect(result).toBeNull();
+    expect(mockShipment.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('requests full customer identity (id, name, email, phone), not just name', async () => {
+    mockOrder.findUnique.mockResolvedValue(baseOrder());
+    mockShipment.findUnique.mockResolvedValue(null);
+
+    await orderService.fetchOrderById('order_1');
+
+    expect(mockOrder.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'order_1' },
+        include: expect.objectContaining({
+          user: expect.objectContaining({
+            select: { id: true, name: true, email: true, phone: true },
+          }),
+        }),
+      })
+    );
+  });
+
+  it('attaches shipment: null when no shipment has been created yet', async () => {
+    mockOrder.findUnique.mockResolvedValue(baseOrder());
+    mockShipment.findUnique.mockResolvedValue(null);
+
+    const result = await orderService.fetchOrderById('order_1');
+
+    expect(result.shipment).toBeNull();
+  });
+
+  it('attaches the persisted shipment (minus the internal raw payload) when one exists', async () => {
+    mockOrder.findUnique.mockResolvedValue(baseOrder({ status: 'shipped' }));
+    mockShipment.findUnique.mockResolvedValue({
+      id: 'ship_1',
+      trackingId: 'AWB123',
+      awbNumber: 'AWB123',
+      courierPartner: 'Ekart',
+      status: 'IN_TRANSIT',
+      paymentMode: 'PREPAID',
+      codAmount: 0,
+      lastLocation: 'Pune Hub',
+      estimatedDeliveryDate: new Date('2026-01-05T00:00:00.000Z'),
+      lastSyncedAt: new Date('2026-01-02T00:00:00.000Z'),
+      createdAt: new Date('2026-01-01T02:00:00.000Z'),
+      updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+    });
+
+    const result = await orderService.fetchOrderById('order_1');
+
+    expect(result.shipment).toMatchObject({ status: 'IN_TRANSIT', trackingId: 'AWB123' });
+    expect(result.shipment.raw).toBeUndefined();
+    // Never fetched with a bare `include: true` — raw must be excluded at
+    // the query level, not stripped after the fact, so it's never even
+    // pulled out of Mongo for this endpoint.
+    expect(mockShipment.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { orderId: 'order_1' },
+        select: expect.not.objectContaining({ raw: true }),
+      })
+    );
+  });
+
+  it('never derives shipment fields from order.status — always reads the persisted Shipment row as-is', async () => {
+    // Order says 'shipped', but the Shipment row (source of truth) says
+    // CANCELLED — e.g. cancelled after creation. The response must reflect
+    // the real shipment status, not something inferred from order.status.
+    mockOrder.findUnique.mockResolvedValue(baseOrder({ status: 'shipped' }));
+    mockShipment.findUnique.mockResolvedValue({ id: 'ship_1', status: 'CANCELLED' });
+
+    const result = await orderService.fetchOrderById('order_1');
+
+    expect(result.status).toBe('shipped');
+    expect(result.shipment.status).toBe('CANCELLED');
+  });
+
+  it('preserves existing order/address/orderItems fields unchanged (additive only)', async () => {
+    const order = baseOrder();
+    mockOrder.findUnique.mockResolvedValue(order);
+    mockShipment.findUnique.mockResolvedValue(null);
+
+    const result = await orderService.fetchOrderById('order_1');
+
+    expect(result.address).toEqual(order.address);
+    expect(result.orderItems).toEqual(order.orderItems);
+    expect(result.total).toBe(order.total);
+    expect(result.payment_id).toBe(order.payment_id);
+    expect(result.payment_order_id).toBe(order.payment_order_id);
   });
 });

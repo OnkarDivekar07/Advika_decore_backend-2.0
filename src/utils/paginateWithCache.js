@@ -1,5 +1,14 @@
 const redis = require('@config/redis');
 
+// A caller-supplied `limit` was previously passed straight to Prisma's
+// `take` with no upper bound — `?limit=100000` on any paginated admin/
+// public list endpoint would run a single unbounded query. This is the
+// one place every one of those endpoints funnels through, so capping it
+// here protects all of them (products, admin users, banners, new
+// arrivals, …) without needing the same clamp re-added in each caller.
+const MAX_LIMIT = 100;
+const DEFAULT_LIMIT = 10;
+
 const paginateWithCache = async ({
   model,
   req,
@@ -21,8 +30,15 @@ const paginateWithCache = async ({
   cacheKeyExtra = {},
   formatter, // optional (item) => transformedItem
 }) => {
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 10;
+  const requestedPage = parseInt(req.query.page, 10);
+  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+
+  const requestedLimit = parseInt(req.query.limit, 10);
+  const limit =
+    Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, MAX_LIMIT)
+      : DEFAULT_LIMIT;
+
   const sort = req.query.sort || Object.keys(orderBy)[0];
   const order = req.query.order || orderBy[sort] || 'desc';
   const searchQuery = req.query.search || '';

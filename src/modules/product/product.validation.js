@@ -43,6 +43,66 @@ exports.validateGetProductsByIds = [
 
 exports.MAX_BATCH_IDS = MAX_BATCH_IDS;
 
+// PHASE 12 — GET /api/products previously accepted page/limit/sort/order
+// (and every filter below) with no validation at all; paginateWithCache
+// clamps limit as a last line of defense, but a bad/garbage `sort` or
+// `page` value would still reach Prisma. This mirrors admin.validation's
+// validateAdminQueries shape while allow-listing exactly the params
+// product.service.js's getAllProducts actually reads (see its
+// destructuring of category/minPrice/maxPrice/inStock/isNewArrival, and
+// paginateWithCache for page/limit/sort/order/search) — the same set the
+// customer frontend's fetchProducts/searchProducts already send (see
+// frontend/src/services/productsService.js), so this is purely additive:
+// it rejects malformed input, it doesn't narrow anything already working.
+exports.validateGetProductsQuery = [
+  query('page').optional().isInt({ min: 1 }).withMessage('page must be an integer greater than 0'),
+
+  query('limit')
+    .optional()
+    .isInt({ min: 1, max: 100 })
+    .withMessage('limit must be between 1 and 100'),
+
+  query('sort')
+    .optional()
+    .isIn(['createdAt', 'name', 'price', 'stock'])
+    .withMessage('sort must be one of createdAt, name, price, stock'),
+
+  query('order').optional().isIn(['asc', 'desc']).withMessage('order must be asc or desc'),
+
+  query('search')
+    .optional()
+    .isString()
+    .trim()
+    .isLength({ max: 100 })
+    .withMessage('search must be 100 characters or fewer'),
+
+  // Comma-joined category names (see getAllProducts's `hasSome` filter) —
+  // not run through isIn since the storefront's category list isn't a
+  // fixed backend-owned enum; length-capped as basic input hygiene.
+  query('category')
+    .optional()
+    .isString()
+    .trim()
+    .isLength({ max: 200 })
+    .withMessage('category must be 200 characters or fewer'),
+
+  query('brand')
+    .optional()
+    .isString()
+    .trim()
+    .isLength({ max: 100 })
+    .withMessage('brand must be 100 characters or fewer'),
+
+  query('minPrice').optional().isFloat({ min: 0 }).withMessage('minPrice must be a number ≥ 0'),
+  query('maxPrice').optional().isFloat({ min: 0 }).withMessage('maxPrice must be a number ≥ 0'),
+
+  query('inStock').optional().isIn(['true', 'false']).withMessage('inStock must be true or false'),
+  query('isNewArrival')
+    .optional()
+    .isIn(['true', 'false'])
+    .withMessage('isNewArrival must be true or false'),
+];
+
 exports.validateCreateProduct = [
   body('name')
     .exists({ checkFalsy: true })

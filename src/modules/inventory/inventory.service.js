@@ -76,7 +76,18 @@ exports.getStockForProduct = async (productId) => {
 /**
  * Lists products at or below a stock threshold, lowest first, for the admin
  * "what needs restocking" view.
+ *
+ * PHASE 12 — "no page downloads an unnecessarily large dataset": this had
+ * no upper bound at all, so a large catalog with a generous threshold
+ * could return every product in one unpaginated response. Capped at a
+ * generous ceiling for what's meant to be a "needs attention right now"
+ * panel, not a browsable list — an admin monitoring more than this many
+ * genuinely low-stock items at once needs the full paginated catalog
+ * browser (GET /api/products, sorted by stock — see Inventory.jsx's "All
+ * inventory" table), not this endpoint.
  */
+const LOW_STOCK_LIST_CAP = 200;
+
 exports.listLowStockProducts = async (threshold = 10) => {
   return prisma.product.findMany({
     where: {
@@ -85,6 +96,7 @@ exports.listLowStockProducts = async (threshold = 10) => {
     },
     select: { id: true, name: true, brand: true, stock: true },
     orderBy: { stock: 'asc' },
+    take: LOW_STOCK_LIST_CAP,
   });
 };
 

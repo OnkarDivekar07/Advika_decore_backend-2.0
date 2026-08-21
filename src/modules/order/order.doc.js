@@ -350,29 +350,114 @@
  *                   properties:
  *                     id:
  *                       type: string
+ *                     total:
+ *                       type: number
+ *                     subtotal:
+ *                       type: number
+ *                     deliveryCharge:
+ *                       type: number
+ *                     discount:
+ *                       type: number
+ *                     couponCode:
+ *                       type: string
+ *                       nullable: true
+ *                     status:
+ *                       type: string
+ *                       enum: [draft, pending, confirmed, shipped, delivered, cancelled, returned]
+ *                     paymentStatus:
+ *                       type: string
+ *                       enum: [pending, attempted, processing, paid, failed, cancelled, timeout, unknown, refunded, cod_pending]
+ *                     payment_order_id:
+ *                       type: string
+ *                       nullable: true
+ *                       description: Razorpay order id (order_xxx). Never a secret — safe to display.
+ *                     payment_id:
+ *                       type: string
+ *                       nullable: true
+ *                       description: Razorpay payment id (pay_xxx) that captured this order, set by the webhook. Never a secret — safe to display.
+ *                     createdAt:
+ *                       type: string
+ *                       format: date-time
+ *                     updatedAt:
+ *                       type: string
+ *                       format: date-time
+ *                       nullable: true
  *                     user:
  *                       type: object
+ *                       description: Customer identity. Available to the order's owner and to admins only.
  *                       properties:
+ *                         id:
+ *                           type: string
  *                         name:
+ *                           type: string
+ *                         email:
+ *                           type: string
+ *                         phone:
  *                           type: string
  *                     address:
  *                       type: object
+ *                       description: Delivery address snapshot at the time the order was placed.
  *                     orderItems:
  *                       type: array
  *                       items:
  *                         type: object
  *                         properties:
+ *                           quantity:
+ *                             type: integer
+ *                           price:
+ *                             type: number
+ *                             description: Price locked in at order time — may differ from the product's current live price.
  *                           product:
  *                             type: object
  *                             properties:
  *                               name:
  *                                 type: string
+ *                     shipment:
+ *                       type: object
+ *                       nullable: true
+ *                       description: >
+ *                         Last-known persisted shipment state (a plain DB read — not a live
+ *                         Ekart poll; see POST /api/shipping/{orderId}/create,
+ *                         GET /api/shipping/{orderId}/track, POST /api/shipping/{orderId}/cancel
+ *                         for the actions that create/refresh/cancel it). null when no
+ *                         shipment has been created for this order yet.
+ *                       properties:
+ *                         id:
+ *                           type: string
+ *                         trackingId:
+ *                           type: string
+ *                           nullable: true
+ *                         awbNumber:
+ *                           type: string
+ *                           nullable: true
+ *                         courierPartner:
+ *                           type: string
+ *                         status:
+ *                           type: string
+ *                           enum: [CREATED, PICKED_UP, IN_TRANSIT, OUT_FOR_DELIVERY, DELIVERED, DELIVERY_FAILED, RTO_INITIATED, RTO_DELIVERED, CANCELLED]
+ *                         paymentMode:
+ *                           type: string
+ *                         codAmount:
+ *                           type: number
+ *                         lastLocation:
+ *                           type: string
+ *                           nullable: true
+ *                         estimatedDeliveryDate:
+ *                           type: string
+ *                           format: date-time
+ *                           nullable: true
+ *                         lastSyncedAt:
+ *                           type: string
+ *                           format: date-time
+ *                           nullable: true
  *       404:
- *         description: No draft order found
+ *         description: No order found for this ID
+ *       422:
+ *         description: Malformed order ID (not a valid ObjectId)
  *       401:
  *         description: Unauthorized
  *       403:
- *         description: Forbidden
+ *         description: Forbidden — not this order's owner and not an admin
  */
 
 

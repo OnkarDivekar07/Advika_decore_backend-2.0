@@ -85,4 +85,41 @@ describe('paginateWithCache', () => {
     expect(result).toEqual(cached);
     expect(model.findMany).not.toHaveBeenCalled();
   });
+
+  // PHASE 12 — "prevent unbounded fetches". This is the one choke point
+  // every paginated list (products, admin users, banners, new arrivals)
+  // runs through, so capping it here protects all of them without each
+  // caller having to remember to clamp its own `limit`.
+  it('caps an oversized requested limit rather than passing it straight to the query', async () => {
+    const model = buildModel([{ id: 'p1' }], 500);
+
+    const result = await paginateWithCache({
+      model,
+      req: { query: { limit: '999999' } },
+      cachePrefix: 'allProducts',
+    });
+
+    expect(model.findMany.mock.calls[0][0].take).toBe(100);
+    expect(result.meta.limit).toBe(100);
+  });
+
+  it('falls back to the default limit for a non-positive or non-numeric limit', async () => {
+    const model = buildModel([], 0);
+
+    await paginateWithCache({ model, req: { query: { limit: '-5' } }, cachePrefix: 'x1' });
+    expect(model.findMany.mock.calls[0][0].take).toBe(10);
+
+    await paginateWithCache({ model, req: { query: { limit: 'not-a-number' } }, cachePrefix: 'x2' });
+    expect(model.findMany.mock.calls[1][0].take).toBe(10);
+  });
+
+  it('falls back to page 1 for a non-positive or non-numeric page', async () => {
+    const model = buildModel([], 0);
+
+    await paginateWithCache({ model, req: { query: { page: '0' } }, cachePrefix: 'x3' });
+    expect(model.findMany.mock.calls[0][0].skip).toBe(0);
+
+    await paginateWithCache({ model, req: { query: { page: '-3' } }, cachePrefix: 'x4' });
+    expect(model.findMany.mock.calls[1][0].skip).toBe(0);
+  });
 });
