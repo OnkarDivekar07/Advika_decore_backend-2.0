@@ -17,7 +17,8 @@ const invalidateProductCaches = () =>
   Promise.all(PRODUCT_CACHE_PREFIXES.map((prefix) => invalidateCacheByPrefix(prefix)));
 
 const getAllProducts = (req) => {
-  const { category, minPrice, maxPrice, inStock, isNewArrival } = req.query;
+  const { category, minPrice, maxPrice, inStock, isNewArrival, isBestSeller, voltage } =
+    req.query;
 
   const where = { isDeleted: false };
 
@@ -58,6 +59,21 @@ const getAllProducts = (req) => {
     where.isNewArrival = false;
   }
 
+  if (isBestSeller === 'true') {
+    where.isBestSeller = true;
+  } else if (isBestSeller === 'false') {
+    where.isBestSeller = false;
+  }
+
+  // Substring match, not equality — a dual-voltage product's voltage
+  // field is the literal string "12V/24V", so `contains: "12V"` and
+  // `contains: "24V"` both correctly match it. See the README's
+  // "Domain rule: 12V vs 24V" — this is the same rule the frontend's
+  // category-page voltage chips rely on.
+  if (voltage) {
+    where.voltage = { contains: voltage };
+  }
+
   return paginateWithCache({
     model: prisma.product,
     req,
@@ -72,7 +88,7 @@ const getAllProducts = (req) => {
     // reflected in the cache key explicitly — otherwise two different
     // filtered queries with the same page/limit/sort/search would
     // collide on the same cache entry.
-    cacheKeyExtra: { category, minPrice, maxPrice, inStock, isNewArrival },
+    cacheKeyExtra: { category, minPrice, maxPrice, inStock, isNewArrival, isBestSeller, voltage },
   });
 };
 

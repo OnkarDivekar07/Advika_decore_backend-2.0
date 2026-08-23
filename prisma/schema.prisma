@@ -69,6 +69,20 @@ model User {
   phone     String   @unique
   createdAt DateTime @default(now())
 
+  // --- Advika Auto storefront fields ---------------------------------
+  // Captured at signup (Login.dc.html's Step 3 profile — a 2x2 vehicle
+  // picker: Truck/Pickup/Tempo/Tractor) and shown on the Account page's
+  // Personal Details card (design_handoff_advika_auto/README.md, screen
+  // 8). This is also what the README's Roadmap #1 "vehicle-aware
+  // fitment" is meant to read from — the product page personalising
+  // "✓ Fits your Tata Ace" — so a real value here (not just
+  // localStorage, which never survives a device switch) is required for
+  // that feature to ever be buildable. Optional: existing users predate
+  // this field, and "Skip for now" at signup is a legitimate path that
+  // leaves it unset.
+  vehicle       String?
+  dateOfBirth   DateTime?
+
   // Relations
   orders         Order[]
   carts          Cart[]
@@ -91,6 +105,53 @@ model Product {
   createdAt   DateTime   @default(now())
   isNewArrival Boolean @default(false)
   isDeleted   Boolean?  @default(false)
+
+  // --- Advika Auto storefront fields ---------------------------------
+  // All optional/additive so every pre-existing product row (and every
+  // caller that doesn't send them) keeps working unchanged — see
+  // design_handoff_advika_auto/README.md for what each backs on the
+  // frontend.
+  //
+  // Struck-through "was" price shown next to `price` on product cards
+  // and the product detail page. Absent (no discount) when null/equal
+  // to `price`.
+  mrp         Float?
+  // Truck/tempo/pickup/tractor electrical system this SKU is wired for
+  // — "12V", "24V", or "12V/24V" for a dual-voltage part. Required (at
+  // the application/validation layer, not the schema) for lighting and
+  // electrical SKUs per the README's "Domain rule: 12V vs 24V" — a
+  // wrong-voltage sale is a real returned-order cost, not a cosmetic
+  // detail. Left absent for non-electrical accessories (seat covers,
+  // mud flaps, steering covers), which render no voltage badge at all.
+  voltage     String?
+  // Key/value spec rows for the product page's Specifications tab
+  // (e.g. { "Wattage": "100W", "Lumens": "9,000 lm", "IP Rating":
+  // "IP68" }) — order is insertion order, since Mongo/Prisma Json
+  // preserves object key order for what the driver actually stores.
+  specs       Json?
+  // Purchasable variants (e.g. wattage, beam pattern), each with its
+  // own price/mrp: [{ label: "Wattage", defaultIndex: 1, options: [
+  // { label: "72W", price: 9999, mrp: 12999 }, ... ] }, ...]. Absent
+  // means a single-price product — the common case.
+  variants    Json?
+  // Vehicle-compatibility list grouped by voltage, real model names
+  // (never bare vehicle classes — see the README: "Fits trucks" is
+  // useless to a buyer, "Fits Tata Signa" closes the sale):
+  // { "24V": ["Tata Signa 4825", ...], "12V": [...] }. Drives the
+  // product page's "Fits these vehicles" section; a single-voltage
+  // product should only ever populate its own key.
+  compatibility Json?
+  // Pre-aggregated rating (1-5) and review count shown on cards and
+  // the product page's title block / reviews tab. Not derived from the
+  // Review relation at read time (no aggregation query on every
+  // product fetch) — kept in sync by whatever writes a new Review,
+  // same tradeoff most storefronts make for list-page performance.
+  rating        Float?
+  reviewCount   Int?     @default(0)
+  // Feeds the "BEST SELLER" flag on the product page and landing's
+  // best-sellers rail — set by admins/merchandising, not computed.
+  isBestSeller  Boolean? @default(false)
+
   // Relations
   carts       Cart[]     // One product can be in many cart items
   reviews     Review[]   // One product can have many reviews

@@ -160,6 +160,8 @@ exports.getUserProfile = async (userId) => {
       email: true,
       phone: true,
       createdAt: true,
+      vehicle: true,
+      dateOfBirth: true,
     },
   });
 
@@ -176,15 +178,26 @@ exports.getUserProfile = async (userId) => {
 // OTP-verified change flow below; neither belongs on this generic
 // profile-edit endpoint).
 exports.updateUserProfile = async (userId, data) => {
+  const updateData = { name: data.name };
+  // Optional — only touched when the client actually sends them, so a
+  // plain "change my name" PATCH can't accidentally clear a
+  // previously-set vehicle/DOB.
+  if (data.vehicle !== undefined) updateData.vehicle = data.vehicle || null;
+  if (data.dateOfBirth !== undefined) {
+    updateData.dateOfBirth = data.dateOfBirth ? new Date(data.dateOfBirth) : null;
+  }
+
   const user = await prisma.user.update({
     where: { id: userId },
-    data: { name: data.name },
+    data: updateData,
     select: {
       id: true,
       name: true,
       email: true,
       phone: true,
       createdAt: true,
+      vehicle: true,
+      dateOfBirth: true,
     },
   });
 

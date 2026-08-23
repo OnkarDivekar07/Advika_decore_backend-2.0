@@ -301,6 +301,8 @@ describe('user.service', () => {
           email: true,
           phone: true,
           createdAt: true,
+          vehicle: true,
+          dateOfBirth: true,
         },
       });
       expect(result).toEqual(profile);

@@ -88,15 +88,38 @@ const updateAddressValidator = [
 
 const addressIdParamValidator = [param('id').notEmpty().withMessage('Address id is required')];
 
-// For PATCH /api/user/profile — name is the only editable field here (see
-// user.service.js#updateUserProfile for why email/phone aren't).
+// For PATCH /api/user/profile — name, vehicle and dateOfBirth are the
+// editable fields here (see user.service.js#updateUserProfile for why
+// email/phone aren't). `name` is optional at the validation layer — the
+// Login screen's signup "Create account" step (Login.dc.html Step 3)
+// PATCHes just `{ vehicle }` when the driver fills in a vehicle but
+// leaves the name field blank, and updateUserProfile already treats an
+// absent `name` as "don't touch it" (Prisma ignores an undefined field
+// in `data`). The Account page's own "Edit Profile" form still enforces
+// a non-empty name client-side before it ever PATCHes.
+// Truck/Pickup/Tempo/Tractor — mirrors the Login screen's signup vehicle
+// picker (Login.dc.html Step 3) and design_handoff_advika_auto/README.md's
+// vehicle-class vocabulary.
+const VALID_VEHICLES = ['Truck', 'Pickup', 'Tempo', 'Tractor'];
+
 const updateProfileValidator = [
   body('name')
+    .optional()
     .trim()
     .notEmpty()
     .withMessage('Name is required')
     .isLength({ min: 2, max: 80 })
     .withMessage('Name must be between 2 and 80 characters'),
+
+  body('vehicle')
+    .optional({ nullable: true })
+    .isIn(VALID_VEHICLES)
+    .withMessage(`vehicle must be one of ${VALID_VEHICLES.join(', ')}`),
+
+  body('dateOfBirth')
+    .optional({ nullable: true })
+    .isISO8601()
+    .withMessage('dateOfBirth must be a valid date (YYYY-MM-DD)'),
 ];
 
 module.exports = {

@@ -1,11 +1,51 @@
 const productService = require('./product.service');
 const { matchedData } = require('express-validator');
 
+// Fields the client may send as a JSON-encoded string (multipart/form-data
+// has no native object/array type) — parsed back into real JSON before
+// being written to the Json? columns on Product. Left as-is (and validated
+// as already-parsed) when the client is JSON-mode instead of multipart.
+const JSON_PRODUCT_FIELDS = ['specs', 'variants', 'compatibility'];
+
+const parseJsonFields = (body) => {
+  const parsed = {};
+  for (const field of JSON_PRODUCT_FIELDS) {
+    if (body[field] === undefined) continue;
+    if (typeof body[field] === 'string') {
+      try {
+        parsed[field] = JSON.parse(body[field]);
+      } catch {
+        // Left to validateCreateProduct/validateUpdateProduct's isJSON
+        // check to reject — surfacing here as undefined would silently
+        // drop a malformed payload instead of erroring it.
+        parsed[field] = body[field];
+      }
+    } else {
+      parsed[field] = body[field];
+    }
+  }
+  return parsed;
+};
+
 exports.createProduct = async (req, res, next) => {
   try {
     const images = req.files;
-    let { name, category, brand, price, stock, description, isNewArrival } =
-      req.body;
+    let {
+      name,
+      category,
+      brand,
+      price,
+      stock,
+      description,
+      isNewArrival,
+      // --- Advika Auto storefront fields (see prisma/schema.prisma and
+      // design_handoff_advika_auto/README.md "Domain rule: 12V vs 24V") ---
+      mrp,
+      voltage,
+      isBestSeller,
+      rating,
+      reviewCount,
+    } = req.body;
 
     if (!Array.isArray(category)) {
       if (typeof category === 'string') {
@@ -16,7 +56,21 @@ exports.createProduct = async (req, res, next) => {
     }
 
     const job = await productService.queueProductCreation(
-      { name, category, brand, price, stock, description, isNewArrival },
+      {
+        name,
+        category,
+        brand,
+        price,
+        stock,
+        description,
+        isNewArrival,
+        mrp,
+        voltage,
+        isBestSeller,
+        rating,
+        reviewCount,
+        ...parseJsonFields(req.body),
+      },
       images
     );
 
@@ -33,7 +87,7 @@ exports.updateProduct = async (req, res, next) => {
   try {
     const productId = req.params.id;
     const images = req.files;
-    const updateData = req.body;
+    const updateData = { ...req.body, ...parseJsonFields(req.body) };
 
     const job = await productService.queueProductUpdate(
       productId,

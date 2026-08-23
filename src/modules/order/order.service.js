@@ -457,7 +457,17 @@ exports.getUserDraftOrder = async (userId) => {
               id: true,
               name: true,
               price: true,
-              images: true
+              images: true,
+              // category/voltage/specs — the Review step's per-item meta
+              // line needs voltage ("Qty N · 100W · 12V/24V") per the
+              // README's "Domain rule: 12V vs 24V" table ("Checkout item
+              // meta — the meta line reads '100W · 12V/24V' so voltage
+              // survives all the way to the order review"), and category
+              // backs the icon-tile fallback the same way it does on the
+              // cart line item.
+              category: true,
+              voltage: true,
+              specs: true,
             }
           }
         }
@@ -533,6 +543,8 @@ exports.getUserOrderHistory = async (userId, { page = 1, limit = ORDER_HISTORY_D
                 id: true,
                 name: true,
                 images: true,
+                category: true,
+                voltage: true,
               },
             },
           },
@@ -753,6 +765,8 @@ exports.fetchOrderById = async (id) => {
           product: {
             select: {
               name: true,
+              category: true,
+              voltage: true,
             },
           },
         },

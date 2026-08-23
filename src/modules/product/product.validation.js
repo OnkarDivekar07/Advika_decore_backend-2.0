@@ -1,5 +1,66 @@
 const { body, query } = require('express-validator');
 
+// Mirrors frontend/src/config/advikaAuto.js's CATEGORIES — the two
+// category labels the design's voltage system actually applies to.
+// Kept as plain English labels (not ids) because Product.category is a
+// free-text String[] on the schema, same convention product.service.js's
+// getAllProducts already uses for its `hasSome` filter.
+const VOLTAGE_REQUIRED_CATEGORIES = ['Lights', 'Electrical & Wiring'];
+
+const VALID_VOLTAGES = ['12V', '24V', '12V/24V'];
+
+// Shared by validateCreateProduct/validateUpdateProduct — see
+// design_handoff_advika_auto/README.md's "Domain rule: 12V vs 24V":
+// "voltage... must be required, not optional, for those categories."
+// `requireOnCreate` is false for the update path since a PATCH may be
+// touching an unrelated field on a product whose category isn't in the
+// body at all — updateProduct only enforces the enum, not presence.
+const voltageValidator = ({ requireOnCreate }) =>
+  body('voltage').custom((value, { req }) => {
+    let category = req.body.category;
+    if (!Array.isArray(category)) {
+      category = typeof category === 'string' ? category.split(',').map((c) => c.trim()) : [];
+    }
+    const needsVoltage = category.some((c) => VOLTAGE_REQUIRED_CATEGORIES.includes(c));
+
+    if (value === undefined || value === null || value === '') {
+      if (requireOnCreate && needsVoltage) {
+        throw new Error(
+          `voltage is required for ${VOLTAGE_REQUIRED_CATEGORIES.join('/')} products`
+        );
+      }
+      return true;
+    }
+
+    if (!VALID_VOLTAGES.includes(value)) {
+      throw new Error(`voltage must be one of ${VALID_VOLTAGES.join(', ')}`);
+    }
+    return true;
+  });
+
+// specs/variants/compatibility are Json? columns — accept either an
+// already-parsed object/array (JSON request bodies) or a JSON-encoded
+// string (multipart/form-data, parsed back to an object by
+// product.controller's parseJsonFields before this runs — but validation
+// runs on the raw req.body, ahead of that parse, so both shapes must be
+// accepted here).
+const jsonFieldValidator = (field) =>
+  body(field)
+    .optional()
+    .custom((value) => {
+      if (value === null) return true;
+      if (typeof value === 'object') return true;
+      if (typeof value === 'string') {
+        try {
+          JSON.parse(value);
+          return true;
+        } catch {
+          throw new Error(`${field} must be valid JSON`);
+        }
+      }
+      throw new Error(`${field} must be an object, array, or JSON string`);
+    });
+
 // Upper bound on how many ids a single batch lookup can request. This is a
 // public, unauthenticated endpoint (see GET /api/products/batch), so it
 // needs its own sanity ceiling independent of anything cart-side — a
@@ -62,10 +123,17 @@ exports.validateGetProductsQuery = [
     .isInt({ min: 1, max: 100 })
     .withMessage('limit must be between 1 and 100'),
 
+  // 'isBestSeller' — the Category/Vehicle listing's default "Best
+  // selling" sort (design_handoff_advika_auto/README.md's Category
+  // screen spec: "Best selling (sort, on by default)"). Sorting a
+  // Boolean field desc puts true rows first, which is exactly the
+  // "best sellers first" ordering the frontend wants — this was missing
+  // from the allow-list entirely, so every listing request that sent it
+  // was previously rejected with a 422 before reaching Prisma at all.
   query('sort')
     .optional()
-    .isIn(['createdAt', 'name', 'price', 'stock'])
-    .withMessage('sort must be one of createdAt, name, price, stock'),
+    .isIn(['createdAt', 'name', 'price', 'stock', 'rating', 'isBestSeller'])
+    .withMessage('sort must be one of createdAt, name, price, stock, rating, isBestSeller'),
 
   query('order').optional().isIn(['asc', 'desc']).withMessage('order must be asc or desc'),
 
@@ -101,6 +169,23 @@ exports.validateGetProductsQuery = [
     .optional()
     .isIn(['true', 'false'])
     .withMessage('isNewArrival must be true or false'),
+
+  // Landing page's "Best sellers" rail (design_handoff_advika_auto/README.md
+  // screen 1, section 6) — merchandising-flagged, not derived from sales
+  // data, same as the design's own prototype.
+  query('isBestSeller')
+    .optional()
+    .isIn(['true', 'false'])
+    .withMessage('isBestSeller must be true or false'),
+
+  // Category/Vehicle listing "Best selling" filter chip and voltage
+  // substring filters — see design README's Category screen spec.
+  query('voltage')
+    .optional()
+    .isString()
+    .trim()
+    .isLength({ max: 20 })
+    .withMessage('voltage must be 20 characters or fewer'),
 ];
 
 exports.validateCreateProduct = [
@@ -159,6 +244,37 @@ exports.validateCreateProduct = [
     .isBoolean()
     .withMessage('isNewArrival must be a boolean')
     .toBoolean(),
+
+  // --- Advika Auto storefront fields ---------------------------------
+  body('mrp')
+    .optional()
+    .isFloat({ gt: 0 })
+    .withMessage('mrp must be a number greater than 0')
+    .toFloat(),
+
+  voltageValidator({ requireOnCreate: true }),
+
+  body('isBestSeller')
+    .optional()
+    .isBoolean()
+    .withMessage('isBestSeller must be a boolean')
+    .toBoolean(),
+
+  body('rating')
+    .optional()
+    .isFloat({ min: 0, max: 5 })
+    .withMessage('rating must be a number between 0 and 5')
+    .toFloat(),
+
+  body('reviewCount')
+    .optional()
+    .isInt({ min: 0 })
+    .withMessage('reviewCount must be a non-negative integer')
+    .toInt(),
+
+  jsonFieldValidator('specs'),
+  jsonFieldValidator('variants'),
+  jsonFieldValidator('compatibility'),
 ];
 
 exports.validateUpdateProduct = [
@@ -218,4 +334,40 @@ exports.validateUpdateProduct = [
     .isBoolean()
     .withMessage('isNewArrival must be a boolean')
     .toBoolean(),
+
+  // --- Advika Auto storefront fields ---------------------------------
+  body('mrp')
+    .optional()
+    .isFloat({ gt: 0 })
+    .withMessage('mrp must be a number greater than 0')
+    .toFloat(),
+
+  // requireOnCreate:false — a PATCH may not even touch category/voltage;
+  // the enum check below still applies whenever voltage IS sent.
+  voltageValidator({ requireOnCreate: false }),
+
+  body('isBestSeller')
+    .optional()
+    .isBoolean()
+    .withMessage('isBestSeller must be a boolean')
+    .toBoolean(),
+
+  body('rating')
+    .optional()
+    .isFloat({ min: 0, max: 5 })
+    .withMessage('rating must be a number between 0 and 5')
+    .toFloat(),
+
+  body('reviewCount')
+    .optional()
+    .isInt({ min: 0 })
+    .withMessage('reviewCount must be a non-negative integer')
+    .toInt(),
+
+  jsonFieldValidator('specs'),
+  jsonFieldValidator('variants'),
+  jsonFieldValidator('compatibility'),
 ];
+
+exports.VOLTAGE_REQUIRED_CATEGORIES = VOLTAGE_REQUIRED_CATEGORIES;
+exports.VALID_VOLTAGES = VALID_VOLTAGES;
