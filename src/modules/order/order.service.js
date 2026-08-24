@@ -5,7 +5,24 @@ const {
   calculateDeliveryCharge,
   calculateDiscount,
 } = require('@constants/pricing');
+const {
+  makePendingPaymentOrderId,
+  isPendingPaymentOrderId,
+} = require('@constants/payment');
 const shippingService = require('@modules/shipping/shipping.service');
+
+// See src/constants/payment.js's own comment for the full story: every
+// order is given a per-order-unique payment_order_id placeholder at
+// creation time (never left null/absent) to route around a real Prisma+
+// MongoDB bug. This strips that placeholder back to `null` before an order
+// is ever handed to a controller/client — the placeholder is a purely
+// internal representation; the public API contract (payment_order_id is
+// `null` until a real payment attempt exists) is unchanged.
+function sanitizeOrder(order) {
+  if (!order) return order;
+  if (!isPendingPaymentOrderId(order.payment_order_id)) return order;
+  return { ...order, payment_order_id: null };
+}
 
 // createDraftOrderService's own $transaction gives atomicity within a
 // single read-then-write, but MongoDB has no partial-unique-index support
@@ -453,6 +470,18 @@ exports.createDraftOrderService = async (
           },
         });
 
+        // Never leave payment_order_id null/absent — see
+        // src/constants/payment.js's comment for why. A second write
+        // (rather than passing it in the create() call above) because the
+        // placeholder is derived from the order's own freshly-generated id.
+        // Not reassigning `draftOrder` from this call's return value —
+        // nothing below reads payment_order_id off it directly; the
+        // `fullOrder` re-fetch further down picks up this write for free.
+        await tx.order.update({
+          where: { id: draftOrder.id },
+          data: { payment_order_id: makePendingPaymentOrderId(draftOrder.id) },
+        });
+
         await Promise.all(
           cartItems.map((item) =>
             tx.orderItem.create({
@@ -483,7 +512,7 @@ exports.createDraftOrderService = async (
         },
       });
 
-      return fullOrder;
+      return sanitizeOrder(fullOrder);
     });
   } finally {
     await redis.del(lockKey).catch(() => {});
@@ -614,7 +643,12 @@ exports.getUserOrderHistory = async (
   ]);
 
   return {
-    orders,
+    // Defensive — status: { not: 'draft' } above means a pending-payment
+    // placeholder should never actually appear here in practice (only a
+    // draft order can hold one), but sanitizing costs nothing and keeps
+    // every order-list response consistent with fetchOrderById/
+    // createDraftOrderService.
+    orders: orders.map(sanitizeOrder),
     meta: {
       total,
       page: safePage,
@@ -871,7 +905,7 @@ exports.fetchOrderById = async (id) => {
   });
 
   return {
-    ...order,
+    ...sanitizeOrder(order),
     shipment: shipment || null,
   };
 };

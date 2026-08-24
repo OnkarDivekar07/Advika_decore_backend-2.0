@@ -2,7 +2,10 @@ const paymentService = require('./payment.service');
 const orderService = require('@modules/order/order.service');
 const CustomError = require('@utils/customError');
 const prisma = require('@config/prisma');
-const { RECONCILABLE_PAYMENT_STATUSES } = require('@constants/payment');
+const {
+  RECONCILABLE_PAYMENT_STATUSES,
+  isPendingPaymentOrderId,
+} = require('@constants/payment');
 
 exports.createOrderid = async (req, res, next) => {
   try {
@@ -70,7 +73,7 @@ exports.createOrderid = async (req, res, next) => {
     // orphans a payment already captured against the old id: Razorpay
     // still has the money, but nothing in our DB points at it anymore.
     if (
-      draftOrder.payment_order_id &&
+      !isPendingPaymentOrderId(draftOrder.payment_order_id) &&
       RECONCILABLE_PAYMENT_STATUSES.includes(draftOrder.paymentStatus)
     ) {
       const existing = await paymentService.fetchRazorpayOrder(

@@ -8,6 +8,7 @@ const notificationQueue = require('../../jobs/queues/notificationQueue');
 const {
   PAYMENT_ATTEMPT_TIMEOUT_MS,
   RECONCILABLE_PAYMENT_STATUSES,
+  PENDING_PAYMENT_ORDER_ID_PREFIX,
 } = require('@constants/payment');
 
 /**
@@ -585,6 +586,13 @@ exports.reconcileStalePaymentAttempts = async () => {
       status: 'draft',
       paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES },
       payment_order_id: { not: null },
+      // Excludes orders that have never actually started a real payment
+      // attempt — every order now always has a payment_order_id (see
+      // src/constants/payment.js), so `{ not: null }` above alone would
+      // otherwise sweep up every ordinary abandoned/untouched cart too and
+      // waste a real Razorpay lookup on a placeholder id that was never
+      // sent to Razorpay at all.
+      NOT: { payment_order_id: { startsWith: PENDING_PAYMENT_ORDER_ID_PREFIX } },
       updatedAt: { lt: staleBefore },
     },
   });
