@@ -51,7 +51,9 @@ const validateDraftOrder = [
   body('buyNow.quantity')
     .if(body('buyNow').exists())
     .isInt({ min: 1, max: MAX_BUY_NOW_QUANTITY })
-    .withMessage(`buyNow.quantity must be an integer between 1 and ${MAX_BUY_NOW_QUANTITY}`)
+    .withMessage(
+      `buyNow.quantity must be an integer between 1 and ${MAX_BUY_NOW_QUANTITY}`
+    )
     .toInt(),
 ];
 
@@ -94,9 +96,25 @@ const validateOrderIdParam = [
 // getAllOrders already always excludes it from the base (unfiltered)
 // query for the same reason — there is no admin-facing "show me drafts"
 // use case to support.
-const ADMIN_ORDER_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'returned'];
+const ADMIN_ORDER_STATUSES = [
+  'pending',
+  'confirmed',
+  'shipped',
+  'delivered',
+  'cancelled',
+  'returned',
+];
 const ADMIN_PAYMENT_STATUSES = [
-  'pending', 'attempted', 'processing', 'paid', 'failed', 'cancelled', 'timeout', 'unknown', 'refunded', 'cod_pending',
+  'pending',
+  'attempted',
+  'processing',
+  'paid',
+  'failed',
+  'cancelled',
+  'timeout',
+  'unknown',
+  'refunded',
+  'cod_pending',
 ];
 
 const validateOrderListQuery = [
@@ -120,7 +138,9 @@ const validateOrderListQuery = [
   query('paymentStatus')
     .optional()
     .isIn(ADMIN_PAYMENT_STATUSES)
-    .withMessage(`paymentStatus must be one of: ${ADMIN_PAYMENT_STATUSES.join(', ')}`),
+    .withMessage(
+      `paymentStatus must be one of: ${ADMIN_PAYMENT_STATUSES.join(', ')}`
+    ),
 
   query('dateFrom')
     .optional()

@@ -1,6 +1,6 @@
 require('module-alias/register');
 require('@config/env'); // validate all required env vars before anything else boots
-require('@config/sentry'); // must load before the app so instrumentation can attach
+const { Sentry } = require('@config/sentry'); // must load before the app so instrumentation can attach
 const app = require('./src/app');
 const logger = require('@config/logger');
 const prisma = require('@config/prisma');
@@ -53,10 +53,17 @@ async function shutdown(signal) {
     await redis.quit();
     logger.info('Redis connection closed');
 
+    // Sentry's transport batches/sends asynchronously — without this, a
+    // captureException() from the uncaughtException/unhandledRejection
+    // handlers below can lose the event to process.exit() before it ever
+    // leaves the process. No-op when Sentry was never initialized.
+    await Sentry.close(2000);
+
     clearTimeout(forceExitTimer);
     process.exit(0);
   } catch (err) {
     logger.error(`Error during graceful shutdown: ${err.message}`);
+    await Sentry.close(2000).catch(() => {});
     clearTimeout(forceExitTimer);
     process.exit(1);
   }
@@ -64,3 +71,27 @@ async function shutdown(signal) {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+// A bug that throws outside any request handler (a stray callback, a timer,
+// a rejected promise nobody attached a .catch to) previously had nowhere to
+// go — Express's own error handling only covers what happens inside a
+// request. Left unhandled, Node either silently swallows it (older
+// versions) or kills the process instantly with no report anywhere (current
+// versions' default `unhandledRejection` behavior, and always for
+// `uncaughtException`). Both cases here: log it, send it to Sentry (a
+// no-op if SENTRY_DSN isn't set — see @config/sentry), then go through the
+// same graceful-shutdown path SIGTERM/SIGINT use so an orchestrator
+// restarts a clean process rather than one left in a possibly-corrupted
+// state. `shutdown()` already guards against running twice.
+process.on('unhandledRejection', (reason) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  logger.error(`Unhandled promise rejection: ${error.stack || error.message}`);
+  Sentry.captureException(error);
+  shutdown('unhandledRejection');
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error(`Uncaught exception: ${err.stack || err.message}`);
+  Sentry.captureException(err);
+  shutdown('uncaughtException');
+});

@@ -27,6 +27,20 @@ const parseJsonFields = (body) => {
   return parsed;
 };
 
+// `category` is a String[] column (prisma/schema.prisma), but
+// multipart/form-data has no array type, so the client (admin panel's
+// ProductForm.jsx) sends it as one comma-joined string. Both create and
+// update must turn that back into an array before it reaches Prisma —
+// passing the raw string through fails at the Prisma layer with
+// "Expected ProductUpdatecategoryInput or String[], provided String."
+const normalizeCategory = (category) => {
+  if (Array.isArray(category)) return category;
+  if (typeof category === 'string') {
+    return category.split(',').map((c) => c.trim());
+  }
+  return [];
+};
+
 exports.createProduct = async (req, res, next) => {
   try {
     const images = req.files;
@@ -47,13 +61,7 @@ exports.createProduct = async (req, res, next) => {
       reviewCount,
     } = req.body;
 
-    if (!Array.isArray(category)) {
-      if (typeof category === 'string') {
-        category = category.split(',').map((c) => c.trim());
-      } else {
-        category = [];
-      }
-    }
+    category = normalizeCategory(category);
 
     const job = await productService.queueProductCreation(
       {
@@ -88,6 +96,9 @@ exports.updateProduct = async (req, res, next) => {
     const productId = req.params.id;
     const images = req.files;
     const updateData = { ...req.body, ...parseJsonFields(req.body) };
+    if (updateData.category !== undefined) {
+      updateData.category = normalizeCategory(updateData.category);
+    }
 
     const job = await productService.queueProductUpdate(
       productId,

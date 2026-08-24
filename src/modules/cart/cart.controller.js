@@ -71,7 +71,10 @@ const saveCart = async (req, res, next) => {
     const { cartItems } = req.body;
 
     if (!cartItems || !Array.isArray(cartItems)) {
-      throw new CustomError('Invalid cart data. Must be an array of items.', 400);
+      throw new CustomError(
+        'Invalid cart data. Must be an array of items.',
+        400
+      );
     }
 
     const cart = await cartService.saveUserCart(userId, cartItems);

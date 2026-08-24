@@ -19,8 +19,6 @@ const mockOrder = {
   findUnique: jest.fn(),
   findMany: jest.fn(),
 };
-const mockTx = { order: mockOrder };
-
 // Backs the WebhookEvent ledger's `create` call — handleRazorpayWebhookEvent
 // uses this to detect an exact-duplicate event delivery (see its own tests
 // below). Defaults to resolving (a fresh event id) so every other existing
@@ -28,6 +26,15 @@ const mockTx = { order: mockOrder };
 const mockWebhookEvent = {
   create: jest.fn().mockResolvedValue({}),
 };
+
+// handleRazorpayWebhookEvent now writes the ledger row and applies the
+// order mutation inside one `prisma.$transaction` (both via `tx`, not the
+// top-level `prisma` client — see payment.service.js's own comment on why),
+// so `mockTx` needs a `webhookEvent` alongside `order`, sharing the same
+// mock instances as the top-level client so assertions against
+// `mockOrder`/`mockWebhookEvent` pass regardless of which one a given call
+// path happens to go through.
+const mockTx = { order: mockOrder, webhookEvent: mockWebhookEvent };
 
 jest.mock('@config/prisma', () => ({
   order: mockOrder,
@@ -76,7 +83,11 @@ describe('payment.service', () => {
     const orderId = 'order_ABC123';
     const paymentId = 'pay_XYZ789';
 
-    const sign = (orderId, paymentId, secret = process.env.RAZORPAY_KEY_SECRET) =>
+    const sign = (
+      orderId,
+      paymentId,
+      secret = process.env.RAZORPAY_KEY_SECRET
+    ) =>
       crypto
         .createHmac('sha256', secret)
         .update(orderId + '|' + paymentId)
@@ -111,7 +122,9 @@ describe('payment.service', () => {
 
   describe('verifyWebhookSignature', () => {
     it('returns true for a signature generated over the exact raw body', () => {
-      const rawBody = Buffer.from(JSON.stringify({ event: 'payment.captured' }));
+      const rawBody = Buffer.from(
+        JSON.stringify({ event: 'payment.captured' })
+      );
       const signature = crypto
         .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
         .update(rawBody)
@@ -123,7 +136,9 @@ describe('payment.service', () => {
     });
 
     it('returns false if the body was modified after signing', () => {
-      const original = Buffer.from(JSON.stringify({ event: 'payment.captured' }));
+      const original = Buffer.from(
+        JSON.stringify({ event: 'payment.captured' })
+      );
       const signature = crypto
         .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
         .update(original)
@@ -161,7 +176,10 @@ describe('payment.service', () => {
       // pass through unchanged, plus currency/status/raw from the
       // (here-undefined) fields the mocked SDK response didn't set.
       expect(result).toEqual({
-        razorpayOrder: expect.objectContaining({ id: 'rzp_order_1', amount: 50000 }),
+        razorpayOrder: expect.objectContaining({
+          id: 'rzp_order_1',
+          amount: 50000,
+        }),
         persisted: true,
       });
       expect(mockOrder.updateMany).toHaveBeenCalledWith({
@@ -195,7 +213,9 @@ describe('payment.service', () => {
     });
 
     it('wraps a Razorpay failure in a 500 CustomError', async () => {
-      razorpayInstance.orders.create.mockRejectedValue(new Error('network down'));
+      razorpayInstance.orders.create.mockRejectedValue(
+        new Error('network down')
+      );
 
       await expect(
         paymentService.createRazorpayOrder({
@@ -304,12 +324,21 @@ describe('payment.service', () => {
 
       await paymentService.handleRazorpayWebhookEvent({
         event: 'payment.captured',
-        payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+        payload: {
+          payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } },
+        },
       });
 
       expect(mockOrder.updateMany).toHaveBeenCalledWith({
-        where: { payment_order_id: 'rzp_order_1', paymentStatus: { not: 'paid' } },
-        data: { paymentStatus: 'paid', status: 'confirmed', payment_id: 'pay_1' },
+        where: {
+          payment_order_id: 'rzp_order_1',
+          paymentStatus: { not: 'paid' },
+        },
+        data: {
+          paymentStatus: 'paid',
+          status: 'confirmed',
+          payment_id: 'pay_1',
+        },
       });
       expect(cartQueue.add).toHaveBeenCalledWith('clear-cart', {
         userId: 'user_1',
@@ -321,7 +350,9 @@ describe('payment.service', () => {
 
       await paymentService.handleRazorpayWebhookEvent({
         event: 'payment.captured',
-        payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+        payload: {
+          payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } },
+        },
       });
 
       expect(mockOrder.findUnique).not.toHaveBeenCalled();
@@ -333,11 +364,16 @@ describe('payment.service', () => {
 
       await paymentService.handleRazorpayWebhookEvent({
         event: 'payment.failed',
-        payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+        payload: {
+          payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } },
+        },
       });
 
       expect(mockOrder.updateMany).toHaveBeenCalledWith({
-        where: { payment_order_id: 'rzp_order_1', paymentStatus: { not: 'paid' } },
+        where: {
+          payment_order_id: 'rzp_order_1',
+          paymentStatus: { not: 'paid' },
+        },
         data: { paymentStatus: 'failed', payment_id: 'pay_1' },
       });
     });
@@ -347,7 +383,9 @@ describe('payment.service', () => {
 
       await paymentService.handleRazorpayWebhookEvent({
         event: 'payment.authorized',
-        payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+        payload: {
+          payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } },
+        },
       });
 
       expect(mockOrder.updateMany).toHaveBeenCalledWith({
@@ -362,7 +400,9 @@ describe('payment.service', () => {
     it('acks unhandled event types without touching the order', async () => {
       await paymentService.handleRazorpayWebhookEvent({
         event: 'order.paid',
-        payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+        payload: {
+          payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } },
+        },
       });
 
       expect(mockOrder.updateMany).not.toHaveBeenCalled();
@@ -380,7 +420,9 @@ describe('payment.service', () => {
       await paymentService.handleRazorpayWebhookEvent(
         {
           event: 'payment.captured',
-          payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+          payload: {
+            payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } },
+          },
         },
         'evt_123'
       );
@@ -406,7 +448,9 @@ describe('payment.service', () => {
       await paymentService.handleRazorpayWebhookEvent(
         {
           event: 'payment.captured',
-          payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+          payload: {
+            payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } },
+          },
         },
         'evt_already_seen'
       );
@@ -428,7 +472,9 @@ describe('payment.service', () => {
       await paymentService.handleRazorpayWebhookEvent(
         {
           event: 'payment.captured',
-          payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+          payload: {
+            payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } },
+          },
         },
         'evt_456'
       );
@@ -447,7 +493,9 @@ describe('payment.service', () => {
 
       await paymentService.handleRazorpayWebhookEvent({
         event: 'payment.captured',
-        payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } } },
+        payload: {
+          payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1' } },
+        },
       });
 
       expect(mockWebhookEvent.create).not.toHaveBeenCalled();
@@ -564,7 +612,10 @@ describe('payment.service', () => {
       });
       const CustomError = require('@utils/customError');
       inventoryService.decrementStockForOrder.mockRejectedValue(
-        new CustomError('Insufficient stock for one or more items in this order', 409)
+        new CustomError(
+          'Insufficient stock for one or more items in this order',
+          409
+        )
       );
 
       await expect(
@@ -594,7 +645,8 @@ describe('payment.service', () => {
           type: 'price_changed',
           orderedPrice: 999,
           currentPrice: 1099,
-          message: 'The price of this item has changed since it was added to your order.',
+          message:
+            'The price of this item has changed since it was added to your order.',
         },
       ]);
 
@@ -628,7 +680,8 @@ describe('payment.service', () => {
       orderService.detectAddressConflict.mockResolvedValue([
         {
           type: 'address_unavailable',
-          message: 'The delivery address for this order is no longer available. Please choose a different address.',
+          message:
+            'The delivery address for this order is no longer available. Please choose a different address.',
         },
       ]);
 
@@ -637,9 +690,7 @@ describe('payment.service', () => {
       ).rejects.toMatchObject({
         statusCode: 409,
         errors: {
-          conflicts: [
-            expect.objectContaining({ type: 'address_unavailable' }),
-          ],
+          conflicts: [expect.objectContaining({ type: 'address_unavailable' })],
         },
       });
 
@@ -666,7 +717,8 @@ describe('payment.service', () => {
       orderService.detectPricingConflict.mockReturnValue([
         {
           type: 'pricing_changed',
-          message: 'The delivery charge or total for this order has changed. Please refresh your order before proceeding.',
+          message:
+            'The delivery charge or total for this order has changed. Please refresh your order before proceeding.',
           previousTotal: 447,
           currentTotal: 398,
         },
@@ -677,9 +729,7 @@ describe('payment.service', () => {
       ).rejects.toMatchObject({
         statusCode: 409,
         errors: {
-          conflicts: [
-            expect.objectContaining({ type: 'pricing_changed' }),
-          ],
+          conflicts: [expect.objectContaining({ type: 'pricing_changed' })],
         },
       });
 
@@ -729,14 +779,29 @@ describe('payment.service', () => {
 
     it('cancels an in-flight attempt and reports cancelled: true', async () => {
       mockOrder.findUnique
-        .mockResolvedValueOnce({ id: 'order_1', userId: 'user_1', status: 'draft' })
-        .mockResolvedValueOnce({ id: 'order_1', userId: 'user_1', status: 'draft', paymentStatus: 'cancelled' });
+        .mockResolvedValueOnce({
+          id: 'order_1',
+          userId: 'user_1',
+          status: 'draft',
+        })
+        .mockResolvedValueOnce({
+          id: 'order_1',
+          userId: 'user_1',
+          status: 'draft',
+          paymentStatus: 'cancelled',
+        });
       mockOrder.updateMany.mockResolvedValue({ count: 1 });
 
-      const result = await paymentService.cancelPaymentAttempt('order_1', 'user_1');
+      const result = await paymentService.cancelPaymentAttempt(
+        'order_1',
+        'user_1'
+      );
 
       expect(mockOrder.updateMany).toHaveBeenCalledWith({
-        where: { id: 'order_1', paymentStatus: { in: ['pending', 'attempted', 'processing'] } },
+        where: {
+          id: 'order_1',
+          paymentStatus: { in: ['pending', 'attempted', 'processing'] },
+        },
         data: { paymentStatus: 'cancelled' },
       });
       expect(result.cancelled).toBe(true);
@@ -744,11 +809,24 @@ describe('payment.service', () => {
 
     it('is idempotent — a repeat call for an already-resolved attempt reports cancelled: false', async () => {
       mockOrder.findUnique
-        .mockResolvedValueOnce({ id: 'order_1', userId: 'user_1', status: 'draft', paymentStatus: 'cancelled' })
-        .mockResolvedValueOnce({ id: 'order_1', userId: 'user_1', status: 'draft', paymentStatus: 'cancelled' });
+        .mockResolvedValueOnce({
+          id: 'order_1',
+          userId: 'user_1',
+          status: 'draft',
+          paymentStatus: 'cancelled',
+        })
+        .mockResolvedValueOnce({
+          id: 'order_1',
+          userId: 'user_1',
+          status: 'draft',
+          paymentStatus: 'cancelled',
+        });
       mockOrder.updateMany.mockResolvedValue({ count: 0 });
 
-      const result = await paymentService.cancelPaymentAttempt('order_1', 'user_1');
+      const result = await paymentService.cancelPaymentAttempt(
+        'order_1',
+        'user_1'
+      );
 
       expect(result.cancelled).toBe(false);
     });
@@ -763,7 +841,11 @@ describe('payment.service', () => {
 
     it('marks a stale, never-captured attempt as timeout', async () => {
       mockOrder.findMany.mockResolvedValue([
-        { id: 'order_1', payment_order_id: 'rzp_order_1', paymentStatus: 'attempted' },
+        {
+          id: 'order_1',
+          payment_order_id: 'rzp_order_1',
+          paymentStatus: 'attempted',
+        },
       ]);
       jest.spyOn(paymentService, 'fetchRazorpayOrder').mockResolvedValue({
         id: 'rzp_order_1',
@@ -774,7 +856,10 @@ describe('payment.service', () => {
       const results = await paymentService.reconcileStalePaymentAttempts();
 
       expect(mockOrder.updateMany).toHaveBeenCalledWith({
-        where: { id: 'order_1', paymentStatus: { in: ['pending', 'attempted', 'processing'] } },
+        where: {
+          id: 'order_1',
+          paymentStatus: { in: ['pending', 'attempted', 'processing'] },
+        },
         data: { paymentStatus: 'timeout' },
       });
       expect(results).toEqual({ timedOut: 1, reconciledPaid: 0, unknown: 0 });
@@ -782,7 +867,11 @@ describe('payment.service', () => {
 
     it('reconciles a stale attempt Razorpay actually captured, instead of timing out real money', async () => {
       mockOrder.findMany.mockResolvedValue([
-        { id: 'order_1', payment_order_id: 'rzp_order_1', paymentStatus: 'attempted' },
+        {
+          id: 'order_1',
+          payment_order_id: 'rzp_order_1',
+          paymentStatus: 'attempted',
+        },
       ]);
       jest.spyOn(paymentService, 'fetchRazorpayOrder').mockResolvedValue({
         id: 'rzp_order_1',
@@ -793,7 +882,10 @@ describe('payment.service', () => {
         .mockResolvedValue([{ id: 'pay_1', status: 'captured' }]);
       const updateSpy = jest
         .spyOn(paymentService, 'updateOrderAfterPayment')
-        .mockResolvedValue({ order: { id: 'order_1' }, alreadyProcessed: false });
+        .mockResolvedValue({
+          order: { id: 'order_1' },
+          alreadyProcessed: false,
+        });
 
       const results = await paymentService.reconcileStalePaymentAttempts();
 
@@ -803,7 +895,11 @@ describe('payment.service', () => {
 
     it('marks an attempt unknown rather than guessing when Razorpay cannot be reached', async () => {
       mockOrder.findMany.mockResolvedValue([
-        { id: 'order_1', payment_order_id: 'rzp_order_1', paymentStatus: 'attempted' },
+        {
+          id: 'order_1',
+          payment_order_id: 'rzp_order_1',
+          paymentStatus: 'attempted',
+        },
       ]);
       jest.spyOn(paymentService, 'fetchRazorpayOrder').mockResolvedValue(null);
       mockOrder.updateMany.mockResolvedValue({ count: 1 });
@@ -811,7 +907,10 @@ describe('payment.service', () => {
       const results = await paymentService.reconcileStalePaymentAttempts();
 
       expect(mockOrder.updateMany).toHaveBeenCalledWith({
-        where: { id: 'order_1', paymentStatus: { in: ['pending', 'attempted', 'processing'] } },
+        where: {
+          id: 'order_1',
+          paymentStatus: { in: ['pending', 'attempted', 'processing'] },
+        },
         data: { paymentStatus: 'unknown' },
       });
       expect(results).toEqual({ timedOut: 0, reconciledPaid: 0, unknown: 1 });

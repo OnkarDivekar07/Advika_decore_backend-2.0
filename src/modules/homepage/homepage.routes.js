@@ -50,6 +50,7 @@ router.use(authenticate, authorizeAdminOnly);
 router.post(
   '/banners',
   upload.single('image'),
+  upload.handleUploadError,
   createBannerValidator,
   validateRequest,
   createBanner

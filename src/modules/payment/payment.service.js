@@ -1,11 +1,14 @@
 const prisma = require('@config/prisma');
-const customError=  require('@utils/customError')
+const customError = require('@utils/customError');
 const logger = require('@config/logger');
 const inventoryService = require('@modules/inventory/inventory.service');
 const orderService = require('@modules/order/order.service');
 const cartQueue = require('../../jobs/queues/clearCartQueue');
 const notificationQueue = require('../../jobs/queues/notificationQueue');
-const { PAYMENT_ATTEMPT_TIMEOUT_MS, RECONCILABLE_PAYMENT_STATUSES } = require('@constants/payment');
+const {
+  PAYMENT_ATTEMPT_TIMEOUT_MS,
+  RECONCILABLE_PAYMENT_STATUSES,
+} = require('@constants/payment');
 
 /**
  * Runs the fulfillment side-effects for an order that has just been marked
@@ -42,7 +45,10 @@ const finalizeConfirmedOrder = async (order) => {
     );
 
     if (insufficient.length > 0) {
-      logger.warn(`Order ${order.id} was paid but oversold`, { orderId: order.id, insufficient });
+      logger.warn(`Order ${order.id} was paid but oversold`, {
+        orderId: order.id,
+        insufficient,
+      });
     }
 
     // The cart is only cleared once payment is actually confirmed — this is
@@ -94,7 +100,7 @@ const paymentGateway = require('./gateways');
  */
 exports.createRazorpayOrder = async ({
   amount,
-  currency = "INR",
+  currency = 'INR',
   receipt,
   order_id,
   previousPaymentOrderId = null,
@@ -104,7 +110,7 @@ exports.createRazorpayOrder = async ({
     // ./gateways) — this file never talks to Razorpay (or any other
     // provider) directly.
     const razorpayOrder = await paymentGateway.createOrder({
-      amount,       // in paise
+      amount, // in paise
       currency,
       receipt,
     });
@@ -127,12 +133,9 @@ exports.createRazorpayOrder = async ({
 
     return { razorpayOrder, persisted: updateResult.count > 0 };
   } catch (err) {
-
-    throw new customError("Unable to create payment order.",500);
+    throw new customError('Unable to create payment order.', 500);
   }
 };
-
-
 
 /**
  * Looks up a previously-created payment-gateway order by id. Used by
@@ -146,7 +149,8 @@ exports.createRazorpayOrder = async ({
  * ./gateways/paymentGateway.contract.js — so there's nothing left for this
  * wrapper to catch.)
  */
-exports.fetchRazorpayOrder = (razorpayOrderId) => paymentGateway.fetchOrder(razorpayOrderId);
+exports.fetchRazorpayOrder = (razorpayOrderId) =>
+  paymentGateway.fetchOrder(razorpayOrderId);
 
 /**
  * Lists the payment attempts made against a gateway order. Used to find a
@@ -156,7 +160,8 @@ exports.fetchRazorpayOrder = (razorpayOrderId) => paymentGateway.fetchOrder(razo
  * createOrderid. Resolves [] on failure rather than throwing, same
  * reasoning as fetchRazorpayOrder above.
  */
-exports.fetchOrderPayments = (razorpayOrderId) => paymentGateway.fetchOrderPayments(razorpayOrderId);
+exports.fetchOrderPayments = (razorpayOrderId) =>
+  paymentGateway.fetchOrderPayments(razorpayOrderId);
 
 /**
  * Fetches a payment directly from the gateway by its id. Used by /verify as
@@ -168,10 +173,15 @@ exports.fetchOrderPayments = (razorpayOrderId) => paymentGateway.fetchOrderPayme
  * etc. — so the caller can treat "couldn't verify" as its own failure case
  * instead of a crash.
  */
-exports.fetchRazorpayPayment = (paymentId) => paymentGateway.fetchPayment(paymentId);
+exports.fetchRazorpayPayment = (paymentId) =>
+  paymentGateway.fetchPayment(paymentId);
 
 exports.verifyRazorpaySignature = (order_id, payment_id, signature) =>
-  paymentGateway.verifyPaymentSignature({ orderId: order_id, paymentId: payment_id, signature });
+  paymentGateway.verifyPaymentSignature({
+    orderId: order_id,
+    paymentId: payment_id,
+    signature,
+  });
 
 /**
  * Config the frontend needs to open its checkout widget for whichever
@@ -182,7 +192,6 @@ exports.verifyRazorpaySignature = (order_id, payment_id, signature) =>
  */
 exports.getGatewayPublicConfig = () => paymentGateway.publicConfig;
 
-
 exports.updateOrderAfterPayment = async (order_id, payment_id) => {
   // /verify can legitimately be hit more than once — the client can retry on
   // a flaky network, double-submit, or race the async webhook hitting the
@@ -192,11 +201,11 @@ exports.updateOrderAfterPayment = async (order_id, payment_id) => {
   const result = await prisma.order.updateMany({
     where: {
       payment_order_id: order_id,
-      paymentStatus: { not: "paid" },
+      paymentStatus: { not: 'paid' },
     },
     data: {
-      paymentStatus: "paid",
-      status: "confirmed",
+      paymentStatus: 'paid',
+      status: 'confirmed',
       payment_id,
     },
   });
@@ -207,7 +216,7 @@ exports.updateOrderAfterPayment = async (order_id, payment_id) => {
   });
 
   if (!order) {
-    throw new customError("Order not found for this payment", 404);
+    throw new customError('Order not found for this payment', 404);
   }
 
   if (result.count > 0) {
@@ -225,8 +234,6 @@ exports.updateOrderAfterPayment = async (order_id, payment_id) => {
   // reconciled (e.g. by the webhook) — either way, already handled, not an error.
   return { order, alreadyProcessed: result.count === 0 };
 };
-
-
 
 exports.verifyWebhookSignature = (rawBody, signature) =>
   paymentGateway.verifyWebhookSignature(rawBody, signature);
@@ -259,115 +266,145 @@ exports.verifyWebhookSignature = (rawBody, signature) =>
 exports.handleRazorpayWebhookEvent = async (event, eventId) => {
   const { eventType, payment } = paymentGateway.parseWebhookEvent(event);
 
-  if (eventId) {
-    try {
-      await prisma.webhookEvent.create({
-        data: {
-          source: paymentGateway.name,
-          eventId,
-          eventType: eventType ?? 'unknown',
-          orderId: payment?.order_id ?? null,
-          paymentId: payment?.id ?? null,
-          payload: event,
-        },
-      });
-    } catch (err) {
-      if (err?.code === 'P2002') {
-        // Already have a ledger row for this exact event id — a Razorpay
-        // retry or a dashboard "resend" of a delivery we've already
-        // processed. Ack without repeating anything below.
-        return;
-      }
-      // Ledger write failed for some other reason (transient DB blip,
-      // etc.) — don't let bookkeeping block reconciling a real payment;
-      // fall through and rely on the order-level idempotency below, same
-      // as before this ledger existed.
-    }
-  }
-
   if (!payment?.order_id) {
-    // Nothing to reconcile against (e.g. non-payment events) — ack and ignore.
+    // Nothing to reconcile against (e.g. non-payment events) — ack and
+    // ignore. Deliberately checked before the ledger write: an event with
+    // nothing to reconcile has nothing worth recording either.
     return;
   }
 
-  switch (eventType) {
-    case "payment.captured": {
-      // No-ops once paymentStatus is already 'paid', so a duplicate delivery
-      // of this same event can't do anything unexpected.
-      const result = await prisma.order.updateMany({
-        where: {
-          payment_order_id: payment.order_id,
-          paymentStatus: { not: "paid" },
-        },
-        data: {
-          paymentStatus: "paid",
-          status: "confirmed",
-          payment_id: payment.id,
-        },
-      });
+  // The ledger write and the order mutation below run inside ONE
+  // transaction so a crash between them can't happen. Previously these
+  // were two independent top-level `await`s: a process crash/restart
+  // after the ledger insert committed but before `order.updateMany` ran
+  // would permanently "eat" that event's side effect — the ledger's own
+  // (source, eventId) uniqueness check would treat any later retry of the
+  // exact same delivery as an already-processed duplicate and skip it
+  // forever, even though the order was never actually updated. Wrapping
+  // both in `prisma.$transaction` makes "ledger says processed" and "the
+  // order mutation actually happened" atomic together.
+  //
+  // `flipped` communicates outward whether *this* call actually moved
+  // `payment.captured`'s order from unpaid to paid — fulfillment
+  // (finalizeConfirmedOrder) deliberately runs *after* the transaction
+  // commits, not inside it: queueing BullMQ jobs from inside a DB
+  // transaction risks fulfillment being scheduled for a write that then
+  // rolls back, and a fulfillment failure must never be able to roll back
+  // a real, already-committed payment confirmation.
+  let flipped = false;
+  let duplicateDelivery = false;
 
-      if (result.count > 0) {
-        // Same "actually flipped it" guard as /verify — run fulfillment
-        // exactly once, on whichever of /verify or this webhook won the
-        // race. Wrapped by finalizeConfirmedOrder so a fulfillment failure
-        // here can't throw back out of this handler: an uncaught error at
-        // this point would make razorpayWebhook return a non-2xx, and
-        // because the WebhookEvent ledger check above already de-dupes on
-        // eventId, Razorpay's own retry of that same delivery would just
-        // be swallowed as a duplicate — silently losing these side-effects
-        // for good instead of ever getting a second chance to run them.
-        const order = await prisma.order.findUnique({
-          where: { payment_order_id: payment.order_id },
-          include: { orderItems: true },
+  await prisma.$transaction(async (tx) => {
+    if (eventId) {
+      try {
+        await tx.webhookEvent.create({
+          data: {
+            source: paymentGateway.name,
+            eventId,
+            eventType: eventType ?? 'unknown',
+            orderId: payment?.order_id ?? null,
+            paymentId: payment?.id ?? null,
+            payload: event,
+          },
         });
-
-        if (order) {
-          await finalizeConfirmedOrder(order);
+      } catch (err) {
+        if (err?.code === 'P2002') {
+          // Already have a ledger row for this exact event id — a Razorpay
+          // retry or a dashboard "resend" of a delivery we've already
+          // processed. Skip the mutation below; the transaction commits
+          // as a no-op.
+          duplicateDelivery = true;
+          return;
         }
+        // Ledger write failed for some other reason (transient DB blip,
+        // etc.) — don't let bookkeeping block reconciling a real payment;
+        // fall through and still apply the order mutation below, same
+        // "rely on order-level idempotency" fallback as before this
+        // ledger existed. The ledger row simply won't exist for this
+        // delivery, same as it wouldn't have before this change.
       }
-      break;
     }
 
-    case "payment.authorized":
-      // Authorized but not yet captured (some payment methods/flows need a
-      // separate capture step before the money actually lands) — distinct
-      // from both 'attempted' (nothing confirmed yet) and 'paid' (captured).
-      // Only moves an attempt forward from a non-terminal state: never
-      // downgrades an order a 'captured' event already marked paid (webhook
-      // delivery order isn't guaranteed), and never resurrects an attempt
-      // that was already explicitly cancelled or timed out.
-      await prisma.order.updateMany({
-        where: {
-          payment_order_id: payment.order_id,
-          paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES },
-        },
-        data: {
-          paymentStatus: "processing",
-          payment_id: payment.id,
-        },
-      });
-      break;
+    switch (eventType) {
+      case 'payment.captured': {
+        // No-ops once paymentStatus is already 'paid', so a duplicate
+        // delivery of this same event can't do anything unexpected.
+        const result = await tx.order.updateMany({
+          where: {
+            payment_order_id: payment.order_id,
+            paymentStatus: { not: 'paid' },
+          },
+          data: {
+            paymentStatus: 'paid',
+            status: 'confirmed',
+            payment_id: payment.id,
+          },
+        });
+        flipped = result.count > 0;
+        break;
+      }
 
-    case "payment.failed":
-      // Guard against ever downgrading an order a 'captured' event already
-      // marked paid — Razorpay doesn't guarantee webhook delivery order.
-      await prisma.order.updateMany({
-        where: {
-          payment_order_id: payment.order_id,
-          paymentStatus: { not: "paid" },
-        },
-        data: {
-          paymentStatus: "failed",
-          payment_id: payment.id,
-        },
-      });
-      break;
+      case 'payment.authorized':
+        // Authorized but not yet captured (some payment methods/flows need a
+        // separate capture step before the money actually lands) — distinct
+        // from both 'attempted' (nothing confirmed yet) and 'paid' (captured).
+        // Only moves an attempt forward from a non-terminal state: never
+        // downgrades an order a 'captured' event already marked paid (webhook
+        // delivery order isn't guaranteed), and never resurrects an attempt
+        // that was already explicitly cancelled or timed out.
+        await tx.order.updateMany({
+          where: {
+            payment_order_id: payment.order_id,
+            paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES },
+          },
+          data: {
+            paymentStatus: 'processing',
+            payment_id: payment.id,
+          },
+        });
+        break;
 
-    default:
-      // Other event types (refunded, order.paid, etc.) aren't needed for
-      // "did the money land" reconciliation — ack and ignore so Razorpay
-      // doesn't keep retrying them.
-      break;
+      case 'payment.failed':
+        // Guard against ever downgrading an order a 'captured' event already
+        // marked paid — Razorpay doesn't guarantee webhook delivery order.
+        await tx.order.updateMany({
+          where: {
+            payment_order_id: payment.order_id,
+            paymentStatus: { not: 'paid' },
+          },
+          data: {
+            paymentStatus: 'failed',
+            payment_id: payment.id,
+          },
+        });
+        break;
+
+      default:
+        // Other event types (refunded, order.paid, etc.) aren't needed for
+        // "did the money land" reconciliation — ack and ignore so Razorpay
+        // doesn't keep retrying them.
+        break;
+    }
+  });
+
+  if (duplicateDelivery || !flipped) return;
+
+  // Same "actually flipped it" guard as /verify — run fulfillment exactly
+  // once, on whichever of /verify or this webhook won the race. Wrapped by
+  // finalizeConfirmedOrder so a fulfillment failure here can't throw back
+  // out of this handler: an uncaught error at this point would make
+  // razorpayWebhook return a non-2xx, and because the WebhookEvent ledger
+  // check above already de-dupes on eventId, Razorpay's own retry of that
+  // same delivery would just be swallowed as a duplicate — silently losing
+  // these side-effects for good instead of ever getting a second chance to
+  // run them.
+  const order = await prisma.order.findUnique({
+    where: { payment_order_id: payment.order_id },
+    include: { orderItems: true },
+  });
+
+  if (order) {
+    await finalizeConfirmedOrder(order);
   }
 };
 
@@ -380,14 +417,17 @@ exports.handleCODOrder = async (orderId, userId) => {
     });
 
     if (!order) {
-      throw new customError("Order not found", 404);
+      throw new customError('Order not found', 404);
     }
 
     if (order.userId !== userId) {
-      throw new customError("Unauthorized: Order does not belong to this user", 403);
+      throw new customError(
+        'Unauthorized: Order does not belong to this user',
+        403
+      );
     }
 
-    if (order.status !== "draft") {
+    if (order.status !== 'draft') {
       // Already placed — a double-submitted/retried request. Idempotent
       // no-op rather than reserving stock a second time for the same order.
       return { success: true, order, alreadyProcessed: true };
@@ -405,7 +445,12 @@ exports.handleCODOrder = async (orderId, userId) => {
     // "here's exactly what changed" 409 instead of a generic stock-shortfall
     // error, or a crash later in shipping.service.js, with no useful message.
     const conflicts = [
-      ...(await orderService.detectAddressConflict(order.addressId, userId, tx, 'COD')),
+      ...(await orderService.detectAddressConflict(
+        order.addressId,
+        userId,
+        tx,
+        'COD'
+      )),
       ...(await orderService.detectOrderConflicts(order.orderItems, tx)),
       ...orderService.detectPricingConflict(order),
     ];
@@ -430,9 +475,9 @@ exports.handleCODOrder = async (orderId, userId) => {
     const updatedOrder = await tx.order.update({
       where: { id: orderId },
       data: {
-        paymentStatus: "cod_pending",
-        status: "confirmed",
-        payment_order_id:`cod-${orderId}`
+        paymentStatus: 'cod_pending',
+        status: 'confirmed',
+        payment_order_id: `cod-${orderId}`,
       },
     });
 
@@ -441,7 +486,9 @@ exports.handleCODOrder = async (orderId, userId) => {
     // would risk clearing it even if the transaction above rolled back; this
     // line only runs once that has committed successfully.
     await cartQueue.add('clear-cart', { userId });
-    await notificationQueue.add('order-confirmation', { orderId: updatedOrder.id });
+    await notificationQueue.add('order-confirmation', {
+      orderId: updatedOrder.id,
+    });
 
     return { success: true, order: updatedOrder, alreadyProcessed: false };
   });
@@ -477,7 +524,10 @@ exports.cancelPaymentAttempt = async (orderId, userId) => {
     throw new customError('Order not found', 404);
   }
   if (order.userId !== userId) {
-    throw new customError('Unauthorized: Order does not belong to this user', 403);
+    throw new customError(
+      'Unauthorized: Order does not belong to this user',
+      403
+    );
   }
   if (order.status !== 'draft') {
     // Already confirmed (paid/COD) or otherwise past the point a payment
@@ -543,14 +593,19 @@ exports.reconcileStalePaymentAttempts = async () => {
 
   for (const order of staleOrders) {
     // eslint-disable-next-line no-await-in-loop
-    const razorpayOrder = await exports.fetchRazorpayOrder(order.payment_order_id);
+    const razorpayOrder = await exports.fetchRazorpayOrder(
+      order.payment_order_id
+    );
 
     if (!razorpayOrder) {
       // Couldn't reach Razorpay to confirm one way or the other — don't
       // guess at a real payment's fate.
       // eslint-disable-next-line no-await-in-loop
       await prisma.order.updateMany({
-        where: { id: order.id, paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES } },
+        where: {
+          id: order.id,
+          paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES },
+        },
         data: { paymentStatus: 'unknown' },
       });
       results.unknown += 1;
@@ -566,12 +621,18 @@ exports.reconcileStalePaymentAttempts = async () => {
 
       if (captured) {
         // eslint-disable-next-line no-await-in-loop
-        await exports.updateOrderAfterPayment(order.payment_order_id, captured.id);
+        await exports.updateOrderAfterPayment(
+          order.payment_order_id,
+          captured.id
+        );
         results.reconciledPaid += 1;
       } else {
         // eslint-disable-next-line no-await-in-loop
         await prisma.order.updateMany({
-          where: { id: order.id, paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES } },
+          where: {
+            id: order.id,
+            paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES },
+          },
           data: { paymentStatus: 'unknown' },
         });
         results.unknown += 1;
@@ -583,7 +644,10 @@ exports.reconcileStalePaymentAttempts = async () => {
     // stale long enough — safe to close it out.
     // eslint-disable-next-line no-await-in-loop
     await prisma.order.updateMany({
-      where: { id: order.id, paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES } },
+      where: {
+        id: order.id,
+        paymentStatus: { in: RECONCILABLE_PAYMENT_STATUSES },
+      },
       data: { paymentStatus: 'timeout' },
     });
     results.timedOut += 1;

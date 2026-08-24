@@ -28,14 +28,19 @@ describe('user.service', () => {
   describe('createAddress', () => {
     it("makes a user's first address the default even if isDefault wasn't passed", async () => {
       mockPrisma.address.count.mockResolvedValue(0);
-      mockPrisma.address.create.mockResolvedValue({ id: 'addr1', isDefault: true });
+      mockPrisma.address.create.mockResolvedValue({
+        id: 'addr1',
+        isDefault: true,
+      });
 
       const result = await userService.createAddress({
         houseArea: '221B Baker St',
         user: { connect: { id: 'user1' } },
       });
 
-      expect(mockPrisma.address.count).toHaveBeenCalledWith({ where: { userId: 'user1' } });
+      expect(mockPrisma.address.count).toHaveBeenCalledWith({
+        where: { userId: 'user1' },
+      });
       expect(mockPrisma.address.create).toHaveBeenCalledWith({
         data: {
           houseArea: '221B Baker St',
@@ -50,7 +55,10 @@ describe('user.service', () => {
 
     it('leaves a second address non-default unless isDefault: true is passed', async () => {
       mockPrisma.address.count.mockResolvedValue(1);
-      mockPrisma.address.create.mockResolvedValue({ id: 'addr2', isDefault: false });
+      mockPrisma.address.create.mockResolvedValue({
+        id: 'addr2',
+        isDefault: false,
+      });
 
       await userService.createAddress({
         houseArea: '2nd address',
@@ -65,7 +73,10 @@ describe('user.service', () => {
 
     it('unsets every other default when isDefault: true is passed for a new address', async () => {
       mockPrisma.address.count.mockResolvedValue(1);
-      mockPrisma.address.create.mockResolvedValue({ id: 'addr2', isDefault: true });
+      mockPrisma.address.create.mockResolvedValue({
+        id: 'addr2',
+        isDefault: true,
+      });
 
       await userService.createAddress({
         houseArea: '2nd address',
@@ -108,8 +119,14 @@ describe('user.service', () => {
     });
 
     it('updates the address when it belongs to this user', async () => {
-      mockPrisma.address.findFirst.mockResolvedValue({ id: 'addr1', userId: 'user1' });
-      mockPrisma.address.update.mockResolvedValue({ id: 'addr1', city: 'Pune' });
+      mockPrisma.address.findFirst.mockResolvedValue({
+        id: 'addr1',
+        userId: 'user1',
+      });
+      mockPrisma.address.update.mockResolvedValue({
+        id: 'addr1',
+        city: 'Pune',
+      });
 
       const result = await userService.updateAddressById('addr1', 'user1', {
         city: 'Pune',
@@ -124,10 +141,16 @@ describe('user.service', () => {
     });
 
     it('silently drops isDefault: false — un-defaulting only happens by making another address default', async () => {
-      mockPrisma.address.findFirst.mockResolvedValue({ id: 'addr1', userId: 'user1' });
+      mockPrisma.address.findFirst.mockResolvedValue({
+        id: 'addr1',
+        userId: 'user1',
+      });
       mockPrisma.address.update.mockResolvedValue({ id: 'addr1' });
 
-      await userService.updateAddressById('addr1', 'user1', { city: 'Pune', isDefault: false });
+      await userService.updateAddressById('addr1', 'user1', {
+        city: 'Pune',
+        isDefault: false,
+      });
 
       expect(mockPrisma.address.update).toHaveBeenCalledWith({
         where: { id: 'addr1' },
@@ -137,10 +160,18 @@ describe('user.service', () => {
     });
 
     it('clears every other default when isDefault: true is passed', async () => {
-      mockPrisma.address.findFirst.mockResolvedValue({ id: 'addr1', userId: 'user1' });
-      mockPrisma.address.update.mockResolvedValue({ id: 'addr1', isDefault: true });
+      mockPrisma.address.findFirst.mockResolvedValue({
+        id: 'addr1',
+        userId: 'user1',
+      });
+      mockPrisma.address.update.mockResolvedValue({
+        id: 'addr1',
+        isDefault: true,
+      });
 
-      await userService.updateAddressById('addr1', 'user1', { isDefault: true });
+      await userService.updateAddressById('addr1', 'user1', {
+        isDefault: true,
+      });
 
       expect(mockPrisma.address.update).toHaveBeenCalledWith({
         where: { id: 'addr1' },
@@ -167,14 +198,24 @@ describe('user.service', () => {
     });
 
     it('deletes a non-default address without promoting anything', async () => {
-      mockPrisma.address.findFirst.mockResolvedValue({ id: 'addr1', userId: 'user1' });
+      mockPrisma.address.findFirst.mockResolvedValue({
+        id: 'addr1',
+        userId: 'user1',
+      });
       mockPrisma.order.count.mockResolvedValue(0);
-      mockPrisma.address.delete.mockResolvedValue({ id: 'addr1', isDefault: false });
+      mockPrisma.address.delete.mockResolvedValue({
+        id: 'addr1',
+        isDefault: false,
+      });
 
       const result = await userService.deleteAddressById('addr1', 'user1');
 
-      expect(mockPrisma.order.count).toHaveBeenCalledWith({ where: { addressId: 'addr1' } });
-      expect(mockPrisma.address.delete).toHaveBeenCalledWith({ where: { id: 'addr1' } });
+      expect(mockPrisma.order.count).toHaveBeenCalledWith({
+        where: { addressId: 'addr1' },
+      });
+      expect(mockPrisma.address.delete).toHaveBeenCalledWith({
+        where: { id: 'addr1' },
+      });
       expect(mockPrisma.address.findFirst).toHaveBeenCalledTimes(1);
       expect(mockPrisma.address.update).not.toHaveBeenCalled();
       expect(result).toEqual({ id: 'addr1', isDefault: false });
@@ -185,8 +226,14 @@ describe('user.service', () => {
         .mockResolvedValueOnce({ id: 'addr1', userId: 'user1' }) // ownership check
         .mockResolvedValueOnce({ id: 'addr2', userId: 'user1' }); // "next" lookup
       mockPrisma.order.count.mockResolvedValue(0);
-      mockPrisma.address.delete.mockResolvedValue({ id: 'addr1', isDefault: true });
-      mockPrisma.address.update.mockResolvedValue({ id: 'addr2', isDefault: true });
+      mockPrisma.address.delete.mockResolvedValue({
+        id: 'addr1',
+        isDefault: true,
+      });
+      mockPrisma.address.update.mockResolvedValue({
+        id: 'addr2',
+        isDefault: true,
+      });
 
       await userService.deleteAddressById('addr1', 'user1');
 
@@ -205,7 +252,10 @@ describe('user.service', () => {
         .mockResolvedValueOnce({ id: 'addr1', userId: 'user1' })
         .mockResolvedValueOnce(null);
       mockPrisma.order.count.mockResolvedValue(0);
-      mockPrisma.address.delete.mockResolvedValue({ id: 'addr1', isDefault: true });
+      mockPrisma.address.delete.mockResolvedValue({
+        id: 'addr1',
+        isDefault: true,
+      });
 
       await userService.deleteAddressById('addr1', 'user1');
 
@@ -213,16 +263,22 @@ describe('user.service', () => {
     });
 
     it('rejects with 409 and never deletes when the address is linked to a past order', async () => {
-      mockPrisma.address.findFirst.mockResolvedValue({ id: 'addr1', userId: 'user1' });
+      mockPrisma.address.findFirst.mockResolvedValue({
+        id: 'addr1',
+        userId: 'user1',
+      });
       mockPrisma.order.count.mockResolvedValue(2);
 
       await expect(
         userService.deleteAddressById('addr1', 'user1')
       ).rejects.toMatchObject({
-        message: 'This address is linked to past orders and cannot be deleted. You can add a new address instead.',
+        message:
+          'This address is linked to past orders and cannot be deleted. You can add a new address instead.',
         statusCode: 409,
       });
-      expect(mockPrisma.order.count).toHaveBeenCalledWith({ where: { addressId: 'addr1' } });
+      expect(mockPrisma.order.count).toHaveBeenCalledWith({
+        where: { addressId: 'addr1' },
+      });
       expect(mockPrisma.address.delete).not.toHaveBeenCalled();
       expect(mockPrisma.$transaction).not.toHaveBeenCalled();
     });
@@ -241,7 +297,11 @@ describe('user.service', () => {
     });
 
     it('is a no-op when the address is already the default', async () => {
-      mockPrisma.address.findFirst.mockResolvedValue({ id: 'addr1', userId: 'user1', isDefault: true });
+      mockPrisma.address.findFirst.mockResolvedValue({
+        id: 'addr1',
+        userId: 'user1',
+        isDefault: true,
+      });
 
       const result = await userService.setDefaultAddressById('addr1', 'user1');
 
@@ -251,8 +311,15 @@ describe('user.service', () => {
     });
 
     it('sets the address as default and clears every other default', async () => {
-      mockPrisma.address.findFirst.mockResolvedValue({ id: 'addr1', userId: 'user1', isDefault: false });
-      mockPrisma.address.update.mockResolvedValue({ id: 'addr1', isDefault: true });
+      mockPrisma.address.findFirst.mockResolvedValue({
+        id: 'addr1',
+        userId: 'user1',
+        isDefault: false,
+      });
+      mockPrisma.address.update.mockResolvedValue({
+        id: 'addr1',
+        isDefault: true,
+      });
 
       const result = await userService.setDefaultAddressById('addr1', 'user1');
 
@@ -275,7 +342,9 @@ describe('user.service', () => {
     it('rejects with a proper 404 CustomError when the user does not exist', async () => {
       mockPrisma.user.findUnique.mockResolvedValue(null);
 
-      await expect(userService.getUserProfile('missing-user')).rejects.toMatchObject({
+      await expect(
+        userService.getUserProfile('missing-user')
+      ).rejects.toMatchObject({
         message: 'User not found',
         statusCode: 404,
       });

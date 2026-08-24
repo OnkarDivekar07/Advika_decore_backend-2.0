@@ -22,7 +22,9 @@ const validateSaveCart = [
 
   body('cartItems.*.quantity')
     .isInt({ min: 1, max: MAX_CART_QUANTITY })
-    .withMessage(`quantity must be an integer between 1 and ${MAX_CART_QUANTITY}`)
+    .withMessage(
+      `quantity must be an integer between 1 and ${MAX_CART_QUANTITY}`
+    )
     .toInt(),
 ];
 
@@ -36,7 +38,9 @@ const validateUpdateCartItem = [
 
   body('quantity')
     .isInt({ min: 1, max: MAX_CART_QUANTITY })
-    .withMessage(`quantity must be an integer between 1 and ${MAX_CART_QUANTITY}`)
+    .withMessage(
+      `quantity must be an integer between 1 and ${MAX_CART_QUANTITY}`
+    )
     .toInt(),
 ];
 

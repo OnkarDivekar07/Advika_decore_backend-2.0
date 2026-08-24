@@ -16,7 +16,9 @@ const { INDIAN_PINCODE_REGEX } = require('@constants/pincode');
 
 const phoneField = (required) => {
   let chain = body('phone');
-  chain = required ? chain.notEmpty().withMessage('Mobile number is required').bail() : chain.optional();
+  chain = required
+    ? chain.notEmpty().withMessage('Mobile number is required').bail()
+    : chain.optional();
   return chain
     .customSanitizer((value) => String(value ?? '').replace(/\s+/g, ''))
     .matches(INDIAN_MOBILE_E164_REGEX)
@@ -25,8 +27,12 @@ const phoneField = (required) => {
 
 const pincodeField = (required) => {
   let chain = body('pincode');
-  chain = required ? chain.notEmpty().withMessage('Pincode is required').bail() : chain.optional();
-  return chain.matches(INDIAN_PINCODE_REGEX).withMessage('Enter a valid 6-digit Indian pincode');
+  chain = required
+    ? chain.notEmpty().withMessage('Pincode is required').bail()
+    : chain.optional();
+  return chain
+    .matches(INDIAN_PINCODE_REGEX)
+    .withMessage('Enter a valid 6-digit Indian pincode');
 };
 
 const createAddressValidator = [
@@ -38,8 +44,16 @@ const createAddressValidator = [
     .withMessage('Name must be between 2 and 80 characters'),
   phoneField(true),
   pincodeField(true),
-  body('city').trim().notEmpty().withMessage('City is required').isLength({ max: 80 }),
-  body('state').trim().notEmpty().withMessage('State is required').isLength({ max: 80 }),
+  body('city')
+    .trim()
+    .notEmpty()
+    .withMessage('City is required')
+    .isLength({ max: 80 }),
+  body('state')
+    .trim()
+    .notEmpty()
+    .withMessage('State is required')
+    .isLength({ max: 80 }),
   body('houseArea')
     .trim()
     .notEmpty()
@@ -77,8 +91,14 @@ const updateAddressValidator = [
   body('state').optional().trim().isLength({ min: 1, max: 80 }),
   body('houseArea').optional().trim().isLength({ min: 1, max: 200 }),
   body('area').optional().trim().isLength({ min: 2, max: 100 }),
-  body('landmark').optional({ checkFalsy: true }).trim().isLength({ min: 2, max: 100 }),
-  body('deliveryInstructions').optional({ checkFalsy: true }).trim().isLength({ max: 200 }),
+  body('landmark')
+    .optional({ checkFalsy: true })
+    .trim()
+    .isLength({ min: 2, max: 100 }),
+  body('deliveryInstructions')
+    .optional({ checkFalsy: true })
+    .trim()
+    .isLength({ max: 200 }),
   body('isDefault')
     .optional()
     .isBoolean()
@@ -86,7 +106,9 @@ const updateAddressValidator = [
     .toBoolean(),
 ];
 
-const addressIdParamValidator = [param('id').notEmpty().withMessage('Address id is required')];
+const addressIdParamValidator = [
+  param('id').notEmpty().withMessage('Address id is required'),
+];
 
 // For PATCH /api/user/profile — name, vehicle and dateOfBirth are the
 // editable fields here (see user.service.js#updateUserProfile for why

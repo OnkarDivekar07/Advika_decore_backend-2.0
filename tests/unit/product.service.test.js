@@ -38,7 +38,10 @@ describe('product.service', () => {
   describe('getAllProducts', () => {
     it('lists only non-deleted products, cached', async () => {
       mockPrisma.product.count.mockResolvedValue(2);
-      mockPrisma.product.findMany.mockResolvedValue([{ id: 'p1' }, { id: 'p2' }]);
+      mockPrisma.product.findMany.mockResolvedValue([
+        { id: 'p1' },
+        { id: 'p2' },
+      ]);
       mockRedis.get.mockResolvedValue(null);
 
       const result = await productService.getAllProducts({ query: {} });
@@ -64,7 +67,9 @@ describe('product.service', () => {
       mockPrisma.product.findMany.mockResolvedValue([{ id: 'p1' }]);
       mockRedis.get.mockResolvedValue(null);
 
-      await productService.getAllProducts({ query: { category: 'Truck, Tempo' } });
+      await productService.getAllProducts({
+        query: { category: 'Truck, Tempo' },
+      });
 
       const callArgs = mockPrisma.product.findMany.mock.calls[0][0];
       expect(callArgs.where.AND).toContainEqual({
@@ -78,10 +83,15 @@ describe('product.service', () => {
       mockPrisma.product.findMany.mockResolvedValue([]);
       mockRedis.get.mockResolvedValue(null);
 
-      await productService.getAllProducts({ query: { minPrice: '100', maxPrice: '500' } });
+      await productService.getAllProducts({
+        query: { minPrice: '100', maxPrice: '500' },
+      });
 
       const callArgs = mockPrisma.product.findMany.mock.calls[0][0];
-      expect(callArgs.where.AND).toContainEqual({ isDeleted: false, price: { gte: 100, lte: 500 } });
+      expect(callArgs.where.AND).toContainEqual({
+        isDeleted: false,
+        price: { gte: 100, lte: 500 },
+      });
     });
 
     it('filters by inStock', async () => {
@@ -92,7 +102,10 @@ describe('product.service', () => {
       await productService.getAllProducts({ query: { inStock: 'true' } });
 
       const callArgs = mockPrisma.product.findMany.mock.calls[0][0];
-      expect(callArgs.where.AND).toContainEqual({ isDeleted: false, stock: { gt: 0 } });
+      expect(callArgs.where.AND).toContainEqual({
+        isDeleted: false,
+        stock: { gt: 0 },
+      });
     });
 
     it('filters by isNewArrival', async () => {
@@ -103,7 +116,10 @@ describe('product.service', () => {
       await productService.getAllProducts({ query: { isNewArrival: 'true' } });
 
       const callArgs = mockPrisma.product.findMany.mock.calls[0][0];
-      expect(callArgs.where.AND).toContainEqual({ isDeleted: false, isNewArrival: true });
+      expect(callArgs.where.AND).toContainEqual({
+        isDeleted: false,
+        isNewArrival: true,
+      });
     });
 
     it('caches different category filters under different keys (no cross-filter bleed)', async () => {
@@ -132,7 +148,9 @@ describe('product.service', () => {
 
   describe('getProductById', () => {
     it('400s when no id is given', async () => {
-      await expect(productService.getProductById(undefined)).rejects.toMatchObject({
+      await expect(
+        productService.getProductById(undefined)
+      ).rejects.toMatchObject({
         message: 'Product ID is required',
         statusCode: 400,
       });
@@ -141,14 +159,19 @@ describe('product.service', () => {
     it('404s when the product does not exist', async () => {
       mockPrisma.product.findUnique.mockResolvedValue(null);
 
-      await expect(productService.getProductById('missing')).rejects.toMatchObject({
+      await expect(
+        productService.getProductById('missing')
+      ).rejects.toMatchObject({
         message: 'Product not found',
         statusCode: 404,
       });
     });
 
     it('returns the product when found', async () => {
-      mockPrisma.product.findUnique.mockResolvedValue({ id: 'p1', name: 'Shirt' });
+      mockPrisma.product.findUnique.mockResolvedValue({
+        id: 'p1',
+        name: 'Shirt',
+      });
 
       const result = await productService.getProductById('p1');
       expect(result).toEqual({ id: 'p1', name: 'Shirt' });
@@ -164,9 +187,16 @@ describe('product.service', () => {
     });
 
     it('queries only non-deleted products matching the given ids', async () => {
-      mockPrisma.product.findMany.mockResolvedValue([{ id: 'p1' }, { id: 'p2' }]);
+      mockPrisma.product.findMany.mockResolvedValue([
+        { id: 'p1' },
+        { id: 'p2' },
+      ]);
 
-      const result = await productService.getProductsByIds(['p1', 'p2', 'p_deleted']);
+      const result = await productService.getProductsByIds([
+        'p1',
+        'p2',
+        'p_deleted',
+      ]);
 
       expect(mockPrisma.product.findMany).toHaveBeenCalledWith({
         where: { id: { in: ['p1', 'p2', 'p_deleted'] }, isDeleted: false },
@@ -194,7 +224,10 @@ describe('product.service', () => {
 
     it('returns up to 4 products sharing a category, excluding the original', async () => {
       mockPrisma.product.findUnique.mockResolvedValue({ category: ['shirts'] });
-      mockPrisma.product.findMany.mockResolvedValue([{ id: 'p2' }, { id: 'p3' }]);
+      mockPrisma.product.findMany.mockResolvedValue([
+        { id: 'p2' },
+        { id: 'p3' },
+      ]);
 
       const result = await productService.getRelatedProducts('p1');
 
@@ -216,7 +249,9 @@ describe('product.service', () => {
     it('404s when the product does not exist', async () => {
       mockPrisma.product.findUnique.mockResolvedValue(null);
 
-      await expect(productService.deleteProduct('missing')).rejects.toMatchObject({
+      await expect(
+        productService.deleteProduct('missing')
+      ).rejects.toMatchObject({
         statusCode: 404,
       });
       expect(mockPrisma.product.update).not.toHaveBeenCalled();
@@ -224,7 +259,10 @@ describe('product.service', () => {
 
     it('soft-deletes an existing product (isDeleted: true, not a hard delete)', async () => {
       mockPrisma.product.findUnique.mockResolvedValue({ id: 'p1' });
-      mockPrisma.product.update.mockResolvedValue({ id: 'p1', isDeleted: true });
+      mockPrisma.product.update.mockResolvedValue({
+        id: 'p1',
+        isDeleted: true,
+      });
 
       await productService.deleteProduct('p1');
 
@@ -236,8 +274,14 @@ describe('product.service', () => {
 
     it('invalidates the allProducts and newArrivalProducts caches after deleting', async () => {
       mockPrisma.product.findUnique.mockResolvedValue({ id: 'p1' });
-      mockPrisma.product.update.mockResolvedValue({ id: 'p1', isDeleted: true });
-      mockRedis.scan.mockResolvedValue(['0', ['allProducts:{}', 'newArrivalProducts:{}']]);
+      mockPrisma.product.update.mockResolvedValue({
+        id: 'p1',
+        isDeleted: true,
+      });
+      mockRedis.scan.mockResolvedValue([
+        '0',
+        ['allProducts:{}', 'newArrivalProducts:{}'],
+      ]);
 
       await productService.deleteProduct('p1');
 
@@ -255,13 +299,18 @@ describe('product.service', () => {
         'COUNT',
         100
       );
-      expect(mockRedis.del).toHaveBeenCalledWith('allProducts:{}', 'newArrivalProducts:{}');
+      expect(mockRedis.del).toHaveBeenCalledWith(
+        'allProducts:{}',
+        'newArrivalProducts:{}'
+      );
     });
   });
 
   describe('getProductJobStatus', () => {
     it('400s when no jobId is given', async () => {
-      await expect(productService.getProductJobStatus(undefined)).rejects.toMatchObject({
+      await expect(
+        productService.getProductJobStatus(undefined)
+      ).rejects.toMatchObject({
         statusCode: 400,
       });
     });
@@ -269,7 +318,9 @@ describe('product.service', () => {
     it('404s when the job does not exist', async () => {
       mockImageQueue.getJob.mockResolvedValue(null);
 
-      await expect(productService.getProductJobStatus('missing')).rejects.toMatchObject({
+      await expect(
+        productService.getProductJobStatus('missing')
+      ).rejects.toMatchObject({
         statusCode: 404,
       });
     });
@@ -322,17 +373,27 @@ describe('product.service', () => {
     it('rejects with 400 when no images are provided', async () => {
       await expect(
         productService.queueProductCreation({ name: 'Shirt' }, [])
-      ).rejects.toMatchObject({ message: 'No images uploaded', statusCode: 400 });
+      ).rejects.toMatchObject({
+        message: 'No images uploaded',
+        statusCode: 400,
+      });
       expect(mockImageQueue.add).not.toHaveBeenCalled();
     });
 
     it('base64-serializes images and queues a create-product job', async () => {
       mockImageQueue.add.mockResolvedValue({ id: 'job1' });
       const images = [
-        { originalname: 'a.jpg', mimetype: 'image/jpeg', buffer: Buffer.from('abc') },
+        {
+          originalname: 'a.jpg',
+          mimetype: 'image/jpeg',
+          buffer: Buffer.from('abc'),
+        },
       ];
 
-      const job = await productService.queueProductCreation({ name: 'Shirt' }, images);
+      const job = await productService.queueProductCreation(
+        { name: 'Shirt' },
+        images
+      );
 
       expect(mockImageQueue.add).toHaveBeenCalledWith('create-product', {
         serializedImages: [
@@ -364,10 +425,18 @@ describe('product.service', () => {
     it('validates and serializes images when provided', async () => {
       mockImageQueue.add.mockResolvedValue({ id: 'job3' });
       const images = [
-        { originalname: 'b.jpg', mimetype: 'image/jpeg', buffer: Buffer.from('xyz') },
+        {
+          originalname: 'b.jpg',
+          mimetype: 'image/jpeg',
+          buffer: Buffer.from('xyz'),
+        },
       ];
 
-      await productService.queueProductUpdate('p1', { name: 'New name' }, images);
+      await productService.queueProductUpdate(
+        'p1',
+        { name: 'New name' },
+        images
+      );
 
       const call = mockImageQueue.add.mock.calls[0][1];
       expect(call.serializedImages).toEqual([

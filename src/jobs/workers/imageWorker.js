@@ -6,13 +6,33 @@ const { generateUniqueProductFilenames } = require('@utils/bannerHelpers');
 const Prisma = require('@config/prisma');
 const invalidateCacheByPrefix = require('@utils/invalidateCacheByPrefix');
 const { PRODUCT_CACHE_PREFIXES } = require('@modules/product/product.service');
+const logger = require('@config/logger');
 
 // See product.service.js's invalidateProductCaches for why both prefixes
 // need clearing — this worker is the only place a create/update job
 // actually lands in Prisma, so it's the only place that can know the
 // write has happened and it's safe to drop the stale cached list.
-const invalidateProductCaches = () =>
-  Promise.all(PRODUCT_CACHE_PREFIXES.map((prefix) => invalidateCacheByPrefix(prefix)));
+//
+// Deliberately swallows its own failure (logs, never throws): this now
+// runs after a real `attempts`/`backoff` retry policy was added to
+// imageQueue.js (see that file's comment), and the Prisma
+// create/update above it has already committed by the time this runs.
+// If invalidation threw and were allowed to fail the job, BullMQ would
+// retry the *whole* handler on the next attempt — re-running
+// Prisma.product.create() and silently duplicating the product. A
+// stale cached list for up to its own cacheExpiry is a fully recoverable
+// cost; a duplicate product row is not.
+const invalidateProductCaches = async () => {
+  try {
+    await Promise.all(
+      PRODUCT_CACHE_PREFIXES.map((prefix) => invalidateCacheByPrefix(prefix))
+    );
+  } catch (err) {
+    logger.error(
+      `Product cache invalidation failed after a successful write: ${err.message}`
+    );
+  }
+};
 
 const imageWorker = new Worker(
   'image-processing-queue',
@@ -90,15 +110,16 @@ const imageWorker = new Worker(
   { connection }
 );
 
-// ✅ Log job errors
 imageWorker.on('failed', (job, err) => {
-  console.error(`❌ Job failed [${job.name} - ${job.id}]: ${err.message}`);
-  console.error(err.stack);
+  logger.error(`Job failed [${job.name} - ${job.id}]: ${err.message}`, {
+    stack: err.stack,
+  });
 });
 
-// ✅ Log worker-level errors
 imageWorker.on('error', (err) => {
-  console.error(`❌ Worker encountered an error: ${err.message}`);
+  logger.error(`Worker encountered an error: ${err.message}`, {
+    stack: err.stack,
+  });
 });
 
 module.exports = imageWorker;

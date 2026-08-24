@@ -1,9 +1,16 @@
-const { calculateDeliveryCharge, calculateDiscount, FREE_DELIVERY_THRESHOLD, DELIVERY_CHARGE } = require('@constants/pricing');
+const {
+  calculateDeliveryCharge,
+  calculateDiscount,
+  FREE_DELIVERY_THRESHOLD,
+  DELIVERY_CHARGE,
+} = require('@constants/pricing');
 
 describe('calculateDeliveryCharge', () => {
   it('charges the flat delivery fee below the free-delivery threshold', () => {
     expect(calculateDeliveryCharge(0)).toBe(DELIVERY_CHARGE);
-    expect(calculateDeliveryCharge(FREE_DELIVERY_THRESHOLD - 1)).toBe(DELIVERY_CHARGE);
+    expect(calculateDeliveryCharge(FREE_DELIVERY_THRESHOLD - 1)).toBe(
+      DELIVERY_CHARGE
+    );
   });
 
   it('waives the delivery fee at and above the threshold', () => {

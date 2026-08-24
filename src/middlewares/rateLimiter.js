@@ -66,7 +66,10 @@ const adminLoginRateLimiter = createRateLimiter({
   maxAttempts: 10,
   windowSeconds: 300,
   message: 'Too many login attempts. Please try again later.',
-  keyBy: (req) => String(req.body?.email || '').trim().toLowerCase(),
+  keyBy: (req) =>
+    String(req.body?.email || '')
+      .trim()
+      .toLowerCase(),
 });
 
 // Existing default export kept for backwards compatibility — used for

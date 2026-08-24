@@ -5,7 +5,10 @@ const mockRedis = {
 
 jest.mock('@config/redis', () => mockRedis);
 
-const { createRateLimiter, adminLoginRateLimiter } = require('@middlewares/rateLimiter');
+const {
+  createRateLimiter,
+  adminLoginRateLimiter,
+} = require('@middlewares/rateLimiter');
 
 const buildReqRes = (phone) => ({
   req: { body: { phone } },
@@ -34,7 +37,13 @@ describe('rateLimiter.createRateLimiter', () => {
   it('treats formatting variants of the same number as the same rate-limit bucket (regression: whitespace/prefix bypass)', async () => {
     mockRedis.incr.mockResolvedValue(1);
 
-    const variants = ['+919999999999', '+91 9999999999', ' +919999999999', '919999999999', '9999999999'];
+    const variants = [
+      '+919999999999',
+      '+91 9999999999',
+      ' +919999999999',
+      '919999999999',
+      '9999999999',
+    ];
 
     for (const phone of variants) {
       const { req, res, next } = buildReqRes(phone);
@@ -75,7 +84,10 @@ describe('rateLimiter.createRateLimiter', () => {
     }
 
     expect(lastNext).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'Too many requests.', statusCode: 429 })
+      expect.objectContaining({
+        message: 'Too many requests.',
+        statusCode: 429,
+      })
     );
   });
 
@@ -114,7 +126,9 @@ describe('rateLimiter.createRateLimiter', () => {
       const next = jest.fn();
       await custom(req, {}, next);
 
-      expect(mockRedis.incr).toHaveBeenCalledWith('custom-limit:Admin@Example.com');
+      expect(mockRedis.incr).toHaveBeenCalledWith(
+        'custom-limit:Admin@Example.com'
+      );
       expect(next).toHaveBeenCalledWith();
     });
 
@@ -141,7 +155,9 @@ describe('rateLimiter.createRateLimiter', () => {
 
       await adminLoginRateLimiter(req, {}, next);
 
-      expect(mockRedis.incr).toHaveBeenCalledWith('admin-login-limit:admin@advika.com');
+      expect(mockRedis.incr).toHaveBeenCalledWith(
+        'admin-login-limit:admin@advika.com'
+      );
       expect(next).toHaveBeenCalledWith();
     });
 

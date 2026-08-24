@@ -81,9 +81,6 @@
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 
-
-
-
 /**
  * @swagger
  * /api/orders/all:
@@ -208,7 +205,6 @@
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 
-
 /**
  * @swagger
  * /api/orders/history:
@@ -314,7 +310,6 @@
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-
 
 /**
  * @swagger
@@ -459,8 +454,6 @@
  *       403:
  *         description: Forbidden — not this order's owner and not an admin
  */
-
-
 
 /**
  * @swagger

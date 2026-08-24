@@ -41,7 +41,12 @@ router.get('/', validateGetProductsQuery, validateRequest, getAllProducts);
  *
  * Registered ahead of /:id so "batch" is never swallowed as an id param.
  */
-router.get('/batch', validateGetProductsByIds, validateRequest, getProductsByIds);
+router.get(
+  '/batch',
+  validateGetProductsByIds,
+  validateRequest,
+  getProductsByIds
+);
 
 /**
  * @route   GET /api/products/:id
@@ -79,6 +84,7 @@ router.get('/jobs/:jobId', getProductJobStatus);
 router.post(
   '/',
   upload.array('images', 5),
+  upload.handleUploadError,
   validateCreateProduct,
   validateRequest,
   createProduct
@@ -92,6 +98,7 @@ router.post(
 router.patch(
   '/:id',
   upload.array('images', 5),
+  upload.handleUploadError,
   validateUpdateProduct,
   validateRequest,
   updateProduct

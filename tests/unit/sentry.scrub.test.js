@@ -79,7 +79,10 @@ describe('sentry config — scrubEvent', () => {
         data: { email: 'admin@example.com', password: 'hunter2' },
       },
       breadcrumbs: [
-        { category: 'http', data: { url: '/api/admin/login', password: 'hunter2' } },
+        {
+          category: 'http',
+          data: { url: '/api/admin/login', password: 'hunter2' },
+        },
       ],
     };
 

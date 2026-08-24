@@ -32,8 +32,12 @@ const getWishlist = async (userId) => {
   }
 
   if (orphanedIds.length > 0) {
-    Promise.resolve(prisma.wishlist.deleteMany({ where: { id: { in: orphanedIds } } })).catch(
-      (err) => logger.warn('Failed to sweep orphaned wishlist rows', { err: err.message })
+    Promise.resolve(
+      prisma.wishlist.deleteMany({ where: { id: { in: orphanedIds } } })
+    ).catch((err) =>
+      logger.warn('Failed to sweep orphaned wishlist rows', {
+        err: err.message,
+      })
     );
   }
 

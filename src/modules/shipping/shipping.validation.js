@@ -52,8 +52,5 @@ exports.validateOrderIdParam = [
 
 exports.validateCancelShipment = [
   ...exports.validateOrderIdParam,
-  body('reason')
-    .optional()
-    .isString()
-    .withMessage('reason must be a string'),
+  body('reason').optional().isString().withMessage('reason must be a string'),
 ];

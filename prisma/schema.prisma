@@ -24,7 +24,6 @@ enum OrderStatus {
   returned
 }
 
-
 // Payment lifecycle, in the order an online (Razorpay) payment normally
 // moves through it — see payment.service.js for exactly where each
 // transition happens:
@@ -65,7 +64,7 @@ model User {
   name      String
   email     String   @unique
   password  String
-  role      String   // 'admin' or 'customer'
+  role      String // 'admin' or 'customer'
   phone     String   @unique
   createdAt DateTime @default(now())
 
@@ -80,8 +79,8 @@ model User {
   // that feature to ever be buildable. Optional: existing users predate
   // this field, and "Skip for now" at signup is a legitimate path that
   // leaves it unset.
-  vehicle       String?
-  dateOfBirth   DateTime?
+  vehicle     String?
+  dateOfBirth DateTime?
 
   // Relations
   orders         Order[]
@@ -92,19 +91,18 @@ model User {
   wishlists      Wishlist[]
 }
 
-
 model Product {
-  id          String     @id @default(auto()) @map("_id") @db.ObjectId
-  name        String
-  category    String[]
-  brand       String
-  price       Float
-  stock       Int
-  images      String[]   // Array of image URLs
-  description String
-  createdAt   DateTime   @default(now())
-  isNewArrival Boolean @default(false)
-  isDeleted   Boolean?  @default(false)
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  name         String
+  category     String[]
+  brand        String
+  price        Float
+  stock        Int
+  images       String[] // Array of image URLs
+  description  String
+  createdAt    DateTime @default(now())
+  isNewArrival Boolean  @default(false)
+  isDeleted    Boolean? @default(false)
 
   // --- Advika Auto storefront fields ---------------------------------
   // All optional/additive so every pre-existing product row (and every
@@ -115,7 +113,7 @@ model Product {
   // Struck-through "was" price shown next to `price` on product cards
   // and the product detail page. Absent (no discount) when null/equal
   // to `price`.
-  mrp         Float?
+  mrp           Float?
   // Truck/tempo/pickup/tractor electrical system this SKU is wired for
   // — "12V", "24V", or "12V/24V" for a dual-voltage part. Required (at
   // the application/validation layer, not the schema) for lighting and
@@ -123,17 +121,17 @@ model Product {
   // wrong-voltage sale is a real returned-order cost, not a cosmetic
   // detail. Left absent for non-electrical accessories (seat covers,
   // mud flaps, steering covers), which render no voltage badge at all.
-  voltage     String?
+  voltage       String?
   // Key/value spec rows for the product page's Specifications tab
   // (e.g. { "Wattage": "100W", "Lumens": "9,000 lm", "IP Rating":
   // "IP68" }) — order is insertion order, since Mongo/Prisma Json
   // preserves object key order for what the driver actually stores.
-  specs       Json?
+  specs         Json?
   // Purchasable variants (e.g. wattage, beam pattern), each with its
   // own price/mrp: [{ label: "Wattage", defaultIndex: 1, options: [
   // { label: "72W", price: 9999, mrp: 12999 }, ... ] }, ...]. Absent
   // means a single-price product — the common case.
-  variants    Json?
+  variants      Json?
   // Vehicle-compatibility list grouped by voltage, real model names
   // (never bare vehicle classes — see the README: "Fits trucks" is
   // useless to a buyer, "Fits Tata Signa" closes the sale):
@@ -153,26 +151,38 @@ model Product {
   isBestSeller  Boolean? @default(false)
 
   // Relations
-  carts       Cart[]     // One product can be in many cart items
-  reviews     Review[]   // One product can have many reviews
-  orderItems  OrderItem[]
-  wishlists   Wishlist[]
+  carts      Cart[] // One product can be in many cart items
+  reviews    Review[] // One product can have many reviews
+  orderItems OrderItem[]
+  wishlists  Wishlist[]
+
+  // getAllProducts (product.service.js) always starts from
+  // `isDeleted: false` and then commonly narrows by category/isNewArrival/
+  // isBestSeller/brand/price — every one of those queries was doing a full
+  // collection scan with no index at all. Compound indexes lead with
+  // isDeleted (the one predicate every list/browse query shares) so Mongo
+  // can use the same index across each of these filter combinations.
+  @@index([isDeleted, category])
+  @@index([isDeleted, isNewArrival])
+  @@index([isDeleted, isBestSeller])
+  @@index([isDeleted, brand])
+  @@index([isDeleted, price])
 }
 
 model Order {
-  id         String    @id @default(auto()) @map("_id") @db.ObjectId
-  userId     String
-  user       User      @relation(fields: [userId], references: [id])
+  id               String        @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String
+  user             User          @relation(fields: [userId], references: [id])
   // `total` remains the grand total (subtotal + deliveryCharge) and is
   // what payment.controller.js/shipping.service.js actually charge —
   // unchanged in meaning, just no longer equal to the item sum alone.
-  total      Float
+  total            Float
   // Breakdown fields, added alongside `total` rather than replacing it so
   // existing orders (which predate this rule) keep working: both are
   // optional and simply absent on old records. See
   // src/constants/pricing.js for how they're derived.
-  subtotal       Float?
-  deliveryCharge Float?
+  subtotal         Float?
+  deliveryCharge   Float?
   // Discount/coupon placeholder architecture: both fields are optional so
   // existing orders (predating this) keep working unchanged. `discount` is
   // always 0 today (see calculateDiscount in src/constants/pricing.js — no
@@ -181,32 +191,41 @@ model Order {
   // real coupon system can be dropped in later by making calculateDiscount
   // do real work, without touching how `total` itself is derived or spent
   // (payment.controller.js, shipping.service.js, etc. only ever read `total`).
-  discount       Float?  @default(0)
-  couponCode     String?
-  addressId  String
-  address    Address   @relation(fields: [addressId], references: [id])
-  payment_order_id String? @unique
-  payment_id String?   // Razorpay payment id (pay_xxx) that actually paid this order, set by the webhook
-  status     OrderStatus    // e.g. 'pending', 'shipped', 'delivered', 'cancelled'
-  paymentStatus PaymentStatus  @default(pending) // 'pending', 'paid', etc.
-  orderItems  OrderItem[]
-  createdAt  DateTime  @default(now())
+  discount         Float?        @default(0)
+  couponCode       String?
+  addressId        String
+  address          Address       @relation(fields: [addressId], references: [id])
+  payment_order_id String?       @unique
+  payment_id       String? // Razorpay payment id (pay_xxx) that actually paid this order, set by the webhook
+  status           OrderStatus // e.g. 'pending', 'shipped', 'delivered', 'cancelled'
+  paymentStatus    PaymentStatus @default(pending) // 'pending', 'paid', etc.
+  orderItems       OrderItem[]
+  createdAt        DateTime      @default(now())
   // Optional (rather than a plain required @updatedAt) so existing orders
   // predating this field keep working unchanged — same convention as
   // subtotal/deliveryCharge above. Used by reconcileStalePaymentAttempts
   // (payment.service.js) to find payment attempts that have gone stale.
-  updatedAt  DateTime? @updatedAt
+  updatedAt        DateTime?     @updatedAt
+
+  // order.service.js's getUserOrderHistory filters `{ userId, status: {
+  // not: 'draft' } }`; getUserDraftOrder filters `{ userId, status:
+  // 'draft' }`; the admin order list and admin.service.js's dashboard
+  // counts filter by `status`/`paymentStatus` alone (with no userId) and
+  // sort by createdAt — none of that had an index to use on what's one of
+  // the two hottest collections in the app.
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@index([paymentStatus])
 }
 
-
 model Cart {
-  id         String   @id @default(auto()) @map("_id") @db.ObjectId
-  userId     String
-  user       User     @relation(fields: [userId], references: [id])
-  productId  String
-  product    Product  @relation(fields: [productId], references: [id])
-  quantity   Int
-  updatedAt  DateTime @updatedAt
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  quantity  Int
+  updatedAt DateTime @updatedAt
 
   // One row per (user, product) — makes "add to cart" an upsert instead of
   // insert-then-hope, and makes it structurally impossible for the same
@@ -233,54 +252,59 @@ model Wishlist {
 }
 
 model Review {
-  id         String   @id @default(auto()) @map("_id") @db.ObjectId
-  userId     String
-  user       User     @relation(fields: [userId], references: [id])
-  productId  String
-  product    Product  @relation(fields: [productId], references: [id])
-  rating     Int      // e.g. 1 to 5
-  comment    String
-  createdAt  DateTime @default(now())
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  rating    Int // e.g. 1 to 5
+  comment   String
+  createdAt DateTime @default(now())
 }
 
 model ContactQuery {
-  id      String   @id @default(auto()) @map("_id") @db.ObjectId
+  id      String @id @default(auto()) @map("_id") @db.ObjectId
   name    String
   email   String
   message String
 
-  userId  String?     // Optional, since not all queries may be by registered users
-  user    User?       @relation(fields: [userId], references: [id])
+  userId String? // Optional, since not all queries may be by registered users
+  user   User?   @relation(fields: [userId], references: [id])
 }
 
 model OrderItem {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  id        String @id @default(auto()) @map("_id") @db.ObjectId
   orderId   String
   productId String
   quantity  Int
   price     Float
 
-  order     Order    @relation(fields: [orderId], references: [id])
-  product   Product  @relation(fields: [productId], references: [id])
+  order   Order   @relation(fields: [orderId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  // Every order-detail fetch loads its items by orderId (getOrderById,
+  // the draft-order upsert's deleteMany/create pair); admin analytics and
+  // best-seller aggregation join back through productId.
+  @@index([orderId])
+  @@index([productId])
 }
 
-
 model Banner {
-  id        String   @id @map("_id") @default(auto()) @db.ObjectId
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
   imageUrl  String
   linkUrl   String?
   createdAt DateTime @default(now())
 }
 
 model Address {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  name      String
-  phone     String
-  pincode   String
-  city      String
-  houseArea String
+  id                   String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id])
+  name                 String
+  phone                String
+  pincode              String
+  city                 String
+  houseArea            String
   // Locality / sector / colony — distinct from `houseArea` (house no.,
   // building, street). Optional at the schema level so pre-existing
   // addresses (created before this field existed) keep working unchanged;
@@ -299,11 +323,10 @@ model Address {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  orders    Order[]
+  orders Order[]
 
   @@index([userId])
 }
-
 
 // Event-level webhook ledger — deliberately separate from Order's own
 // order-level idempotency (payment.service.js's "paymentStatus: { not:
@@ -318,21 +341,21 @@ model Address {
 // logic runs at all, and the raw payload is kept as an audit trail
 // independent of whatever the order's row later gets overwritten with.
 model WebhookEvent {
-  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
   // 'razorpay' today; kept as a field (not hardcoded) so another provider's
   // webhook (e.g. Ekart shipping) could reuse this table later without a
   // schema change — @@unique below is scoped per-source accordingly.
-  source      String
+  source     String
   // Razorpay's x-razorpay-event-id header value.
-  eventId     String
-  eventType   String
+  eventId    String
+  eventType  String
   // Denormalized out of `payload` purely so a duplicate/audit lookup
   // doesn't need to inspect the JSON — the payload itself remains the
   // source of truth for these.
-  orderId     String?
-  paymentId   String?
-  payload     Json
-  receivedAt  DateTime  @default(now())
+  orderId    String?
+  paymentId  String?
+  payload    Json
+  receivedAt DateTime @default(now())
 
   // One record per (source, eventId) — this is what makes a duplicate
   // delivery detectable at all; see handleRazorpayWebhookEvent.
@@ -358,16 +381,16 @@ enum ShipmentStatus {
 }
 
 model Shipment {
-  id                 String         @id @default(auto()) @map("_id") @db.ObjectId
-  orderId            String         @unique // references Order.id
-  trackingId         String?        @unique // Ekart tracking ID / AWB number, set once Ekart returns one
-  awbNumber          String?
-  courierPartner     String         @default("Ekart")
-  status             ShipmentStatus @default(CREATED)
-  paymentMode        String         // 'COD' | 'PREPAID', copied from the order at creation time
-  codAmount          Float          @default(0)
-  pickupLocationCode String?
-  lastLocation       String?
+  id                    String         @id @default(auto()) @map("_id") @db.ObjectId
+  orderId               String         @unique // references Order.id
+  trackingId            String?        @unique // Ekart tracking ID / AWB number, set once Ekart returns one
+  awbNumber             String?
+  courierPartner        String         @default("Ekart")
+  status                ShipmentStatus @default(CREATED)
+  paymentMode           String // 'COD' | 'PREPAID', copied from the order at creation time
+  codAmount             Float          @default(0)
+  pickupLocationCode    String?
+  lastLocation          String?
   // Delivery-by estimate for this shipment. Set from Ekart's create-shipment
   // response at creation time (see createShipmentForOrder), and kept fresh
   // by trackOrderShipment / handleEkartWebhookEvent whenever Ekart returns a
@@ -376,11 +399,8 @@ model Shipment {
   // checkServiceability — that's a rough pre-order preview computed from an
   // SLA day-count; this is the real per-shipment estimate once one exists.
   estimatedDeliveryDate DateTime?
-  lastSyncedAt       DateTime?
-  raw                Json?          // last raw payload received from Ekart, kept for debugging
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  lastSyncedAt          DateTime?
+  raw                   Json? // last raw payload received from Ekart, kept for debugging
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
 }
-
-
-

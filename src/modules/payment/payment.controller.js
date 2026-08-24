@@ -33,7 +33,12 @@ exports.createOrderid = async (req, res, next) => {
     // customer sees a checkout modal for an order that no longer matches
     // reality or could never actually be shipped.
     const conflicts = [
-      ...(await orderService.detectAddressConflict(draftOrder.addressId, userId, undefined, 'PREPAID')),
+      ...(await orderService.detectAddressConflict(
+        draftOrder.addressId,
+        userId,
+        undefined,
+        'PREPAID'
+      )),
       ...(await orderService.detectOrderConflicts(draftOrder.orderItems)),
       ...orderService.detectPricingConflict(draftOrder),
     ];
@@ -64,8 +69,13 @@ exports.createOrderid = async (req, res, next) => {
     // thing /verify and the webhook use to find it again. That silently
     // orphans a payment already captured against the old id: Razorpay
     // still has the money, but nothing in our DB points at it anymore.
-    if (draftOrder.payment_order_id && RECONCILABLE_PAYMENT_STATUSES.includes(draftOrder.paymentStatus)) {
-      const existing = await paymentService.fetchRazorpayOrder(draftOrder.payment_order_id);
+    if (
+      draftOrder.payment_order_id &&
+      RECONCILABLE_PAYMENT_STATUSES.includes(draftOrder.paymentStatus)
+    ) {
+      const existing = await paymentService.fetchRazorpayOrder(
+        draftOrder.payment_order_id
+      );
 
       if (existing && existing.amount === expectedAmountPaise) {
         if (existing.status === 'paid') {
@@ -75,7 +85,9 @@ exports.createOrderid = async (req, res, next) => {
           // rather than making the customer wait on the webhook or,
           // worse, letting them see a fresh checkout modal for an order
           // that's already paid.
-          const payments = await paymentService.fetchOrderPayments(draftOrder.payment_order_id);
+          const payments = await paymentService.fetchOrderPayments(
+            draftOrder.payment_order_id
+          );
           const captured = payments.find((p) => p.status === 'captured');
 
           if (captured) {
@@ -97,7 +109,10 @@ exports.createOrderid = async (req, res, next) => {
           // safe to hand back as-is instead of minting a new one.
           return res.sendResponse({
             message: 'Razorpay order created successfully',
-            data: { order: existing, key_id: paymentService.getGatewayPublicConfig().key_id },
+            data: {
+              order: existing,
+              key_id: paymentService.getGatewayPublicConfig().key_id,
+            },
           });
         }
       }
@@ -127,7 +142,9 @@ exports.createOrderid = async (req, res, next) => {
       // they paid against it, nothing could ever find this order by that
       // id again. Fall back to whatever the winner actually persisted,
       // same as the reuse-or-reconcile path in Step 3 above.
-      const current = await prisma.order.findUnique({ where: { id: draftOrder.id } });
+      const current = await prisma.order.findUnique({
+        where: { id: draftOrder.id },
+      });
       const winningOrder = current?.payment_order_id
         ? await paymentService.fetchRazorpayOrder(current.payment_order_id)
         : null;
@@ -135,13 +152,19 @@ exports.createOrderid = async (req, res, next) => {
       if (winningOrder) {
         return res.sendResponse({
           message: 'Razorpay order created successfully',
-          data: { order: winningOrder, key_id: paymentService.getGatewayPublicConfig().key_id },
+          data: {
+            order: winningOrder,
+            key_id: paymentService.getGatewayPublicConfig().key_id,
+          },
         });
       }
 
       // Couldn't resolve the winner either (lookup failed) — safer to ask
       // the client to retry than to hand back an order id nothing points at.
-      throw new CustomError('Could not create a payment order for this draft. Please try again.', 409);
+      throw new CustomError(
+        'Could not create a payment order for this draft. Please try again.',
+        409
+      );
     }
 
     res.sendResponse({
@@ -156,14 +179,10 @@ exports.createOrderid = async (req, res, next) => {
   }
 };
 
-
 exports.verifyPayment = async (req, res, next) => {
   try {
-    const {
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature,
-    } = req.body;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
+      req.body;
 
     const isValid = paymentService.verifyRazorpaySignature(
       razorpay_order_id,
@@ -193,7 +212,10 @@ exports.verifyPayment = async (req, res, next) => {
     }
 
     if (owningOrder.userId !== req.user.userId) {
-      throw new CustomError('This payment does not belong to your account', 403);
+      throw new CustomError(
+        'This payment does not belong to your account',
+        403
+      );
     }
 
     // A valid signature only proves the order_id/payment_id/signature triple
@@ -202,10 +224,14 @@ exports.verifyPayment = async (req, res, next) => {
     // right amount. Fetch the payment straight from Razorpay (not the
     // client-supplied req.body) and check its real status/amount against
     // our own server-side order total before trusting any of this.
-    const payment = await paymentService.fetchRazorpayPayment(razorpay_payment_id);
+    const payment =
+      await paymentService.fetchRazorpayPayment(razorpay_payment_id);
 
     if (!payment) {
-      throw new CustomError('Unable to verify payment with Razorpay. Please try again.', 502);
+      throw new CustomError(
+        'Unable to verify payment with Razorpay. Please try again.',
+        502
+      );
     }
 
     if (payment.order_id !== razorpay_order_id) {
@@ -224,10 +250,11 @@ exports.verifyPayment = async (req, res, next) => {
     // Idempotent: a second call for the same order (client retry, double
     // submit, or a race with the webhook) just confirms it's already paid
     // instead of re-applying the update.
-    const { order, alreadyProcessed } = await paymentService.updateOrderAfterPayment(
-      razorpay_order_id,
-      razorpay_payment_id
-    );
+    const { order, alreadyProcessed } =
+      await paymentService.updateOrderAfterPayment(
+        razorpay_order_id,
+        razorpay_payment_id
+      );
 
     res.sendResponse({
       message: alreadyProcessed
@@ -325,5 +352,3 @@ exports.cancelPayment = async (req, res, next) => {
     next(error);
   }
 };
-
-

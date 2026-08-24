@@ -129,9 +129,7 @@ describe('GET /api/inventory/low-stock', () => {
   });
 
   it('422s on a negative threshold', async () => {
-    const res = await request(app).get(
-      '/api/inventory/low-stock?threshold=-1'
-    );
+    const res = await request(app).get('/api/inventory/low-stock?threshold=-1');
 
     expect(res.status).toBe(422);
     expect(inventoryService.listLowStockProducts).not.toHaveBeenCalled();
@@ -212,7 +210,10 @@ describe('PATCH /api/inventory/:productId', () => {
   });
 
   it('omits expectedStock from the service call when not provided (previous behavior)', async () => {
-    inventoryService.adjustStock.mockResolvedValue({ id: VALID_PRODUCT_ID, stock: 20 });
+    inventoryService.adjustStock.mockResolvedValue({
+      id: VALID_PRODUCT_ID,
+      stock: 20,
+    });
 
     await request(app)
       .patch(`/api/inventory/${VALID_PRODUCT_ID}`)
@@ -226,7 +227,10 @@ describe('PATCH /api/inventory/:productId', () => {
   });
 
   it('forwards expectedStock to the service as an optimistic-concurrency precondition', async () => {
-    inventoryService.adjustStock.mockResolvedValue({ id: VALID_PRODUCT_ID, stock: 20 });
+    inventoryService.adjustStock.mockResolvedValue({
+      id: VALID_PRODUCT_ID,
+      stock: 20,
+    });
 
     const res = await request(app)
       .patch(`/api/inventory/${VALID_PRODUCT_ID}`)
@@ -243,9 +247,13 @@ describe('PATCH /api/inventory/:productId', () => {
 
   it('409s with the authoritative current stock when expectedStock is stale', async () => {
     inventoryService.adjustStock.mockRejectedValue(
-      new CustomError('Stock has changed since it was loaded. Refresh and try again.', 409, {
-        currentStock: 14,
-      })
+      new CustomError(
+        'Stock has changed since it was loaded. Refresh and try again.',
+        409,
+        {
+          currentStock: 14,
+        }
+      )
     );
 
     const res = await request(app)

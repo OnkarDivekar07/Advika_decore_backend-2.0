@@ -18,11 +18,15 @@ const logger = winston.createLogger({
     : winston.format.combine(
         winston.format.colorize(),
         winston.format.timestamp({ format: 'HH:mm:ss' }),
-        winston.format.printf(({ timestamp, level, message, stack, ...meta }) => {
-          delete meta.service;
-          const extra = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
-          return `${timestamp} ${level}: ${stack || message}${extra}`;
-        })
+        winston.format.printf(
+          ({ timestamp, level, message, stack, ...meta }) => {
+            delete meta.service;
+            const extra = Object.keys(meta).length
+              ? ` ${JSON.stringify(meta)}`
+              : '';
+            return `${timestamp} ${level}: ${stack || message}${extra}`;
+          }
+        )
       ),
   transports: [new winston.transports.Console()],
   exitOnError: false,

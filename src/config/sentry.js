@@ -116,4 +116,8 @@ if (isEnabled) {
   });
 }
 
-module.exports = { Sentry, isEnabled, __test: { redactHeaders, redactSensitiveKeys, scrubEvent } };
+module.exports = {
+  Sentry,
+  isEnabled,
+  __test: { redactHeaders, redactSensitiveKeys, scrubEvent },
+};

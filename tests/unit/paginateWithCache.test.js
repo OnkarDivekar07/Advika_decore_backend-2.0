@@ -106,20 +106,36 @@ describe('paginateWithCache', () => {
   it('falls back to the default limit for a non-positive or non-numeric limit', async () => {
     const model = buildModel([], 0);
 
-    await paginateWithCache({ model, req: { query: { limit: '-5' } }, cachePrefix: 'x1' });
+    await paginateWithCache({
+      model,
+      req: { query: { limit: '-5' } },
+      cachePrefix: 'x1',
+    });
     expect(model.findMany.mock.calls[0][0].take).toBe(10);
 
-    await paginateWithCache({ model, req: { query: { limit: 'not-a-number' } }, cachePrefix: 'x2' });
+    await paginateWithCache({
+      model,
+      req: { query: { limit: 'not-a-number' } },
+      cachePrefix: 'x2',
+    });
     expect(model.findMany.mock.calls[1][0].take).toBe(10);
   });
 
   it('falls back to page 1 for a non-positive or non-numeric page', async () => {
     const model = buildModel([], 0);
 
-    await paginateWithCache({ model, req: { query: { page: '0' } }, cachePrefix: 'x3' });
+    await paginateWithCache({
+      model,
+      req: { query: { page: '0' } },
+      cachePrefix: 'x3',
+    });
     expect(model.findMany.mock.calls[0][0].skip).toBe(0);
 
-    await paginateWithCache({ model, req: { query: { page: '-3' } }, cachePrefix: 'x4' });
+    await paginateWithCache({
+      model,
+      req: { query: { page: '-3' } },
+      cachePrefix: 'x4',
+    });
     expect(model.findMany.mock.calls[1][0].skip).toBe(0);
   });
 });

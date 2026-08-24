@@ -27,7 +27,9 @@ jest.mock('@modules/payment/payment.service', () => ({
   // without it the mock returns undefined, the controller throws calling
   // it as a function, and every create-orderid test 500s instead of
   // getting to its assertions.
-  getGatewayPublicConfig: jest.fn(() => ({ key_id: process.env.RAZORPAY_KEY_ID })),
+  getGatewayPublicConfig: jest.fn(() => ({
+    key_id: process.env.RAZORPAY_KEY_ID,
+  })),
 }));
 
 jest.mock('@modules/order/order.service', () => ({
@@ -55,7 +57,10 @@ const errorHandler = require('@middlewares/errorHandler');
 // paymentService.createRazorpayOrder now resolves { razorpayOrder, persisted }
 // (see payment.service.js) — this helper builds the "won the race, safe to
 // hand straight back to the client" case that most create-orderid tests want.
-const persistedRazorpayOrder = (razorpayOrder) => ({ razorpayOrder, persisted: true });
+const persistedRazorpayOrder = (razorpayOrder) => ({
+  razorpayOrder,
+  persisted: true,
+});
 
 const buildApp = () => {
   const app = express();
@@ -97,7 +102,10 @@ describe('POST /api/payment/verify', () => {
 
   it('confirms the order on a valid signature and a matching captured payment', async () => {
     paymentService.verifyRazorpaySignature.mockReturnValue(true);
-    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'user_1', total: 500 });
+    mockDraftOrder.findUnique.mockResolvedValue({
+      userId: 'user_1',
+      total: 500,
+    });
     paymentService.fetchRazorpayPayment.mockResolvedValue({
       order_id: 'order_1',
       status: 'captured',
@@ -140,7 +148,10 @@ describe('POST /api/payment/verify', () => {
 
   it("403s when the order belongs to a different user (can't replay someone else's payment ids)", async () => {
     paymentService.verifyRazorpaySignature.mockReturnValue(true);
-    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'someone_else', total: 500 });
+    mockDraftOrder.findUnique.mockResolvedValue({
+      userId: 'someone_else',
+      total: 500,
+    });
 
     const res = await request(app).post('/api/payment/verify').send({
       razorpay_order_id: 'order_1',
@@ -154,7 +165,10 @@ describe('POST /api/payment/verify', () => {
 
   it('502s when the payment cannot be independently fetched from Razorpay', async () => {
     paymentService.verifyRazorpaySignature.mockReturnValue(true);
-    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'user_1', total: 500 });
+    mockDraftOrder.findUnique.mockResolvedValue({
+      userId: 'user_1',
+      total: 500,
+    });
     paymentService.fetchRazorpayPayment.mockResolvedValue(null);
 
     const res = await request(app).post('/api/payment/verify').send({
@@ -169,7 +183,10 @@ describe('POST /api/payment/verify', () => {
 
   it("400s when the fetched payment's order_id does not match", async () => {
     paymentService.verifyRazorpaySignature.mockReturnValue(true);
-    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'user_1', total: 500 });
+    mockDraftOrder.findUnique.mockResolvedValue({
+      userId: 'user_1',
+      total: 500,
+    });
     paymentService.fetchRazorpayPayment.mockResolvedValue({
       order_id: 'order_other',
       status: 'captured',
@@ -189,7 +206,10 @@ describe('POST /api/payment/verify', () => {
 
   it('400s when the fetched payment is not captured', async () => {
     paymentService.verifyRazorpaySignature.mockReturnValue(true);
-    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'user_1', total: 500 });
+    mockDraftOrder.findUnique.mockResolvedValue({
+      userId: 'user_1',
+      total: 500,
+    });
     paymentService.fetchRazorpayPayment.mockResolvedValue({
       order_id: 'order_1',
       status: 'authorized',
@@ -209,7 +229,10 @@ describe('POST /api/payment/verify', () => {
 
   it("400s when the captured payment's amount does not match the order total", async () => {
     paymentService.verifyRazorpaySignature.mockReturnValue(true);
-    mockDraftOrder.findUnique.mockResolvedValue({ userId: 'user_1', total: 500 });
+    mockDraftOrder.findUnique.mockResolvedValue({
+      userId: 'user_1',
+      total: 500,
+    });
     paymentService.fetchRazorpayPayment.mockResolvedValue({
       order_id: 'order_1',
       status: 'captured',
@@ -445,7 +468,12 @@ describe('POST /api/payment/create-orderid', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.order).toEqual({ id: 'rzp_order_1' });
     expect(res.body.data.key_id).toBe(process.env.RAZORPAY_KEY_ID);
-    expect(orderService.detectAddressConflict).toHaveBeenCalledWith('addr_1', 'user_1', undefined, 'PREPAID');
+    expect(orderService.detectAddressConflict).toHaveBeenCalledWith(
+      'addr_1',
+      'user_1',
+      undefined,
+      'PREPAID'
+    );
     expect(orderService.detectOrderConflicts).toHaveBeenCalledWith([
       { productId: 'p1', quantity: 1, price: 499 },
     ]);
@@ -477,14 +505,20 @@ describe('POST /api/payment/create-orderid', () => {
       razorpayOrder: { id: 'rzp_order_loser' },
       persisted: false,
     });
-    mockDraftOrder.findUnique.mockResolvedValue({ payment_order_id: 'rzp_order_winner' });
-    paymentService.fetchRazorpayOrder.mockResolvedValue({ id: 'rzp_order_winner' });
+    mockDraftOrder.findUnique.mockResolvedValue({
+      payment_order_id: 'rzp_order_winner',
+    });
+    paymentService.fetchRazorpayOrder.mockResolvedValue({
+      id: 'rzp_order_winner',
+    });
 
     const res = await request(app).post('/api/payment/create-orderid').send();
 
     expect(res.status).toBe(200);
     expect(res.body.data.order).toEqual({ id: 'rzp_order_winner' });
-    expect(paymentService.fetchRazorpayOrder).toHaveBeenCalledWith('rzp_order_winner');
+    expect(paymentService.fetchRazorpayOrder).toHaveBeenCalledWith(
+      'rzp_order_winner'
+    );
   });
 
   // Regression coverage for one specific invariant: the amount actually
@@ -537,7 +571,8 @@ describe('POST /api/payment/create-orderid', () => {
         type: 'price_changed',
         orderedPrice: 499,
         currentPrice: 599,
-        message: 'The price of this item has changed since it was added to your order.',
+        message:
+          'The price of this item has changed since it was added to your order.',
       },
     ]);
 
@@ -564,7 +599,8 @@ describe('POST /api/payment/create-orderid', () => {
     orderService.detectAddressConflict.mockResolvedValue([
       {
         type: 'address_unavailable',
-        message: 'The delivery address for this order is no longer available. Please choose a different address.',
+        message:
+          'The delivery address for this order is no longer available. Please choose a different address.',
       },
     ]);
 
@@ -596,7 +632,8 @@ describe('POST /api/payment/create-orderid', () => {
     orderService.detectPricingConflict.mockReturnValue([
       {
         type: 'pricing_changed',
-        message: 'The delivery charge or total for this order has changed. Please refresh your order before proceeding.',
+        message:
+          'The delivery charge or total for this order has changed. Please refresh your order before proceeding.',
         previousTotal: 447,
         currentTotal: 398,
       },

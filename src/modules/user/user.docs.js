@@ -269,7 +269,6 @@
  *         description: Forbidden (not your address)
  */
 
-
 /**
  * @swagger
  * /api/user/profile:

@@ -590,21 +590,25 @@ describe('pricing fields in the request body can never override the server-compu
       product: inStockProduct({ price: 199 }),
     });
     mockCart.findMany.mockResolvedValue([
-      { id: 'cart_1', userId: 'user_1', productId: 'prod_1', quantity: 1, product: inStockProduct({ price: 199 }) },
-    ]);
-
-    const res = await request(app)
-      .put('/api/cart')
-      .send({
+      {
+        id: 'cart_1',
+        userId: 'user_1',
         productId: 'prod_1',
         quantity: 1,
-        // Hostile extras a tampered client might try to sneak in:
-        deliveryCharge: 0,
-        shippingCharge: 0,
-        price: 1, // try to overwrite the product's real ₹199 price
-        total: 1,
-        discount: 500,
-      });
+        product: inStockProduct({ price: 199 }),
+      },
+    ]);
+
+    const res = await request(app).put('/api/cart').send({
+      productId: 'prod_1',
+      quantity: 1,
+      // Hostile extras a tampered client might try to sneak in:
+      deliveryCharge: 0,
+      shippingCharge: 0,
+      price: 1, // try to overwrite the product's real ₹199 price
+      total: 1,
+      discount: 500,
+    });
 
     expect(res.status).toBe(200);
     // The upsert only ever wrote productId/quantity — nothing price-shaped
@@ -618,7 +622,11 @@ describe('pricing fields in the request body can never override the server-compu
     // The response summary still reflects the real ₹199 product price
     // (below the ₹600 threshold -> ₹49 delivery charge), not the
     // ₹0 delivery / ₹1 total the request body tried to claim.
-    expect(res.body.meta.summary).toEqual({ subtotal: 199, deliveryCharge: 49, total: 248 });
+    expect(res.body.meta.summary).toEqual({
+      subtotal: 199,
+      deliveryCharge: 49,
+      total: 248,
+    });
   });
 
   it('POST /api/cart: a client-supplied per-item price/deliveryCharge is ignored — the live product price always wins', async () => {
@@ -626,7 +634,13 @@ describe('pricing fields in the request body can never override the server-compu
     mockCart.deleteMany.mockResolvedValue({});
     mockCart.createMany.mockResolvedValue({});
     mockCart.findMany.mockResolvedValue([
-      { id: 'cart_1', userId: 'user_1', productId: 'prod_1', quantity: 1, product: inStockProduct({ price: 199 }) },
+      {
+        id: 'cart_1',
+        userId: 'user_1',
+        productId: 'prod_1',
+        quantity: 1,
+        product: inStockProduct({ price: 199 }),
+      },
     ]);
 
     const res = await request(app)
@@ -644,6 +658,10 @@ describe('pricing fields in the request body can never override the server-compu
     expect(mockCart.createMany).toHaveBeenCalledWith({
       data: [{ userId: 'user_1', productId: 'prod_1', quantity: 1 }],
     });
-    expect(res.body.meta.summary).toEqual({ subtotal: 199, deliveryCharge: 49, total: 248 });
+    expect(res.body.meta.summary).toEqual({
+      subtotal: 199,
+      deliveryCharge: 49,
+      total: 248,
+    });
   });
 });

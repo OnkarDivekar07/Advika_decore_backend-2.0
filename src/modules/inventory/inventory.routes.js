@@ -38,23 +38,13 @@ router.get(
  * @desc    Get current stock for a single product
  * @access  Admin
  */
-router.get(
-  '/:productId',
-  validateProductIdParam,
-  validateRequest,
-  getStock
-);
+router.get('/:productId', validateProductIdParam, validateRequest, getStock);
 
 /**
  * @route   PATCH /api/inventory/:productId
  * @desc    Manually adjust stock (set / increment / decrement) — restocks and corrections
  * @access  Admin
  */
-router.patch(
-  '/:productId',
-  validateAdjustStock,
-  validateRequest,
-  adjustStock
-);
+router.patch('/:productId', validateAdjustStock, validateRequest, adjustStock);
 
 module.exports = router;

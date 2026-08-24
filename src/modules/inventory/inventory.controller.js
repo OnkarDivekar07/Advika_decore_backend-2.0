@@ -3,7 +3,9 @@ const inventoryService = require('./inventory.service');
 
 exports.getStock = async (req, res, next) => {
   try {
-    const result = await inventoryService.getStockForProduct(req.params.productId);
+    const result = await inventoryService.getStockForProduct(
+      req.params.productId
+    );
 
     res.sendResponse({
       message: 'Stock fetched successfully',
@@ -40,7 +42,12 @@ exports.adjustStock = async (req, res, next) => {
     const product =
       expectedStock === undefined
         ? await inventoryService.adjustStock(productId, action, quantity)
-        : await inventoryService.adjustStock(productId, action, quantity, expectedStock);
+        : await inventoryService.adjustStock(
+            productId,
+            action,
+            quantity,
+            expectedStock
+          );
 
     res.sendResponse({
       message: 'Stock updated successfully',

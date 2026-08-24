@@ -1,5 +1,8 @@
 const prisma = require('@config/prisma');
-const { formatUser, formatUserDetail } = require('@utils/transformers/userTransformer');
+const {
+  formatUser,
+  formatUserDetail,
+} = require('@utils/transformers/userTransformer');
 const bcrypt = require('bcrypt');
 const CustomError = require('@utils/customError');
 const generateToken = require('@utils/generateToken');
@@ -274,7 +277,9 @@ const SHIPMENT_EXCEPTION_STATUSES = ['DELIVERY_FAILED', 'RTO_INITIATED'];
  * admin who needs the full list already has Inventory.jsx (low stock) and
  * Orders.jsx (status/paymentStatus filters) for that.
  */
-exports.getOperationalAlerts = async ({ lowStockThreshold = DEFAULT_LOW_STOCK_THRESHOLD } = {}) => {
+exports.getOperationalAlerts = async ({
+  lowStockThreshold = DEFAULT_LOW_STOCK_THRESHOLD,
+} = {}) => {
   const [
     lowStockProducts,
     pendingOrdersCount,
@@ -304,7 +309,9 @@ exports.getOperationalAlerts = async ({ lowStockThreshold = DEFAULT_LOW_STOCK_TH
       },
     }),
 
-    prisma.order.count({ where: { paymentStatus: { in: PAYMENT_EXCEPTION_STATUSES } } }),
+    prisma.order.count({
+      where: { paymentStatus: { in: PAYMENT_EXCEPTION_STATUSES } },
+    }),
     prisma.order.findMany({
       where: { paymentStatus: { in: PAYMENT_EXCEPTION_STATUSES } },
       orderBy: { createdAt: 'desc' },
@@ -318,7 +325,9 @@ exports.getOperationalAlerts = async ({ lowStockThreshold = DEFAULT_LOW_STOCK_TH
       },
     }),
 
-    prisma.shipment.count({ where: { status: { in: SHIPMENT_EXCEPTION_STATUSES } } }),
+    prisma.shipment.count({
+      where: { status: { in: SHIPMENT_EXCEPTION_STATUSES } },
+    }),
     prisma.shipment.findMany({
       where: { status: { in: SHIPMENT_EXCEPTION_STATUSES } },
       orderBy: { updatedAt: 'desc' },
@@ -343,7 +352,11 @@ exports.getOperationalAlerts = async ({ lowStockThreshold = DEFAULT_LOW_STOCK_TH
   const relatedOrders = exceptionOrderIds.length
     ? await prisma.order.findMany({
         where: { id: { in: exceptionOrderIds } },
-        select: { id: true, total: true, user: { select: { name: true, email: true } } },
+        select: {
+          id: true,
+          total: true,
+          user: { select: { name: true, email: true } },
+        },
       })
     : [];
   const orderById = new Map(relatedOrders.map((o) => [o.id, o]));
@@ -360,7 +373,10 @@ exports.getOperationalAlerts = async ({ lowStockThreshold = DEFAULT_LOW_STOCK_TH
         id: order.id,
         total: order.total,
         createdAt: order.createdAt,
-        user: { name: order.user?.name || 'N/A', email: order.user?.email || null },
+        user: {
+          name: order.user?.name || 'N/A',
+          email: order.user?.email || null,
+        },
       })),
     },
     paymentExceptions: {
@@ -370,7 +386,10 @@ exports.getOperationalAlerts = async ({ lowStockThreshold = DEFAULT_LOW_STOCK_TH
         total: order.total,
         paymentStatus: order.paymentStatus,
         createdAt: order.createdAt,
-        user: { name: order.user?.name || 'N/A', email: order.user?.email || null },
+        user: {
+          name: order.user?.name || 'N/A',
+          email: order.user?.email || null,
+        },
       })),
     },
     shipmentExceptions: {
@@ -385,7 +404,12 @@ exports.getOperationalAlerts = async ({ lowStockThreshold = DEFAULT_LOW_STOCK_TH
           lastLocation: shipment.lastLocation,
           updatedAt: shipment.updatedAt,
           total: order?.total ?? null,
-          user: order ? { name: order.user?.name || 'N/A', email: order.user?.email || null } : null,
+          user: order
+            ? {
+                name: order.user?.name || 'N/A',
+                email: order.user?.email || null,
+              }
+            : null,
         };
       }),
     },

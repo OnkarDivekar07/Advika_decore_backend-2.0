@@ -93,13 +93,18 @@ const deliveryCharge = parseNonNegativeNumber(
 // (see shipping.service.js's checkServiceability, which throws a 503
 // instead of ever guessing).
 const ALLOWED_SHIPPING_FALLBACK_POLICIES = ['fail_open', 'fail_closed'];
-const rawShippingFallbackPolicy = process.env.SHIPPING_SERVICEABILITY_FALLBACK_POLICY;
+const rawShippingFallbackPolicy =
+  process.env.SHIPPING_SERVICEABILITY_FALLBACK_POLICY;
 const shippingServiceabilityFallbackPolicy =
   rawShippingFallbackPolicy === undefined || rawShippingFallbackPolicy === ''
     ? 'fail_open'
     : rawShippingFallbackPolicy;
 
-if (!ALLOWED_SHIPPING_FALLBACK_POLICIES.includes(shippingServiceabilityFallbackPolicy)) {
+if (
+  !ALLOWED_SHIPPING_FALLBACK_POLICIES.includes(
+    shippingServiceabilityFallbackPolicy
+  )
+) {
   throw new Error(
     `Invalid SHIPPING_SERVICEABILITY_FALLBACK_POLICY: '${rawShippingFallbackPolicy}' — must be one of ${ALLOWED_SHIPPING_FALLBACK_POLICIES.join(', ')}`
   );

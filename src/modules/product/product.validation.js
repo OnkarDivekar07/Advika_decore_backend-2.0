@@ -19,9 +19,14 @@ const voltageValidator = ({ requireOnCreate }) =>
   body('voltage').custom((value, { req }) => {
     let category = req.body.category;
     if (!Array.isArray(category)) {
-      category = typeof category === 'string' ? category.split(',').map((c) => c.trim()) : [];
+      category =
+        typeof category === 'string'
+          ? category.split(',').map((c) => c.trim())
+          : [];
     }
-    const needsVoltage = category.some((c) => VOLTAGE_REQUIRED_CATEGORIES.includes(c));
+    const needsVoltage = category.some((c) =>
+      VOLTAGE_REQUIRED_CATEGORIES.includes(c)
+    );
 
     if (value === undefined || value === null || value === '') {
       if (requireOnCreate && needsVoltage) {
@@ -89,14 +94,23 @@ exports.validateGetProductsByIds = [
     .withMessage('ids must be a comma-separated string of product ids')
     .bail()
     .customSanitizer((value) =>
-      Array.from(new Set(value.split(',').map((id) => id.trim()).filter(Boolean)))
+      Array.from(
+        new Set(
+          value
+            .split(',')
+            .map((id) => id.trim())
+            .filter(Boolean)
+        )
+      )
     )
     .custom((ids) => {
       if (ids.length === 0) {
         throw new Error('ids must contain at least one product id');
       }
       if (ids.length > MAX_BATCH_IDS) {
-        throw new Error(`ids cannot contain more than ${MAX_BATCH_IDS} product ids`);
+        throw new Error(
+          `ids cannot contain more than ${MAX_BATCH_IDS} product ids`
+        );
       }
       return true;
     }),
@@ -116,7 +130,10 @@ exports.MAX_BATCH_IDS = MAX_BATCH_IDS;
 // frontend/src/services/productsService.js), so this is purely additive:
 // it rejects malformed input, it doesn't narrow anything already working.
 exports.validateGetProductsQuery = [
-  query('page').optional().isInt({ min: 1 }).withMessage('page must be an integer greater than 0'),
+  query('page')
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage('page must be an integer greater than 0'),
 
   query('limit')
     .optional()
@@ -133,9 +150,14 @@ exports.validateGetProductsQuery = [
   query('sort')
     .optional()
     .isIn(['createdAt', 'name', 'price', 'stock', 'rating', 'isBestSeller'])
-    .withMessage('sort must be one of createdAt, name, price, stock, rating, isBestSeller'),
+    .withMessage(
+      'sort must be one of createdAt, name, price, stock, rating, isBestSeller'
+    ),
 
-  query('order').optional().isIn(['asc', 'desc']).withMessage('order must be asc or desc'),
+  query('order')
+    .optional()
+    .isIn(['asc', 'desc'])
+    .withMessage('order must be asc or desc'),
 
   query('search')
     .optional()
@@ -161,10 +183,19 @@ exports.validateGetProductsQuery = [
     .isLength({ max: 100 })
     .withMessage('brand must be 100 characters or fewer'),
 
-  query('minPrice').optional().isFloat({ min: 0 }).withMessage('minPrice must be a number ≥ 0'),
-  query('maxPrice').optional().isFloat({ min: 0 }).withMessage('maxPrice must be a number ≥ 0'),
+  query('minPrice')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('minPrice must be a number ≥ 0'),
+  query('maxPrice')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('maxPrice must be a number ≥ 0'),
 
-  query('inStock').optional().isIn(['true', 'false']).withMessage('inStock must be true or false'),
+  query('inStock')
+    .optional()
+    .isIn(['true', 'false'])
+    .withMessage('inStock must be true or false'),
   query('isNewArrival')
     .optional()
     .isIn(['true', 'false'])

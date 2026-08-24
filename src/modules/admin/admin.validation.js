@@ -60,7 +60,8 @@ const validateAnalyticsDateRange = [
       if (!req.query.dateFrom) return true;
       const from = new Date(req.query.dateFrom);
       const to = new Date(value);
-      if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return true; // already flagged individually
+      if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()))
+        return true; // already flagged individually
       if (to < from) {
         throw new Error('dateTo must not be before dateFrom');
       }

@@ -62,7 +62,7 @@ const KPI_DEFINITIONS = Object.freeze({
     'divide-by-zero error) when there are no paid orders in range.',
   orderCount:
     'Count of all placed orders (every status except the in-progress "draft" cart state — see ' +
-    'order.service.js\'s getAllOrders for why drafts are excluded everywhere in the admin panel) with ' +
+    "order.service.js's getAllOrders for why drafts are excluded everywhere in the admin panel) with " +
     'createdAt within the selected range, regardless of status or payment outcome.',
   deliveredOrders:
     'Count of orders with status="delivered" and createdAt within the selected range.',
@@ -79,10 +79,9 @@ const KPI_DEFINITIONS = Object.freeze({
 const TREND_DEFINITIONS = Object.freeze({
   revenue:
     'Sum of Order.total for paid orders (paymentStatus="paid") whose createdAt falls in this bucket. Same ' +
-    'definition as the overview endpoint\'s grossRevenue, just broken out per period — summing every bucket\'s ' +
-    'revenue for a given range always reconciles with that range\'s grossRevenue from GET /analytics/overview.',
-  orderCount:
-    'Count of paid orders whose createdAt falls in this bucket.',
+    "definition as the overview endpoint's grossRevenue, just broken out per period — summing every bucket's " +
+    "revenue for a given range always reconciles with that range's grossRevenue from GET /analytics/overview.",
+  orderCount: 'Count of paid orders whose createdAt falls in this bucket.',
 });
 
 /**
@@ -196,10 +195,14 @@ exports.getAnalyticsOverview = async ({ dateFrom, dateTo } = {}) => {
   ]);
 
   const grossRevenue = grossRevenueResult._sum.total || 0;
-  const averageOrderValue = paidOrderCount > 0 ? grossRevenue / paidOrderCount : 0;
+  const averageOrderValue =
+    paidOrderCount > 0 ? grossRevenue / paidOrderCount : 0;
 
   return {
-    range: { from: range.from ? range.from.toISOString() : null, to: range.to ? range.to.toISOString() : null },
+    range: {
+      from: range.from ? range.from.toISOString() : null,
+      to: range.to ? range.to.toISOString() : null,
+    },
     grossRevenue,
     paidOrderCount,
     averageOrderValue,
@@ -254,7 +257,9 @@ function toIsoString(value) {
  */
 function buildGroupId(granularity) {
   if (granularity === 'month') {
-    return { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'UTC' } };
+    return {
+      $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'UTC' },
+    };
   }
   if (granularity === 'week') {
     return {
@@ -262,7 +267,9 @@ function buildGroupId(granularity) {
       isoWeek: { $isoWeek: '$createdAt' },
     };
   }
-  return { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'UTC' } };
+  return {
+    $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'UTC' },
+  };
 }
 
 /**
@@ -289,7 +296,9 @@ function labelForBucket(id, granularity) {
  * @param {{ dateFrom?: string, dateTo?: string, granularity?: 'day'|'week'|'month' }} params
  */
 exports.getRevenueTrend = async ({ dateFrom, dateTo, granularity } = {}) => {
-  const safeGranularity = GRANULARITIES.includes(granularity) ? granularity : DEFAULT_GRANULARITY;
+  const safeGranularity = GRANULARITIES.includes(granularity)
+    ? granularity
+    : DEFAULT_GRANULARITY;
 
   const range = resolveDateRange(dateFrom, dateTo);
   // Unlike overview, a totally unbounded trend query would aggregate the

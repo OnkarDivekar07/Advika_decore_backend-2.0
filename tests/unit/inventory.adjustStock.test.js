@@ -28,8 +28,10 @@ const mockProduct = {
     const product = productStore[where.id];
     if (!product) throw new Error('not found');
     if (data.stock && typeof data.stock === 'object') {
-      if (data.stock.increment !== undefined) product.stock += data.stock.increment;
-      if (data.stock.decrement !== undefined) product.stock -= data.stock.decrement;
+      if (data.stock.increment !== undefined)
+        product.stock += data.stock.increment;
+      if (data.stock.decrement !== undefined)
+        product.stock -= data.stock.decrement;
     } else {
       product.stock = data.stock;
     }
@@ -46,7 +48,11 @@ const mockProduct = {
         : product && product.stock === where.stock);
 
     if (product && matchesStock) {
-      if (data.stock && typeof data.stock === 'object' && data.stock.decrement !== undefined) {
+      if (
+        data.stock &&
+        typeof data.stock === 'object' &&
+        data.stock.decrement !== undefined
+      ) {
         product.stock -= data.stock.decrement;
       } else {
         product.stock = data.stock;
@@ -73,7 +79,9 @@ describe('inventoryService.adjustStock', () => {
   it('throws 404 when the product does not exist', async () => {
     resetProducts({});
 
-    await expect(inventoryService.adjustStock('missing', 'set', 5)).rejects.toMatchObject({
+    await expect(
+      inventoryService.adjustStock('missing', 'set', 5)
+    ).rejects.toMatchObject({
       statusCode: 404,
       message: 'Product not found',
     });
@@ -114,9 +122,9 @@ describe('inventoryService.adjustStock', () => {
     it('rejects with a CustomError instance on a stale expectedStock', async () => {
       resetProducts({ prod_1: { id: 'prod_1', stock: 8 } });
 
-      await expect(inventoryService.adjustStock('prod_1', 'set', 20, 5)).rejects.toBeInstanceOf(
-        CustomError
-      );
+      await expect(
+        inventoryService.adjustStock('prod_1', 'set', 20, 5)
+      ).rejects.toBeInstanceOf(CustomError);
     });
   });
 
@@ -124,7 +132,11 @@ describe('inventoryService.adjustStock', () => {
     it('adds to the current stock', async () => {
       resetProducts({ prod_1: { id: 'prod_1', stock: 8 } });
 
-      const result = await inventoryService.adjustStock('prod_1', 'increment', 12);
+      const result = await inventoryService.adjustStock(
+        'prod_1',
+        'increment',
+        12
+      );
 
       expect(result.stock).toBe(20);
     });
@@ -134,7 +146,11 @@ describe('inventoryService.adjustStock', () => {
     it('subtracts from the current stock when enough is available', async () => {
       resetProducts({ prod_1: { id: 'prod_1', stock: 8 } });
 
-      const result = await inventoryService.adjustStock('prod_1', 'decrement', 5);
+      const result = await inventoryService.adjustStock(
+        'prod_1',
+        'decrement',
+        5
+      );
 
       expect(result.stock).toBe(3);
     });
@@ -153,7 +169,9 @@ describe('inventoryService.adjustStock', () => {
   it('throws 400 for an unrecognized action', async () => {
     resetProducts({ prod_1: { id: 'prod_1', stock: 8 } });
 
-    await expect(inventoryService.adjustStock('prod_1', 'nuke', 1)).rejects.toMatchObject({
+    await expect(
+      inventoryService.adjustStock('prod_1', 'nuke', 1)
+    ).rejects.toMatchObject({
       statusCode: 400,
     });
   });

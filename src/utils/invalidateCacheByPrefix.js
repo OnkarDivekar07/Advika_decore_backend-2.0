@@ -21,7 +21,13 @@ const invalidateCacheByPrefix = async (prefix) => {
 
   do {
     // eslint-disable-next-line no-await-in-loop
-    const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+    const [nextCursor, keys] = await redis.scan(
+      cursor,
+      'MATCH',
+      pattern,
+      'COUNT',
+      100
+    );
     cursor = nextCursor;
     if (keys.length > 0) {
       // eslint-disable-next-line no-await-in-loop

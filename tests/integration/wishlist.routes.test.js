@@ -86,7 +86,9 @@ describe('auth guard — all wishlist routes require a logged-in user', () => {
   it('POST /api/wishlist is turned away when the request is unauthenticated', async () => {
     authenticate.mockImplementation(rejectUnauthenticated);
 
-    const res = await request(app).post('/api/wishlist').send({ productId: 'prod_1' });
+    const res = await request(app)
+      .post('/api/wishlist')
+      .send({ productId: 'prod_1' });
 
     expect(res.status).toBe(401);
     expect(mockWishlist.upsert).not.toHaveBeenCalled();
@@ -269,7 +271,9 @@ describe('POST /api/wishlist', () => {
   });
 
   it('404s when the product has been soft-deleted', async () => {
-    mockProduct.findUnique.mockResolvedValue(activeProduct({ isDeleted: true }));
+    mockProduct.findUnique.mockResolvedValue(
+      activeProduct({ isDeleted: true })
+    );
 
     const res = await request(app)
       .post('/api/wishlist')
@@ -375,7 +379,9 @@ describe('DELETE /api/wishlist/:productId', () => {
     expect(mockWishlist.findUnique).toHaveBeenCalledWith({
       where: { userId_productId: { userId: 'user_1', productId: 'prod_1' } },
     });
-    expect(mockWishlist.delete).toHaveBeenCalledWith({ where: { id: 'wish_1' } });
+    expect(mockWishlist.delete).toHaveBeenCalledWith({
+      where: { id: 'wish_1' },
+    });
   });
 
   it('404s when the item is not in the wishlist (already removed elsewhere)', async () => {
@@ -394,7 +400,9 @@ describe('DELETE /api/wishlist/:productId', () => {
 
     expect(res.status).toBe(404);
     expect(mockWishlist.findUnique).toHaveBeenCalledWith({
-      where: { userId_productId: { userId: 'user_1', productId: 'prod_never_added' } },
+      where: {
+        userId_productId: { userId: 'user_1', productId: 'prod_never_added' },
+      },
     });
   });
 

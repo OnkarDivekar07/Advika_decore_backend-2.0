@@ -1,0 +1,41 @@
+name: CI
+
+# Runs a format check and the full Jest suite on every push/PR — the gate
+# that was previously missing entirely (see the engineering audit's
+# DevOps section). No live MongoDB/Redis is needed: every unit and
+# "integration" test in tests/unit and tests/integration mocks Prisma/
+# BullMQ/the payment+shipping SDKs directly (tests/setup/env.js only
+# stamps fake env vars), so `npm test` runs the same way here as it does
+# locally with nothing running.
+#
+# There's no ESLint config in this project (only Prettier, for
+# formatting) — `prettier --check` is the honest equivalent of a lint
+# gate today; add an `npm run lint` step here if/when ESLint is adopted.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Format check
+        run: npx prettier --check .
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Test
+        run: npm test

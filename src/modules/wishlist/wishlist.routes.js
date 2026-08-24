@@ -1,7 +1,11 @@
 const express = require('express');
 const router = express.Router();
 
-const { getWishlist, addToWishlist, removeFromWishlist } = require('./wishlist.controller');
+const {
+  getWishlist,
+  addToWishlist,
+  removeFromWishlist,
+} = require('./wishlist.controller');
 
 const authenticate = require('@middlewares/authenticate');
 const {
@@ -33,6 +37,11 @@ router.post('/', validateAddToWishlist, validateRequest, addToWishlist);
  * @desc    Remove a product from the logged-in user's wishlist
  * @access  User
  */
-router.delete('/:productId', validateWishlistProductParam, validateRequest, removeFromWishlist);
+router.delete(
+  '/:productId',
+  validateWishlistProductParam,
+  validateRequest,
+  removeFromWishlist
+);
 
 module.exports = router;

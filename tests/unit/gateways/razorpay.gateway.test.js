@@ -15,7 +15,9 @@ const razorpayInstance = Razorpay.mock.results[0].value;
 describe('razorpay.gateway', () => {
   it('exposes the contract-required name and publicConfig', () => {
     expect(razorpayGateway.name).toBe('razorpay');
-    expect(razorpayGateway.publicConfig).toEqual({ key_id: process.env.RAZORPAY_KEY_ID });
+    expect(razorpayGateway.publicConfig).toEqual({
+      key_id: process.env.RAZORPAY_KEY_ID,
+    });
   });
 
   describe('createOrder', () => {
@@ -44,10 +46,16 @@ describe('razorpay.gateway', () => {
     });
 
     it('propagates a failure rather than swallowing it (the caller wraps this)', async () => {
-      razorpayInstance.orders.create.mockRejectedValue(new Error('network down'));
+      razorpayInstance.orders.create.mockRejectedValue(
+        new Error('network down')
+      );
 
       await expect(
-        razorpayGateway.createOrder({ amount: 50000, currency: 'INR', receipt: 'order_1' })
+        razorpayGateway.createOrder({
+          amount: 50000,
+          currency: 'INR',
+          receipt: 'order_1',
+        })
       ).rejects.toThrow('network down');
     });
   });
@@ -82,7 +90,14 @@ describe('razorpay.gateway', () => {
   describe('fetchOrderPayments', () => {
     it('normalizes each payment in the list', async () => {
       razorpayInstance.orders.fetchPayments.mockResolvedValue({
-        items: [{ id: 'pay_1', order_id: 'rzp_order_1', status: 'captured', amount: 50000 }],
+        items: [
+          {
+            id: 'pay_1',
+            order_id: 'rzp_order_1',
+            status: 'captured',
+            amount: 50000,
+          },
+        ],
       });
 
       const result = await razorpayGateway.fetchOrderPayments('rzp_order_1');
@@ -99,9 +114,13 @@ describe('razorpay.gateway', () => {
     });
 
     it('resolves [] instead of throwing on failure', async () => {
-      razorpayInstance.orders.fetchPayments.mockRejectedValue(new Error('network down'));
+      razorpayInstance.orders.fetchPayments.mockRejectedValue(
+        new Error('network down')
+      );
 
-      await expect(razorpayGateway.fetchOrderPayments('rzp_order_1')).resolves.toEqual([]);
+      await expect(
+        razorpayGateway.fetchOrderPayments('rzp_order_1')
+      ).resolves.toEqual([]);
     });
   });
 
@@ -137,7 +156,10 @@ describe('razorpay.gateway', () => {
     const paymentId = 'pay_XYZ789';
 
     const sign = (o, p, secret = process.env.RAZORPAY_KEY_SECRET) =>
-      crypto.createHmac('sha256', secret).update(o + '|' + p).digest('hex');
+      crypto
+        .createHmac('sha256', secret)
+        .update(o + '|' + p)
+        .digest('hex');
 
     it('returns true for a signature generated with the correct secret', () => {
       expect(
@@ -161,31 +183,43 @@ describe('razorpay.gateway', () => {
 
     it('returns false when no signature is provided', () => {
       expect(
-        razorpayGateway.verifyPaymentSignature({ orderId, paymentId, signature: undefined })
+        razorpayGateway.verifyPaymentSignature({
+          orderId,
+          paymentId,
+          signature: undefined,
+        })
       ).toBe(false);
     });
   });
 
   describe('verifyWebhookSignature', () => {
     it('returns true for a signature generated over the exact raw body', () => {
-      const rawBody = Buffer.from(JSON.stringify({ event: 'payment.captured' }));
+      const rawBody = Buffer.from(
+        JSON.stringify({ event: 'payment.captured' })
+      );
       const signature = crypto
         .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
         .update(rawBody)
         .digest('hex');
 
-      expect(razorpayGateway.verifyWebhookSignature(rawBody, signature)).toBe(true);
+      expect(razorpayGateway.verifyWebhookSignature(rawBody, signature)).toBe(
+        true
+      );
     });
 
     it('returns false if the body was modified after signing', () => {
-      const original = Buffer.from(JSON.stringify({ event: 'payment.captured' }));
+      const original = Buffer.from(
+        JSON.stringify({ event: 'payment.captured' })
+      );
       const signature = crypto
         .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
         .update(original)
         .digest('hex');
       const tampered = Buffer.from(JSON.stringify({ event: 'payment.failed' }));
 
-      expect(razorpayGateway.verifyWebhookSignature(tampered, signature)).toBe(false);
+      expect(razorpayGateway.verifyWebhookSignature(tampered, signature)).toBe(
+        false
+      );
     });
   });
 
@@ -193,7 +227,16 @@ describe('razorpay.gateway', () => {
     it('extracts the event type and normalized payment entity', () => {
       const result = razorpayGateway.parseWebhookEvent({
         event: 'payment.captured',
-        payload: { payment: { entity: { id: 'pay_1', order_id: 'rzp_order_1', status: 'captured', amount: 50000 } } },
+        payload: {
+          payment: {
+            entity: {
+              id: 'pay_1',
+              order_id: 'rzp_order_1',
+              status: 'captured',
+              amount: 50000,
+            },
+          },
+        },
       });
 
       expect(result).toEqual({
@@ -209,7 +252,10 @@ describe('razorpay.gateway', () => {
     });
 
     it('returns a null payment for events with no payment entity', () => {
-      const result = razorpayGateway.parseWebhookEvent({ event: 'order.paid', payload: {} });
+      const result = razorpayGateway.parseWebhookEvent({
+        event: 'order.paid',
+        payload: {},
+      });
 
       expect(result).toEqual({ eventType: 'order.paid', payment: null });
     });

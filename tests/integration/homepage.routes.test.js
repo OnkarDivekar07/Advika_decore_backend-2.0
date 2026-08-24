@@ -57,9 +57,7 @@ describe('GET /api/homepage/banners (public)', () => {
 
 describe('GET /api/homepage/new-arrivals (public)', () => {
   it('422s an out-of-range limit', async () => {
-    const res = await request(app).get(
-      '/api/homepage/new-arrivals?limit=500'
-    );
+    const res = await request(app).get('/api/homepage/new-arrivals?limit=500');
     expect(res.status).toBe(422);
     expect(homepageService.getNewArrivalProducts).not.toHaveBeenCalled();
   });
@@ -120,7 +118,8 @@ describe('POST /api/homepage/banners (admin only)', () => {
     );
     homepageService.createNewBanner.mockResolvedValue({
       id: 'banner_1',
-      imageUrl: 'https://bucket.s3.ap-south-1.amazonaws.com/banner-images/1_banner.jpg',
+      imageUrl:
+        'https://bucket.s3.ap-south-1.amazonaws.com/banner-images/1_banner.jpg',
     });
 
     const res = await request(app)
@@ -159,7 +158,8 @@ describe('DELETE /api/homepage/banners/:id (admin only)', () => {
   it('deletes the S3 object and the DB row for an existing banner', async () => {
     homepageService.getBannerById.mockResolvedValue({
       id: 'b1',
-      imageUrl: 'https://bucket.s3.ap-south-1.amazonaws.com/banner-images/foo.jpg',
+      imageUrl:
+        'https://bucket.s3.ap-south-1.amazonaws.com/banner-images/foo.jpg',
     });
     homepageService.deleteBannerById.mockResolvedValue({ id: 'b1' });
 

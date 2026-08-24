@@ -81,7 +81,7 @@ describe('decrementStockForOrder — concurrent purchases of the last item', () 
     expect(productStore.prod_1.stock).toBe(0);
   });
 
-  it('lets the losing buyer\'s request throw a 409 instead of overselling (default throwOnInsufficientStock: true)', async () => {
+  it("lets the losing buyer's request throw a 409 instead of overselling (default throwOnInsufficientStock: true)", async () => {
     resetProducts({ prod_1: { id: 'prod_1', stock: 1 } });
 
     const results = await Promise.allSettled([

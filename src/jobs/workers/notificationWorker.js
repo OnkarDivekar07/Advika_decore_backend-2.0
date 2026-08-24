@@ -33,7 +33,9 @@ const notificationWorker = new Worker(
     });
 
     if (!order) {
-      logger.warn(`Order confirmation SMS skipped — order ${orderId} not found`);
+      logger.warn(
+        `Order confirmation SMS skipped — order ${orderId} not found`
+      );
       return { sent: false, reason: 'order_not_found' };
     }
 
@@ -56,21 +58,26 @@ const notificationWorker = new Worker(
       paymentMethod: order.paymentStatus === 'cod_pending' ? 'cod' : 'online',
     });
   },
-  {
-    connection,
-    settings: {
-      retryProcessDelay: 10000,
-    },
-    attempts: 3,
-  }
+  { connection }
 );
 
+// Retry/backoff for this queue live on notificationQueue.js's
+// `defaultJobOptions` now — see clearCartWorker.js's comment for why
+// `settings.retryProcessDelay`/`attempts` never actually worked here.
+// Safe to retry: notification.service.js's sendOrderConfirmationSms
+// deliberately never throws (it resolves { sent: false, reason } on any
+// failure), so a retry can only be triggered by the order lookup above
+// it failing — never by re-sending an SMS that already went out.
 notificationWorker.on('failed', (job, err) => {
-  console.error(`❌ Notification job failed [${job.id}]: ${err.message}`);
+  logger.error(`Notification job failed [${job.id}]: ${err.message}`, {
+    stack: err.stack,
+  });
 });
 
 notificationWorker.on('error', (err) => {
-  console.error(`❌ Notification worker-level error: ${err.message}`);
+  logger.error(`Notification worker-level error: ${err.message}`, {
+    stack: err.stack,
+  });
 });
 
 module.exports = notificationWorker;

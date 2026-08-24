@@ -17,7 +17,11 @@ const paymentReconciliationWorker = new Worker(
   'payment-reconciliation-queue',
   async () => {
     const results = await paymentService.reconcileStalePaymentAttempts();
-    if (results.timedOut > 0 || results.reconciledPaid > 0 || results.unknown > 0) {
+    if (
+      results.timedOut > 0 ||
+      results.reconciledPaid > 0 ||
+      results.unknown > 0
+    ) {
       logger.info('Payment attempt reconciliation swept stale orders', results);
     }
     return results;
@@ -26,11 +30,14 @@ const paymentReconciliationWorker = new Worker(
 );
 
 paymentReconciliationWorker.on('failed', (job, err) => {
-  console.error(`❌ Payment reconciliation sweep failed [${job.id}]: ${err.message}`);
+  logger.error(
+    `Payment reconciliation sweep failed [${job.id}]: ${err.message}`,
+    { stack: err.stack }
+  );
 });
 
 paymentReconciliationWorker.on('error', (err) => {
-  console.error(`❌ Worker-level error: ${err.message}`);
+  logger.error(`Worker-level error: ${err.message}`, { stack: err.stack });
 });
 
 module.exports = paymentReconciliationWorker;

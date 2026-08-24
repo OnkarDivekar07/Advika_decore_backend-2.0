@@ -35,7 +35,10 @@ describe('authenticate + authorizeAdminOnly wired through real routes', () => {
   it('200s and exposes the decoded user for a valid token', async () => {
     const res = await request(app)
       .get('/protected')
-      .set('Authorization', `Bearer ${token({ userId: 'user_1', role: 'customer' })}`);
+      .set(
+        'Authorization',
+        `Bearer ${token({ userId: 'user_1', role: 'customer' })}`
+      );
 
     expect(res.status).toBe(200);
     expect(res.body.userId).toBe('user_1');

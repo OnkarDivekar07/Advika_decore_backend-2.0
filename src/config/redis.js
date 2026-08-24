@@ -1,4 +1,5 @@
 const Redis = require('ioredis');
+const logger = require('./logger');
 
 if (!process.env.REDIS_URL) {
   throw new Error('Missing required environment variable: REDIS_URL');
@@ -10,11 +11,11 @@ const redis = new Redis(process.env.REDIS_URL, {
 });
 
 redis.on('connect', () => {
-  console.log('✅ Redis connected');
+  logger.info('Redis connected');
 });
 
 redis.on('error', (err) => {
-  console.error('❌ Redis error:', err);
+  logger.error(`Redis error: ${err.message}`);
 });
 
 module.exports = redis;

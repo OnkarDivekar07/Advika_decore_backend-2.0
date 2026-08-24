@@ -14,11 +14,20 @@ const { validateMultipleImages } = require('@utils/bannerHelpers');
 const PRODUCT_CACHE_PREFIXES = ['allProducts', 'newArrivalProducts'];
 
 const invalidateProductCaches = () =>
-  Promise.all(PRODUCT_CACHE_PREFIXES.map((prefix) => invalidateCacheByPrefix(prefix)));
+  Promise.all(
+    PRODUCT_CACHE_PREFIXES.map((prefix) => invalidateCacheByPrefix(prefix))
+  );
 
 const getAllProducts = (req) => {
-  const { category, minPrice, maxPrice, inStock, isNewArrival, isBestSeller, voltage } =
-    req.query;
+  const {
+    category,
+    minPrice,
+    maxPrice,
+    inStock,
+    isNewArrival,
+    isBestSeller,
+    voltage,
+  } = req.query;
 
   const where = { isDeleted: false };
 
@@ -88,7 +97,15 @@ const getAllProducts = (req) => {
     // reflected in the cache key explicitly — otherwise two different
     // filtered queries with the same page/limit/sort/search would
     // collide on the same cache entry.
-    cacheKeyExtra: { category, minPrice, maxPrice, inStock, isNewArrival, isBestSeller, voltage },
+    cacheKeyExtra: {
+      category,
+      minPrice,
+      maxPrice,
+      inStock,
+      isNewArrival,
+      isBestSeller,
+      voltage,
+    },
   });
 };
 

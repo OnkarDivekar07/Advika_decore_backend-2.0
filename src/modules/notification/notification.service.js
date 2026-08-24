@@ -18,7 +18,12 @@ const MSG91_FLOW_URL = 'https://control.msg91.com/api/v5/flow/';
  * @param {{ phone: string, orderId: string, total: number, paymentMethod: 'cod'|'online' }} args
  * @returns {Promise<{ sent: boolean, reason?: string }>}
  */
-exports.sendOrderConfirmationSms = async ({ phone, orderId, total, paymentMethod }) => {
+exports.sendOrderConfirmationSms = async ({
+  phone,
+  orderId,
+  total,
+  paymentMethod,
+}) => {
   const authKey = process.env.MSG91_AUTH_KEY;
   const flowId = process.env.MSG91_ORDER_CONFIRMATION_FLOW_ID;
 
@@ -34,12 +39,15 @@ exports.sendOrderConfirmationSms = async ({ phone, orderId, total, paymentMethod
   }
 
   if (!phone) {
-    logger.warn(`Order confirmation SMS skipped for order ${orderId} — no phone on file`);
+    logger.warn(
+      `Order confirmation SMS skipped for order ${orderId} — no phone on file`
+    );
     return { sent: false, reason: 'no_phone' };
   }
 
   const mobile = `91${phone}`;
-  const paymentLabel = paymentMethod === 'cod' ? 'Cash on Delivery' : 'Paid online';
+  const paymentLabel =
+    paymentMethod === 'cod' ? 'Cash on Delivery' : 'Paid online';
 
   let response;
   try {
@@ -66,7 +74,9 @@ exports.sendOrderConfirmationSms = async ({ phone, orderId, total, paymentMethod
       }),
     });
   } catch (error) {
-    logger.error(`MSG91 order-confirmation SMS unreachable for order ${orderId}: ${error.message}`);
+    logger.error(
+      `MSG91 order-confirmation SMS unreachable for order ${orderId}: ${error.message}`
+    );
     return { sent: false, reason: 'network_error' };
   }
 

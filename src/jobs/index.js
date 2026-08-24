@@ -10,8 +10,18 @@ const clearCartQueue = require('./queues/clearCartQueue');
 const notificationQueue = require('./queues/notificationQueue');
 const paymentReconciliationQueue = require('./queues/paymentReconciliationQueue');
 
-const workers = [imageWorker, clearCartWorker, notificationWorker, paymentReconciliationWorker];
-const queues = [imageQueue, clearCartQueue, notificationQueue, paymentReconciliationQueue];
+const workers = [
+  imageWorker,
+  clearCartWorker,
+  notificationWorker,
+  paymentReconciliationWorker,
+];
+const queues = [
+  imageQueue,
+  clearCartQueue,
+  notificationQueue,
+  paymentReconciliationQueue,
+];
 
 // How often the stale-payment-attempt sweep (paymentReconciliationWorker)
 // runs. Independent of PAYMENT_ATTEMPT_TIMEOUT_MINUTES (src/config/env.js,
@@ -26,7 +36,11 @@ module.exports = () => {
   paymentReconciliationQueue.add(
     'sweep',
     {},
-    { repeat: { every: PAYMENT_RECONCILIATION_INTERVAL_MS }, removeOnComplete: true, removeOnFail: true }
+    {
+      repeat: { every: PAYMENT_RECONCILIATION_INTERVAL_MS },
+      removeOnComplete: true,
+      removeOnFail: true,
+    }
   );
 
   logger.info('Workers initialized');

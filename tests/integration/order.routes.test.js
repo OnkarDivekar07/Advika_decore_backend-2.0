@@ -110,9 +110,7 @@ describe('POST /api/order', () => {
       .send({ selectedAddressId: VALID_ADDRESS_ID });
 
     expect(res.status).toBe(201);
-    expect(res.body.message).toBe(
-      'Draft order created/updated successfully.'
-    );
+    expect(res.body.message).toBe('Draft order created/updated successfully.');
     expect(orderService.createDraftOrderService).toHaveBeenCalledWith(
       'user_1',
       VALID_ADDRESS_ID,
@@ -153,19 +151,17 @@ describe('POST /api/order', () => {
     };
     orderService.createDraftOrderService.mockResolvedValue(serverComputedOrder);
 
-    const res = await request(app)
-      .post('/api/order')
-      .send({
-        selectedAddressId: VALID_ADDRESS_ID,
-        // Hostile extras — not in validateDraftOrder's whitelist, so
-        // express-validator never inspects them and the controller never
-        // destructures them.
-        deliveryCharge: 0,
-        shippingCharge: 0,
-        subtotal: 1,
-        total: 1,
-        discount: 9999,
-      });
+    const res = await request(app).post('/api/order').send({
+      selectedAddressId: VALID_ADDRESS_ID,
+      // Hostile extras — not in validateDraftOrder's whitelist, so
+      // express-validator never inspects them and the controller never
+      // destructures them.
+      deliveryCharge: 0,
+      shippingCharge: 0,
+      subtotal: 1,
+      total: 1,
+      discount: 9999,
+    });
 
     expect(res.status).toBe(201);
     // Called with exactly the four positional args the controller passes —
@@ -250,10 +246,12 @@ describe('POST /api/order', () => {
       total: 1999,
     });
 
-    const res = await request(app).post('/api/order').send({
-      selectedAddressId: VALID_ADDRESS_ID,
-      buyNow: { productId: VALID_PRODUCT_ID, quantity: 2 },
-    });
+    const res = await request(app)
+      .post('/api/order')
+      .send({
+        selectedAddressId: VALID_ADDRESS_ID,
+        buyNow: { productId: VALID_PRODUCT_ID, quantity: 2 },
+      });
 
     expect(res.status).toBe(201);
     expect(orderService.createDraftOrderService).toHaveBeenCalledWith(
@@ -265,20 +263,24 @@ describe('POST /api/order', () => {
   });
 
   it('422s when buyNow.productId is not a valid ObjectId', async () => {
-    const res = await request(app).post('/api/order').send({
-      selectedAddressId: VALID_ADDRESS_ID,
-      buyNow: { productId: 'not-an-object-id', quantity: 1 },
-    });
+    const res = await request(app)
+      .post('/api/order')
+      .send({
+        selectedAddressId: VALID_ADDRESS_ID,
+        buyNow: { productId: 'not-an-object-id', quantity: 1 },
+      });
 
     expect(res.status).toBe(422);
     expect(orderService.createDraftOrderService).not.toHaveBeenCalled();
   });
 
   it('422s when buyNow.quantity is not a positive integer', async () => {
-    const res = await request(app).post('/api/order').send({
-      selectedAddressId: VALID_ADDRESS_ID,
-      buyNow: { productId: VALID_PRODUCT_ID, quantity: 0 },
-    });
+    const res = await request(app)
+      .post('/api/order')
+      .send({
+        selectedAddressId: VALID_ADDRESS_ID,
+        buyNow: { productId: VALID_PRODUCT_ID, quantity: 0 },
+      });
 
     expect(res.status).toBe(422);
     expect(orderService.createDraftOrderService).not.toHaveBeenCalled();
@@ -330,7 +332,12 @@ describe('GET /api/order/history', () => {
       limit: undefined,
     });
     expect(res.body.data).toHaveLength(1);
-    expect(res.body.meta).toMatchObject({ total: 1, page: 1, limit: 10, totalPages: 1 });
+    expect(res.body.meta).toMatchObject({
+      total: 1,
+      page: 1,
+      limit: 10,
+      totalPages: 1,
+    });
   });
 
   it('passes page/limit query params through to the service', async () => {
@@ -396,22 +403,32 @@ describe('GET /api/order/all', () => {
 
   it('200s with the paginated order list for an admin', async () => {
     orderService.getAllOrders.mockResolvedValue({
-      orders: [{ id: VALID_ORDER_ID, total: 500, status: 'confirmed', paymentStatus: 'paid' }],
+      orders: [
+        {
+          id: VALID_ORDER_ID,
+          total: 500,
+          status: 'confirmed',
+          paymentStatus: 'paid',
+        },
+      ],
       meta: { total: 1, page: 1, limit: 20, totalPages: 1 },
     });
 
-    const res = await request(app)
-      .get('/api/order/all')
-      .set('x-role', 'admin');
+    const res = await request(app).get('/api/order/all').set('x-role', 'admin');
 
     expect(res.status).toBe(200);
     expect(res.body.message).toBe('All orders fetched successfully');
     expect(res.body.data).toHaveLength(1);
-    expect(res.body.meta).toEqual(expect.objectContaining({ total: 1, page: 1, limit: 20, totalPages: 1 }));
+    expect(res.body.meta).toEqual(
+      expect.objectContaining({ total: 1, page: 1, limit: 20, totalPages: 1 })
+    );
   });
 
   it('passes page/limit/status/paymentStatus/dateFrom/dateTo/search through to the service', async () => {
-    orderService.getAllOrders.mockResolvedValue({ orders: [], meta: { total: 0, page: 2, limit: 5, totalPages: 0 } });
+    orderService.getAllOrders.mockResolvedValue({
+      orders: [],
+      meta: { total: 0, page: 2, limit: 5, totalPages: 0 },
+    });
 
     const res = await request(app)
       .get('/api/order/all')

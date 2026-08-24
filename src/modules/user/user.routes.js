@@ -28,8 +28,14 @@ const {
 // uses (otpRateLimiter / otpVerifyRateLimiter), keyed per-phone, so a
 // change-number attempt can't be used to dodge the send/verify attempt
 // caps that apply everywhere else OTPs are sent.
-const { validateSendOtp, validateVerifyOtp } = require('@modules/otp/otp.validation');
-const { otpRateLimiter, otpVerifyRateLimiter } = require('@middlewares/rateLimiter');
+const {
+  validateSendOtp,
+  validateVerifyOtp,
+} = require('@modules/otp/otp.validation');
+const {
+  otpRateLimiter,
+  otpVerifyRateLimiter,
+} = require('@middlewares/rateLimiter');
 
 const validateRequest = require('@middlewares/validateRequest');
 
@@ -55,22 +61,36 @@ router.get('/addresses', getAddresses);
  * @desc    Update a delivery address by ID
  * @access  User
  */
-router.put('/address/:id', updateAddressValidator, validateRequest, updateAddress);
+router.put(
+  '/address/:id',
+  updateAddressValidator,
+  validateRequest,
+  updateAddress
+);
 
 /**
  * @route   DELETE /api/user/address/:id
  * @desc    Delete a delivery address by ID
  * @access  User
  */
-router.delete('/address/:id', addressIdParamValidator, validateRequest, deleteAddress);
+router.delete(
+  '/address/:id',
+  addressIdParamValidator,
+  validateRequest,
+  deleteAddress
+);
 
 /**
  * @route   PATCH /api/user/address/:id/default
  * @desc    Mark a delivery address as the default for the logged-in user
  * @access  User
  */
-router.patch('/address/:id/default', addressIdParamValidator, validateRequest, setDefaultAddress);
-
+router.patch(
+  '/address/:id/default',
+  addressIdParamValidator,
+  validateRequest,
+  setDefaultAddress
+);
 
 router.get('/profile', getUserProfile);
 
@@ -79,7 +99,12 @@ router.get('/profile', getUserProfile);
  * @desc    Update the logged-in user's display name
  * @access  User
  */
-router.patch('/profile', updateProfileValidator, validateRequest, updateProfile);
+router.patch(
+  '/profile',
+  updateProfileValidator,
+  validateRequest,
+  updateProfile
+);
 
 /**
  * @route   POST /api/user/phone/send-otp

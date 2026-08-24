@@ -73,14 +73,18 @@ const REQUIRED_METHODS = [
  * never make it as far as handling real payment traffic.
  */
 function assertImplementsContract(gateway) {
-  const missing = REQUIRED_METHODS.filter((m) => typeof gateway?.[m] !== 'function');
+  const missing = REQUIRED_METHODS.filter(
+    (m) => typeof gateway?.[m] !== 'function'
+  );
   if (missing.length > 0) {
     throw new Error(
       `Payment gateway "${gateway?.name ?? 'unknown'}" is missing required method(s): ${missing.join(', ')}`
     );
   }
   if (typeof gateway.name !== 'string' || !gateway.name) {
-    throw new Error('Payment gateway adapter must expose a non-empty string `name`.');
+    throw new Error(
+      'Payment gateway adapter must expose a non-empty string `name`.'
+    );
   }
 }
 

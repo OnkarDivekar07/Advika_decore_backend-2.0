@@ -5,6 +5,15 @@ const mockPrisma = {
 
 jest.mock('@config/prisma', () => mockPrisma);
 
+// admin.service.js also pulls in paginateWithCache (for its other,
+// non-alerts endpoints), which requires @config/redis at module load time.
+// Left unmocked, that's a real ioredis client with no server to connect to
+// in the test environment — with no assertion ever touching Redis here,
+// this exists purely so requiring admin.service.js doesn't hang the suite
+// waiting on a connection that will never succeed (same reasoning as
+// admin.service.test.js's own mock).
+jest.mock('@config/redis', () => ({ get: jest.fn(), set: jest.fn() }));
+
 // admin.service.js reuses inventory.service.js's listLowStockProducts
 // rather than re-implementing the low-stock query — mocked here so this
 // suite tests the aggregation, not inventory.service.js's own Prisma
@@ -48,7 +57,9 @@ describe('admin.service.getOperationalAlerts', () => {
   it('passes the given lowStockThreshold straight through to inventory.service, and reports it back', async () => {
     stubEmpty();
 
-    const result = await adminService.getOperationalAlerts({ lowStockThreshold: 3 });
+    const result = await adminService.getOperationalAlerts({
+      lowStockThreshold: 3,
+    });
 
     expect(mockListLowStockProducts).toHaveBeenCalledWith(3);
     expect(result.lowStock.threshold).toBe(3);
@@ -80,19 +91,31 @@ describe('admin.service.getOperationalAlerts', () => {
     stubEmpty();
     mockPrisma.order.count.mockResolvedValue(5);
     mockPrisma.order.findMany.mockResolvedValueOnce([
-      { id: 'o1', total: 200, createdAt: new Date('2026-01-01'), user: { name: 'Jane', email: 'jane@x.com' } },
+      {
+        id: 'o1',
+        total: 200,
+        createdAt: new Date('2026-01-01'),
+        user: { name: 'Jane', email: 'jane@x.com' },
+      },
     ]);
 
     const result = await adminService.getOperationalAlerts();
 
-    expect(mockPrisma.order.count).toHaveBeenCalledWith({ where: { status: 'pending' } });
+    expect(mockPrisma.order.count).toHaveBeenCalledWith({
+      where: { status: 'pending' },
+    });
     const findManyCall = mockPrisma.order.findMany.mock.calls.find(
       (call) => call[0].where.status === 'pending'
     );
     expect(findManyCall[0].orderBy).toEqual({ createdAt: 'asc' });
     expect(result.pendingOrders.count).toBe(5);
     expect(result.pendingOrders.items).toEqual([
-      { id: 'o1', total: 200, createdAt: new Date('2026-01-01'), user: { name: 'Jane', email: 'jane@x.com' } },
+      {
+        id: 'o1',
+        total: 200,
+        createdAt: new Date('2026-01-01'),
+        user: { name: 'Jane', email: 'jane@x.com' },
+      },
     ]);
   });
 
@@ -104,7 +127,10 @@ describe('admin.service.getOperationalAlerts', () => {
 
     const result = await adminService.getOperationalAlerts();
 
-    expect(result.pendingOrders.items[0].user).toEqual({ name: 'N/A', email: null });
+    expect(result.pendingOrders.items[0].user).toEqual({
+      name: 'N/A',
+      email: null,
+    });
   });
 
   it('queries payment exceptions as only failed/timeout/unknown — never pending/attempted/paid/cancelled', async () => {
@@ -127,7 +153,9 @@ describe('admin.service.getOperationalAlerts', () => {
     const findManyCall = mockPrisma.order.findMany.mock.calls.find(
       (call) => call[0].where.paymentStatus
     );
-    expect(findManyCall[0].where.paymentStatus).toEqual({ in: ['failed', 'timeout', 'unknown'] });
+    expect(findManyCall[0].where.paymentStatus).toEqual({
+      in: ['failed', 'timeout', 'unknown'],
+    });
     expect(findManyCall[0].orderBy).toEqual({ createdAt: 'desc' });
     expect(result.paymentExceptions.items).toEqual([
       {
@@ -163,7 +191,9 @@ describe('admin.service.getOperationalAlerts', () => {
     const result = await adminService.getOperationalAlerts();
 
     const shipmentCall = mockPrisma.shipment.findMany.mock.calls[0][0];
-    expect(shipmentCall.where.status).toEqual({ in: ['DELIVERY_FAILED', 'RTO_INITIATED'] });
+    expect(shipmentCall.where.status).toEqual({
+      in: ['DELIVERY_FAILED', 'RTO_INITIATED'],
+    });
     expect(result.shipmentExceptions.count).toBe(1);
     expect(result.shipmentExceptions.items).toEqual([
       {

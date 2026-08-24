@@ -31,7 +31,8 @@ const paginateWithCache = async ({
   formatter, // optional (item) => transformedItem
 }) => {
   const requestedPage = parseInt(req.query.page, 10);
-  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+  const page =
+    Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
 
   const requestedLimit = parseInt(req.query.limit, 10);
   const limit =

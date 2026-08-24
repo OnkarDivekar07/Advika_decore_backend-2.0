@@ -8,7 +8,10 @@
 const prisma = require('@config/prisma');
 const CustomError = require('@utils/customError');
 const logger = require('@config/logger');
-const { calculateDeliveryCharge, calculateDiscount } = require('@constants/pricing');
+const {
+  calculateDeliveryCharge,
+  calculateDiscount,
+} = require('@constants/pricing');
 
 // Every mutation needs the same guarantee: the product being added still
 // exists, isn't soft-deleted, and has enough stock for the requested
@@ -69,8 +72,10 @@ const getCart = async (userId) => {
     // double (or any future implementation) that doesn't itself return a
     // promise — the sweep must never be able to throw synchronously and
     // take the read down with it.
-    Promise.resolve(prisma.cart.deleteMany({ where: { id: { in: orphanedIds } } })).catch(
-      (err) => logger.warn('Failed to sweep orphaned cart rows', { err: err.message })
+    Promise.resolve(
+      prisma.cart.deleteMany({ where: { id: { in: orphanedIds } } })
+    ).catch((err) =>
+      logger.warn('Failed to sweep orphaned cart rows', { err: err.message })
     );
   }
 
@@ -86,7 +91,10 @@ const getCart = async (userId) => {
 // summary just to mirror the order shape would be misleading rather than
 // the actual "final payable amount" of the cart in its current state.
 const summarizeCart = (rows) => {
-  const subtotal = rows.reduce((sum, row) => sum + row.product.price * row.quantity, 0);
+  const subtotal = rows.reduce(
+    (sum, row) => sum + row.product.price * row.quantity,
+    0
+  );
   const deliveryCharge = calculateDeliveryCharge(subtotal);
   return { subtotal, deliveryCharge, total: subtotal + deliveryCharge };
 };

@@ -3,8 +3,18 @@ const generateToken = require('@utils/generateToken');
 const CustomError = require('@utils/customError');
 const formatNumber = require('@utils/formatNumber');
 
-const MSG91_SEND_OTP_URL = 'https://control.msg91.com/api/v5/otp';
-const MSG91_VERIFY_OTP_URL = 'https://control.msg91.com/api/v5/otp/verify';
+// Env-overridable (defaulting to the real MSG91 endpoints, so production
+// and every existing test/dev setup are unaffected) purely so the
+// end-to-end suite (see frontend-improved/e2e/) can point this at a local
+// mock MSG91 server instead of the real SMS provider — there's no
+// MSG91 sandbox/test mode available to script against otherwise, and
+// skipping login entirely would make an E2E "click through checkout"
+// test untrue to what a real customer actually does.
+const MSG91_SEND_OTP_URL =
+  process.env.MSG91_SEND_OTP_URL || 'https://control.msg91.com/api/v5/otp';
+const MSG91_VERIFY_OTP_URL =
+  process.env.MSG91_VERIFY_OTP_URL ||
+  'https://control.msg91.com/api/v5/otp/verify';
 
 const getMsg91Config = () => {
   const authKey = process.env.MSG91_AUTH_KEY;
@@ -53,14 +63,16 @@ exports.sendOtpService = async (phone) => {
       body: JSON.stringify({}),
     });
   } catch (error) {
-    throw new CustomError(`MSG91 OTP service unavailable: ${error.message}`, 502);
+    throw new CustomError(
+      `MSG91 OTP service unavailable: ${error.message}`,
+      502
+    );
   }
 
   const { data } = await parseMsg91Response(response);
 
   if (!response.ok || data.type !== 'success') {
-    const message =
-      data.message || data.error || 'MSG91 failed to send OTP';
+    const message = data.message || data.error || 'MSG91 failed to send OTP';
     throw new CustomError(`Unable to send OTP: ${message}`, 502);
   }
 };
@@ -105,7 +117,10 @@ const verifyOtpWithProvider = async (phone, otp) => {
       ? 'OTP not found or expired'
       : 'Invalid OTP';
 
-    throw new CustomError(normalizedMessage, /expired/i.test(message) ? 404 : 400);
+    throw new CustomError(
+      normalizedMessage,
+      /expired/i.test(message) ? 404 : 400
+    );
   }
 };
 
@@ -120,15 +135,34 @@ exports.verifyOtpService = async (phone, otp) => {
   });
 
   if (!user) {
-    user = await prisma.user.create({
-      data: {
-        phone: normalizedPhone,
-        name: 'New User',
-        email: `${normalizedPhone}@advika.fake`,
-        password: '',
-        role: 'customer',
-      },
-    });
+    try {
+      user = await prisma.user.create({
+        data: {
+          phone: normalizedPhone,
+          name: 'New User',
+          email: `${normalizedPhone}@advika.fake`,
+          password: '',
+          role: 'customer',
+        },
+      });
+    } catch (err) {
+      // A double-tap on "Verify" (or two tabs) can both pass the
+      // findUnique-found-nothing check above before either has written a
+      // row — phone's @unique constraint (prisma/schema.prisma) then makes
+      // exactly one create() succeed and throws P2002 on the other, which
+      // otherwise surfaced as an unhandled 500 on what the user experiences
+      // as just clicking a button twice. Re-read instead of erroring out:
+      // the OTP itself was genuinely valid, this request just lost the
+      // race to create the account — the row it wants now exists either way.
+      if (err.code === 'P2002') {
+        user = await prisma.user.findUnique({
+          where: { phone: normalizedPhone },
+        });
+        if (!user) throw err; // not actually a duplicate-phone race — surface the original error
+      } else {
+        throw err;
+      }
+    }
   }
 
   const token = generateToken(user.id, user.role);

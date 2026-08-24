@@ -1,7 +1,12 @@
 const prisma = require('@config/prisma');
+const logger = require('@config/logger');
 const CustomError = require('@utils/customError');
 const ekartClient = require('../../services/external/EkartClient');
-const { FREE_DELIVERY_THRESHOLD, DELIVERY_CHARGE, calculateDeliveryCharge } = require('@constants/pricing');
+const {
+  FREE_DELIVERY_THRESHOLD,
+  DELIVERY_CHARGE,
+  calculateDeliveryCharge,
+} = require('@constants/pricing');
 const { isValidIndianPincodeFormat } = require('@constants/pincode');
 const { shippingServiceabilityFallbackPolicy } = require('@config/env');
 
@@ -62,7 +67,8 @@ function extractEstimatedDeliveryDate(ekartResponse) {
     if (!Number.isNaN(parsed.getTime())) return parsed;
   }
 
-  const days = ekartResponse?.estimated_delivery_days ?? ekartResponse?.sla_days ?? null;
+  const days =
+    ekartResponse?.estimated_delivery_days ?? ekartResponse?.sla_days ?? null;
   if (days != null && Number.isFinite(Number(days))) {
     return addDays(days);
   }
@@ -84,9 +90,14 @@ async function syncOrderStatusFromShipment(orderId, shipmentStatus) {
   if (!orderStatus) return;
 
   try {
-    await prisma.order.update({ where: { id: orderId }, data: { status: orderStatus } });
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { status: orderStatus },
+    });
   } catch (error) {
-    console.warn(`[shipping] Failed to sync order ${orderId} status to '${orderStatus}':`, error.message);
+    logger.warn(
+      `[shipping] Failed to sync order ${orderId} status to '${orderStatus}': ${error.message}`
+    );
   }
 }
 
@@ -114,7 +125,11 @@ exports.getDeliveryConfig = () => ({
 // today) omits it and gets back exactly `base`, untouched — this is
 // additive enrichment, never a change to the base contract.
 function withPricing(base, subtotal) {
-  if (typeof subtotal !== 'number' || !Number.isFinite(subtotal) || subtotal < 0) {
+  if (
+    typeof subtotal !== 'number' ||
+    !Number.isFinite(subtotal) ||
+    subtotal < 0
+  ) {
     return base;
   }
   const deliveryCharge = calculateDeliveryCharge(subtotal);
@@ -189,7 +204,8 @@ const INVALID_PINCODE_ERROR_HINTS = [
 ];
 
 function looksLikeInvalidPincodeError(error) {
-  const haystack = `${error?.message || ''} ${error?.raw?.error_code || ''} ${error?.raw?.code || ''}`.toLowerCase();
+  const haystack =
+    `${error?.message || ''} ${error?.raw?.error_code || ''} ${error?.raw?.code || ''}`.toLowerCase();
   return INVALID_PINCODE_ERROR_HINTS.some((hint) => haystack.includes(hint));
 }
 
@@ -286,8 +302,11 @@ exports.checkServiceability = async ({
     );
   }
 
-  const serviceable = Boolean(response?.serviceable ?? response?.is_serviceable);
-  const estimatedDays = response?.estimated_delivery_days ?? response?.sla_days ?? null;
+  const serviceable = Boolean(
+    response?.serviceable ?? response?.is_serviceable
+  );
+  const estimatedDays =
+    response?.estimated_delivery_days ?? response?.sla_days ?? null;
 
   return withPricing(
     {
@@ -300,7 +319,8 @@ exports.checkServiceability = async ({
       // can't happen. Computed here (not left for the frontend to derive
       // from estimatedDays) so the same day-count-to-date rule applies
       // everywhere — see extractEstimatedDeliveryDate/addDays above.
-      estimatedDeliveryDate: serviceable && estimatedDays != null ? addDays(estimatedDays) : null,
+      estimatedDeliveryDate:
+        serviceable && estimatedDays != null ? addDays(estimatedDays) : null,
       codAvailable: Boolean(response?.cod_available),
     },
     subtotal
@@ -334,9 +354,15 @@ exports.checkServiceability = async ({
  * actually a guess, and always logs a warning so a carrier outage stays
  * visible in either mode.
  */
-exports.checkDeliveryEligibility = async ({ destinationPincode, paymentMode }) => {
+exports.checkDeliveryEligibility = async ({
+  destinationPincode,
+  paymentMode,
+}) => {
   try {
-    const result = await exports.checkServiceability({ destinationPincode, paymentMode });
+    const result = await exports.checkServiceability({
+      destinationPincode,
+      paymentMode,
+    });
     // `skippedCheck` is always present on the returned shape (even when we
     // got a definitive answer) — undefined here, `true` on the fallback
     // branches below — so callers can do a plain `if (eligibility.skippedCheck)`
@@ -345,7 +371,7 @@ exports.checkDeliveryEligibility = async ({ destinationPincode, paymentMode }) =
     return { ...result, skippedCheck: undefined };
   } catch (error) {
     const failClosed = shippingServiceabilityFallbackPolicy === 'fail_closed';
-    console.warn(
+    logger.warn(
       `[shipping] Serviceability check failed during checkout enforcement for pincode ${destinationPincode} ` +
         `(policy: ${shippingServiceabilityFallbackPolicy}), ${failClosed ? 'blocking' : 'skipping'} enforcement: ${error.message}`
     );
@@ -405,7 +431,9 @@ exports.createShipmentForOrder = async (orderId) => {
     );
   }
 
-  const existingShipment = await prisma.shipment.findUnique({ where: { orderId } });
+  const existingShipment = await prisma.shipment.findUnique({
+    where: { orderId },
+  });
   if (existingShipment) {
     return { shipment: existingShipment, alreadyProcessed: true };
   }
@@ -414,7 +442,8 @@ exports.createShipmentForOrder = async (orderId) => {
   const codAmount = paymentMode === 'COD' ? order.total : 0;
 
   const totalWeightKg = order.orderItems.reduce(
-    (sum, item) => sum + (item.product?.weightKg || DEFAULT_ITEM_WEIGHT_KG) * item.quantity,
+    (sum, item) =>
+      sum + (item.product?.weightKg || DEFAULT_ITEM_WEIGHT_KG) * item.quantity,
     0
   );
 
@@ -486,7 +515,10 @@ exports.createShipmentForOrder = async (orderId) => {
 
   // Reflect progress on the order itself too, so existing order views that
   // don't know about the Shipment model still show something meaningful.
-  await prisma.order.update({ where: { id: order.id }, data: { status: 'shipped' } });
+  await prisma.order.update({
+    where: { id: order.id },
+    data: { status: 'shipped' },
+  });
 
   return { shipment, alreadyProcessed: false };
 };
@@ -565,15 +597,27 @@ exports.cancelOrderShipment = async (orderId, requestingUser, reason) => {
   }
 
   if (['DELIVERED', 'RTO_DELIVERED', 'CANCELLED'].includes(shipment.status)) {
-    throw new CustomError(`Cannot cancel a shipment that is already '${shipment.status}'`, 400);
+    throw new CustomError(
+      `Cannot cancel a shipment that is already '${shipment.status}'`,
+      400
+    );
   }
 
   if (shipment.trackingId) {
-    await ekartClient.cancelShipment(shipment.trackingId, reason || 'Customer requested cancellation');
+    await ekartClient.cancelShipment(
+      shipment.trackingId,
+      reason || 'Customer requested cancellation'
+    );
   }
 
-  const updated = await prisma.shipment.update({ where: { orderId }, data: { status: 'CANCELLED' } });
-  await prisma.order.update({ where: { id: order.id }, data: { status: 'cancelled' } });
+  const updated = await prisma.shipment.update({
+    where: { orderId },
+    data: { status: 'CANCELLED' },
+  });
+  await prisma.order.update({
+    where: { id: order.id },
+    data: { status: 'cancelled' },
+  });
 
   return updated;
 };
@@ -593,7 +637,9 @@ exports.handleEkartWebhookEvent = async (payload) => {
 
   const shipment = await prisma.shipment.findUnique({ where: { trackingId } });
   if (!shipment) {
-    console.warn(`[shipping] Webhook received for unknown tracking ID: ${trackingId}`);
+    logger.warn(
+      `[shipping] Webhook received for unknown tracking ID: ${trackingId}`
+    );
     return;
   }
 

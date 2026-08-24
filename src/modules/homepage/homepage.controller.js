@@ -31,7 +31,11 @@ const createBanner = async (req, res, next) => {
     validateImage(image);
 
     const filename = generateUniqueBannerFilename(image.originalname);
-    const imageUrl = await awsService.uploadToS3(image.buffer, filename);
+    const imageUrl = await awsService.uploadToS3(
+      image.buffer,
+      filename,
+      image.mimetype
+    );
 
     const banner = await homepageService.createNewBanner(imageUrl, linkUrl);
 

@@ -16,7 +16,9 @@ const mockAwsService = { uploadToS3: jest.fn() };
 jest.mock('../../src/services/external/AWSUploads', () => mockAwsService);
 
 const mockCompressImageBuffer = jest.fn();
-jest.mock('@utils/imageUtils', () => ({ compressImageBuffer: mockCompressImageBuffer }));
+jest.mock('@utils/imageUtils', () => ({
+  compressImageBuffer: mockCompressImageBuffer,
+}));
 
 jest.mock('@utils/bannerHelpers', () => ({
   generateUniqueProductFilenames: jest.fn((names) =>
@@ -47,8 +49,12 @@ const buildImage = (name = 'shoe.jpg') => ({
 
 describe('imageWorker', () => {
   beforeEach(() => {
-    mockAwsService.uploadToS3.mockReset().mockResolvedValue('https://cdn.example.com/img.webp');
-    mockCompressImageBuffer.mockReset().mockResolvedValue(Buffer.from('compressed'));
+    mockAwsService.uploadToS3
+      .mockReset()
+      .mockResolvedValue('https://cdn.example.com/img.webp');
+    mockCompressImageBuffer
+      .mockReset()
+      .mockResolvedValue(Buffer.from('compressed'));
     mockPrisma.product.create.mockReset();
     mockPrisma.product.update.mockReset();
     mockInvalidateCacheByPrefix.mockReset();
@@ -79,16 +85,24 @@ describe('imageWorker', () => {
         }),
       });
       expect(mockInvalidateCacheByPrefix).toHaveBeenCalledWith('allProducts');
-      expect(mockInvalidateCacheByPrefix).toHaveBeenCalledWith('newArrivalProducts');
+      expect(mockInvalidateCacheByPrefix).toHaveBeenCalledWith(
+        'newArrivalProducts'
+      );
       expect(result).toEqual({
         id: 'p1',
-        images: ['https://cdn.example.com/img.webp', 'https://cdn.example.com/img.webp'],
+        images: [
+          'https://cdn.example.com/img.webp',
+          'https://cdn.example.com/img.webp',
+        ],
       });
     });
 
     it('throws when images is not an array', async () => {
       await expect(
-        processor({ name: 'create-product', data: { serializedImages: null, productInfo: {} } })
+        processor({
+          name: 'create-product',
+          data: { serializedImages: null, productInfo: {} },
+        })
       ).rejects.toThrow('images should be an array');
       expect(mockPrisma.product.create).not.toHaveBeenCalled();
     });
@@ -109,11 +123,19 @@ describe('imageWorker', () => {
 
       expect(mockPrisma.product.update).toHaveBeenCalledWith({
         where: { id: 'p1' },
-        data: { name: 'New name', images: ['https://cdn.example.com/img.webp'] },
+        data: {
+          name: 'New name',
+          images: ['https://cdn.example.com/img.webp'],
+        },
       });
       expect(mockInvalidateCacheByPrefix).toHaveBeenCalledWith('allProducts');
-      expect(mockInvalidateCacheByPrefix).toHaveBeenCalledWith('newArrivalProducts');
-      expect(result).toEqual({ id: 'p1', images: ['https://cdn.example.com/img.webp'] });
+      expect(mockInvalidateCacheByPrefix).toHaveBeenCalledWith(
+        'newArrivalProducts'
+      );
+      expect(result).toEqual({
+        id: 'p1',
+        images: ['https://cdn.example.com/img.webp'],
+      });
     });
 
     it('updates without touching images when none are provided', async () => {
@@ -121,7 +143,11 @@ describe('imageWorker', () => {
 
       const result = await processor({
         name: 'update-product',
-        data: { productId: 'p1', serializedImages: [], updateData: { price: 1999 } },
+        data: {
+          productId: 'p1',
+          serializedImages: [],
+          updateData: { price: 1999 },
+        },
       });
 
       expect(mockPrisma.product.update).toHaveBeenCalledWith({
@@ -133,8 +159,8 @@ describe('imageWorker', () => {
   });
 
   it('rejects unknown job names', async () => {
-    await expect(processor({ name: 'delete-product', data: {} })).rejects.toThrow(
-      'Unknown job type: delete-product'
-    );
+    await expect(
+      processor({ name: 'delete-product', data: {} })
+    ).rejects.toThrow('Unknown job type: delete-product');
   });
 });

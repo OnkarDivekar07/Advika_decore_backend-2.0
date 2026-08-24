@@ -95,11 +95,13 @@ describe('POST /api/user/address', () => {
   });
 
   it('creates the address, scoped to the authenticated user', async () => {
-    userService.createAddress.mockResolvedValue({ id: 'addr1', ...validAddress, isDefault: true });
+    userService.createAddress.mockResolvedValue({
+      id: 'addr1',
+      ...validAddress,
+      isDefault: true,
+    });
 
-    const res = await request(app)
-      .post('/api/user/address')
-      .send(validAddress);
+    const res = await request(app).post('/api/user/address').send(validAddress);
 
     expect(res.status).toBe(200);
     expect(userService.createAddress).toHaveBeenCalledWith(
@@ -134,7 +136,10 @@ describe('PUT /api/user/address/:id', () => {
   });
 
   it('updates the address for the authenticated user', async () => {
-    userService.updateAddressById.mockResolvedValue({ id: 'addr1', city: 'Mumbai' });
+    userService.updateAddressById.mockResolvedValue({
+      id: 'addr1',
+      city: 'Mumbai',
+    });
 
     const res = await request(app)
       .put('/api/user/address/addr1')
@@ -192,12 +197,18 @@ describe('DELETE /api/user/address/:id', () => {
 
 describe('PATCH /api/user/address/:id/default', () => {
   it('marks the address as default for the authenticated user', async () => {
-    userService.setDefaultAddressById.mockResolvedValue({ id: 'addr1', isDefault: true });
+    userService.setDefaultAddressById.mockResolvedValue({
+      id: 'addr1',
+      isDefault: true,
+    });
 
     const res = await request(app).patch('/api/user/address/addr1/default');
 
     expect(res.status).toBe(200);
-    expect(userService.setDefaultAddressById).toHaveBeenCalledWith('addr1', 'user_1');
+    expect(userService.setDefaultAddressById).toHaveBeenCalledWith(
+      'addr1',
+      'user_1'
+    );
     expect(res.body.data).toEqual({ id: 'addr1', isDefault: true });
   });
 

@@ -6,14 +6,14 @@ const {
   verifyPayment,
   placeCODOrder,
   razorpayWebhook,
-  cancelPayment
+  cancelPayment,
 } = require('./payment.controller');
 
 const authenticate = require('@middlewares/authenticate');
 const {
   validateVerifyPayment,
   validateCODOrder,
-  validateCancelPayment
+  validateCancelPayment,
 } = require('./payment.validation');
 
 const validateRequest = require('@middlewares/validateRequest');
@@ -42,24 +42,14 @@ router.post('/create-orderid', createOrderid);
  * @desc    Verify Razorpay Payment
  * @access  Authenticated Users
  */
-router.post(
-  '/verify',
-  validateVerifyPayment,
-  validateRequest,
-  verifyPayment
-);
+router.post('/verify', validateVerifyPayment, validateRequest, verifyPayment);
 
 /**
  * @route   POST /api/payment/cod
  * @desc    Place a Cash On Delivery order
  * @access  Authenticated Users
  */
-router.post(
-  '/cod',
-  validateCODOrder,
-  validateRequest,
-  placeCODOrder
-);
+router.post('/cod', validateCODOrder, validateRequest, placeCODOrder);
 
 /**
  * @route   POST /api/payment/cancel
@@ -68,11 +58,6 @@ router.post(
  *          the underlying draft order itself
  * @access  Authenticated Users
  */
-router.post(
-  '/cancel',
-  validateCancelPayment,
-  validateRequest,
-  cancelPayment
-);
+router.post('/cancel', validateCancelPayment, validateRequest, cancelPayment);
 
 module.exports = router;

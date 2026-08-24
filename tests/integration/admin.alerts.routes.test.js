@@ -36,8 +36,14 @@ const buildApp = () => {
 const app = buildApp();
 
 const jwt = require('jsonwebtoken');
-const adminToken = jwt.sign({ userId: 'admin1', role: 'admin' }, process.env.JWT_SECRET);
-const customerToken = jwt.sign({ userId: 'user1', role: 'customer' }, process.env.JWT_SECRET);
+const adminToken = jwt.sign(
+  { userId: 'admin1', role: 'admin' },
+  process.env.JWT_SECRET
+);
+const customerToken = jwt.sign(
+  { userId: 'user1', role: 'customer' },
+  process.env.JWT_SECRET
+);
 
 const emptyAlerts = {
   lowStock: { threshold: 10, count: 0, items: [] },
@@ -103,12 +109,16 @@ describe('GET /api/admin/alerts', () => {
       .get('/api/admin/alerts?lowStockThreshold=5')
       .set('Authorization', `Bearer ${adminToken}`);
 
-    expect(adminService.getOperationalAlerts).toHaveBeenCalledWith({ lowStockThreshold: 5 });
+    expect(adminService.getOperationalAlerts).toHaveBeenCalledWith({
+      lowStockThreshold: 5,
+    });
   });
 
   it('propagates a service-layer error through the standard error handler', async () => {
     const CustomError = require('@utils/customError');
-    adminService.getOperationalAlerts.mockRejectedValue(new CustomError('DB unreachable', 500));
+    adminService.getOperationalAlerts.mockRejectedValue(
+      new CustomError('DB unreachable', 500)
+    );
 
     const res = await request(app)
       .get('/api/admin/alerts')

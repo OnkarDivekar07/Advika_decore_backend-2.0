@@ -21,10 +21,23 @@ const mockPrisma = {
   // Interactive-transaction style, matching cart.service / the rest of the
   // codebase.
   $transaction: jest.fn((cb) =>
-    cb({ cart: mockCart, order: mockOrder, orderItem: mockOrderItem, product: mockProduct })
+    cb({
+      cart: mockCart,
+      order: mockOrder,
+      orderItem: mockOrderItem,
+      product: mockProduct,
+    })
   ),
 };
 jest.mock('@config/prisma', () => mockPrisma);
+
+// createDraftOrderService now takes a short-lived per-user Redis lock
+// before its $transaction (see order.service.js) — mocked here so these
+// tests never touch a real Redis connection. `set` resolves truthy by
+// default (lock acquired) matching ioredis's `'OK'` on a successful
+// `SET ... NX`; individual tests override it to simulate a lock miss.
+const mockRedis = { set: jest.fn(), del: jest.fn() };
+jest.mock('@config/redis', () => mockRedis);
 
 // detectAddressConflict now also checks delivery eligibility for the
 // address's pincode — mocked here so these tests never reach the real
@@ -71,20 +84,64 @@ beforeEach(() => {
   mockShipment.findMany.mockReset();
   mockShipment.findUnique.mockReset();
   mockPrisma.$transaction.mockClear();
+  mockRedis.set.mockReset().mockResolvedValue('OK');
+  mockRedis.del.mockReset().mockResolvedValue(1);
 });
 
 describe('createDraftOrderService', () => {
   it('404s when the cart is empty', async () => {
     mockCart.findMany.mockResolvedValue([]);
 
-    await expect(orderService.createDraftOrderService('user_1', null)).rejects.toMatchObject({
+    await expect(
+      orderService.createDraftOrderService('user_1', null)
+    ).rejects.toMatchObject({
       message: 'No items found in cart',
       statusCode: 404,
     });
   });
 
+  it('409s without touching the cart/order tables when a concurrent checkout already holds the per-user lock', async () => {
+    mockRedis.set.mockResolvedValue(null); // ioredis: SET ... NX returns null when the key already exists
+
+    await expect(
+      orderService.createDraftOrderService('user_1', null)
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(mockCart.findMany).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('releases the per-user lock after a successful draft order creation', async () => {
+    mockCart.findMany.mockResolvedValue([cartRow()]);
+    mockOrder.findFirst.mockResolvedValue(null);
+    mockOrder.create.mockResolvedValue({ id: 'order_1' });
+    mockOrder.findUnique.mockResolvedValue({ id: 'order_1', orderItems: [] });
+
+    await orderService.createDraftOrderService('user_1', null);
+
+    expect(mockRedis.set).toHaveBeenCalledWith(
+      'draft-order-lock:user_1',
+      '1',
+      'PX',
+      expect.any(Number),
+      'NX'
+    );
+    expect(mockRedis.del).toHaveBeenCalledWith('draft-order-lock:user_1');
+  });
+
+  it('releases the per-user lock even when the transaction throws', async () => {
+    mockCart.findMany.mockResolvedValue([]); // triggers the empty-cart 404 inside the transaction
+
+    await expect(
+      orderService.createDraftOrderService('user_1', null)
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect(mockRedis.del).toHaveBeenCalledWith('draft-order-lock:user_1');
+  });
+
   it('404s when the selected address does not belong to the user', async () => {
-    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'someone_else' });
+    mockAddress.findUnique.mockResolvedValue({
+      id: 'addr_1',
+      userId: 'someone_else',
+    });
 
     await expect(
       orderService.createDraftOrderService('user_1', 'addr_1')
@@ -98,7 +155,9 @@ describe('createDraftOrderService', () => {
       { ...cartRow({ productId: 'prod_ghost' }), product: null },
     ]);
 
-    await expect(orderService.createDraftOrderService('user_1', null)).rejects.toMatchObject({
+    await expect(
+      orderService.createDraftOrderService('user_1', null)
+    ).rejects.toMatchObject({
       statusCode: 409,
     });
     expect(mockOrder.create).not.toHaveBeenCalled();
@@ -108,7 +167,9 @@ describe('createDraftOrderService', () => {
   it('409s with a structured insufficientStock payload when a cart quantity exceeds live stock', async () => {
     mockCart.findMany.mockResolvedValue([cartRow({ product: { stock: 1 } })]);
 
-    await expect(orderService.createDraftOrderService('user_1', null)).rejects.toMatchObject({
+    await expect(
+      orderService.createDraftOrderService('user_1', null)
+    ).rejects.toMatchObject({
       statusCode: 409,
       errors: {
         insufficientStock: [
@@ -127,7 +188,10 @@ describe('createDraftOrderService', () => {
   it('drops a soft-deleted line item but still proceeds with the rest of the cart', async () => {
     mockCart.findMany.mockResolvedValue([
       cartRow(), // prod_1, qty 2 @ 1999 = 3998
-      cartRow({ productId: 'prod_2', product: { id: 'prod_2', isDeleted: true } }),
+      cartRow({
+        productId: 'prod_2',
+        product: { id: 'prod_2', isDeleted: true },
+      }),
     ]);
     mockOrder.findFirst.mockResolvedValue(null);
     mockOrder.create.mockResolvedValue({ id: 'order_1' });
@@ -136,7 +200,9 @@ describe('createDraftOrderService', () => {
     await orderService.createDraftOrderService('user_1', null);
 
     expect(mockOrder.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ total: 3998 }) })
+      expect.objectContaining({
+        data: expect.objectContaining({ total: 3998 }),
+      })
     );
     expect(mockOrderItem.create).toHaveBeenCalledTimes(1);
   });
@@ -153,7 +219,11 @@ describe('createDraftOrderService', () => {
 
     expect(mockOrder.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ total: 1000, subtotal: 1000, deliveryCharge: 0 }),
+        data: expect.objectContaining({
+          total: 1000,
+          subtotal: 1000,
+          deliveryCharge: 0,
+        }),
       })
     );
     expect(mockOrderItem.create).toHaveBeenCalledWith(
@@ -166,7 +236,9 @@ describe('createDraftOrderService', () => {
   // (payment.controller.js reads `draftOrder.total`), so it has to be
   // right here, not just in the cart-page preview.
   it('adds the ₹49 delivery charge to the total when the subtotal is below ₹600', async () => {
-    mockCart.findMany.mockResolvedValue([cartRow({ product: { price: 199 }, quantity: 2 })]); // 398 subtotal
+    mockCart.findMany.mockResolvedValue([
+      cartRow({ product: { price: 199 }, quantity: 2 }),
+    ]); // 398 subtotal
     mockOrder.findFirst.mockResolvedValue(null);
     mockOrder.create.mockResolvedValue({ id: 'order_1' });
     mockOrder.findUnique.mockResolvedValue({ id: 'order_1', total: 447 });
@@ -175,13 +247,19 @@ describe('createDraftOrderService', () => {
 
     expect(mockOrder.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ total: 447, subtotal: 398, deliveryCharge: 49 }),
+        data: expect.objectContaining({
+          total: 447,
+          subtotal: 398,
+          deliveryCharge: 49,
+        }),
       })
     );
   });
 
   it('waives the delivery charge once the subtotal reaches exactly ₹600', async () => {
-    mockCart.findMany.mockResolvedValue([cartRow({ product: { price: 600 }, quantity: 1 })]);
+    mockCart.findMany.mockResolvedValue([
+      cartRow({ product: { price: 600 }, quantity: 1 }),
+    ]);
     mockOrder.findFirst.mockResolvedValue(null);
     mockOrder.create.mockResolvedValue({ id: 'order_1' });
     mockOrder.findUnique.mockResolvedValue({ id: 'order_1', total: 600 });
@@ -190,7 +268,11 @@ describe('createDraftOrderService', () => {
 
     expect(mockOrder.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ total: 600, subtotal: 600, deliveryCharge: 0 }),
+        data: expect.objectContaining({
+          total: 600,
+          subtotal: 600,
+          deliveryCharge: 0,
+        }),
       })
     );
   });
@@ -200,11 +282,16 @@ describe('createDraftOrderService', () => {
     mockOrder.findFirst.mockResolvedValue({ id: 'existing_draft' });
     mockOrderItem.deleteMany.mockResolvedValue({ count: 1 });
     mockOrder.update.mockResolvedValue({ id: 'existing_draft' });
-    mockOrder.findUnique.mockResolvedValue({ id: 'existing_draft', total: 3998 });
+    mockOrder.findUnique.mockResolvedValue({
+      id: 'existing_draft',
+      total: 3998,
+    });
 
     await orderService.createDraftOrderService('user_1', null);
 
-    expect(mockOrderItem.deleteMany).toHaveBeenCalledWith({ where: { orderId: 'existing_draft' } });
+    expect(mockOrderItem.deleteMany).toHaveBeenCalledWith({
+      where: { orderId: 'existing_draft' },
+    });
     expect(mockOrder.create).not.toHaveBeenCalled();
     expect(mockOrder.update).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: 'existing_draft' } })
@@ -225,7 +312,11 @@ describe('createDraftOrderService', () => {
 
       expect(mockOrder.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ discount: 0, couponCode: null, total: 3998 }),
+          data: expect.objectContaining({
+            discount: 0,
+            couponCode: null,
+            total: 3998,
+          }),
         })
       );
     });
@@ -267,15 +358,23 @@ describe('createDraftOrderService', () => {
       });
 
       expect(mockCart.findMany).not.toHaveBeenCalled();
-      expect(mockProduct.findUnique).toHaveBeenCalledWith({ where: { id: 'prod_9' } });
+      expect(mockProduct.findUnique).toHaveBeenCalledWith({
+        where: { id: 'prod_9' },
+      });
       expect(mockOrderItem.create).toHaveBeenCalledTimes(1);
       expect(mockOrderItem.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ productId: 'prod_9', quantity: 1, price: 999 }),
+          data: expect.objectContaining({
+            productId: 'prod_9',
+            quantity: 1,
+            price: 999,
+          }),
         })
       );
       expect(mockOrder.create).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ total: 999, subtotal: 999 }) })
+        expect.objectContaining({
+          data: expect.objectContaining({ total: 999, subtotal: 999 }),
+        })
       );
     });
 
@@ -292,7 +391,9 @@ describe('createDraftOrderService', () => {
     });
 
     it('409s when the buy-now product has been soft-deleted', async () => {
-      mockProduct.findUnique.mockResolvedValue(buyNowProduct({ isDeleted: true }));
+      mockProduct.findUnique.mockResolvedValue(
+        buyNowProduct({ isDeleted: true })
+      );
 
       await expect(
         orderService.createDraftOrderService('user_1', null, null, {
@@ -342,7 +443,9 @@ describe('createDraftOrderService', () => {
       });
 
       expect(mockOrderItem.create).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ price: 2500 }) })
+        expect.objectContaining({
+          data: expect.objectContaining({ price: 2500 }),
+        })
       );
     });
   });
@@ -387,7 +490,9 @@ describe('detectOrderConflicts', () => {
       isDeleted: false,
     });
 
-    const conflicts = await orderService.detectOrderConflicts([orderedItem({ price: 999 })]);
+    const conflicts = await orderService.detectOrderConflicts([
+      orderedItem({ price: 999 }),
+    ]);
 
     expect(conflicts).toEqual([
       expect.objectContaining({
@@ -408,7 +513,9 @@ describe('detectOrderConflicts', () => {
       isDeleted: false,
     });
 
-    const conflicts = await orderService.detectOrderConflicts([orderedItem({ quantity: 2 })]);
+    const conflicts = await orderService.detectOrderConflicts([
+      orderedItem({ quantity: 2 }),
+    ]);
 
     expect(conflicts).toEqual([
       expect.objectContaining({
@@ -429,7 +536,9 @@ describe('detectOrderConflicts', () => {
       isDeleted: false,
     });
 
-    const conflicts = await orderService.detectOrderConflicts([orderedItem({ price: 999, quantity: 2 })]);
+    const conflicts = await orderService.detectOrderConflicts([
+      orderedItem({ price: 999, quantity: 2 }),
+    ]);
 
     expect(conflicts).toHaveLength(2);
     expect(conflicts).toEqual(
@@ -469,10 +578,22 @@ describe('detectOrderConflicts', () => {
   it('checks every line item independently and only reports the ones that actually conflict', async () => {
     mockProduct.findUnique.mockImplementation(async ({ where }) => {
       if (where.id === 'prod_1') {
-        return { id: 'prod_1', name: 'Running Shoe', price: 999, stock: 5, isDeleted: false };
+        return {
+          id: 'prod_1',
+          name: 'Running Shoe',
+          price: 999,
+          stock: 5,
+          isDeleted: false,
+        };
       }
       if (where.id === 'prod_2') {
-        return { id: 'prod_2', name: 'Cap', price: 599, stock: 5, isDeleted: false }; // was 499 -> drifted
+        return {
+          id: 'prod_2',
+          name: 'Cap',
+          price: 599,
+          stock: 5,
+          isDeleted: false,
+        }; // was 499 -> drifted
       }
       return null;
     });
@@ -488,14 +609,22 @@ describe('detectOrderConflicts', () => {
   });
 
   it('reads through the provided transaction client rather than the top-level prisma client when one is passed', async () => {
-    const txProduct = { findUnique: jest.fn().mockResolvedValue({
-      id: 'prod_1', name: 'Running Shoe', price: 999, stock: 5, isDeleted: false,
-    }) };
+    const txProduct = {
+      findUnique: jest.fn().mockResolvedValue({
+        id: 'prod_1',
+        name: 'Running Shoe',
+        price: 999,
+        stock: 5,
+        isDeleted: false,
+      }),
+    };
     const tx = { product: txProduct };
 
     await orderService.detectOrderConflicts([orderedItem()], tx);
 
-    expect(txProduct.findUnique).toHaveBeenCalledWith({ where: { id: 'prod_1' } });
+    expect(txProduct.findUnique).toHaveBeenCalledWith({
+      where: { id: 'prod_1' },
+    });
     expect(mockProduct.findUnique).not.toHaveBeenCalled();
   });
 });
@@ -516,9 +645,16 @@ describe('detectAddressConflict', () => {
   });
 
   it('returns no conflicts when the address still exists, belongs to the user, and is deliverable', async () => {
-    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' });
+    mockAddress.findUnique.mockResolvedValue({
+      id: 'addr_1',
+      userId: 'user_1',
+      pincode: '400001',
+    });
 
-    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+    const conflicts = await orderService.detectAddressConflict(
+      'addr_1',
+      'user_1'
+    );
 
     expect(conflicts).toEqual([]);
     expect(shippingService.checkDeliveryEligibility).toHaveBeenCalledWith({
@@ -530,7 +666,10 @@ describe('detectAddressConflict', () => {
   it('flags an address_unavailable conflict when the address has been deleted', async () => {
     mockAddress.findUnique.mockResolvedValue(null);
 
-    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+    const conflicts = await orderService.detectAddressConflict(
+      'addr_1',
+      'user_1'
+    );
 
     expect(conflicts).toEqual([
       expect.objectContaining({ type: 'address_unavailable' }),
@@ -540,9 +679,15 @@ describe('detectAddressConflict', () => {
   });
 
   it('flags an address_unavailable conflict when the address now belongs to a different user', async () => {
-    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'someone_else' });
+    mockAddress.findUnique.mockResolvedValue({
+      id: 'addr_1',
+      userId: 'someone_else',
+    });
 
-    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+    const conflicts = await orderService.detectAddressConflict(
+      'addr_1',
+      'user_1'
+    );
 
     expect(conflicts).toEqual([
       expect.objectContaining({ type: 'address_unavailable' }),
@@ -560,18 +705,28 @@ describe('detectAddressConflict', () => {
 
   it('reads through the provided transaction client rather than the top-level prisma client when one is passed', async () => {
     const txAddress = {
-      findUnique: jest.fn().mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' }),
+      findUnique: jest.fn().mockResolvedValue({
+        id: 'addr_1',
+        userId: 'user_1',
+        pincode: '400001',
+      }),
     };
     const tx = { address: txAddress };
 
     await orderService.detectAddressConflict('addr_1', 'user_1', tx);
 
-    expect(txAddress.findUnique).toHaveBeenCalledWith({ where: { id: 'addr_1' } });
+    expect(txAddress.findUnique).toHaveBeenCalledWith({
+      where: { id: 'addr_1' },
+    });
     expect(mockAddress.findUnique).not.toHaveBeenCalled();
   });
 
   it('flags a delivery_unavailable conflict when the pincode is a real one Ekart just does not cover', async () => {
-    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' });
+    mockAddress.findUnique.mockResolvedValue({
+      id: 'addr_1',
+      userId: 'user_1',
+      pincode: '400001',
+    });
     shippingService.checkDeliveryEligibility.mockResolvedValue({
       serviceable: false,
       reason: 'AREA_NOT_COVERED',
@@ -579,7 +734,10 @@ describe('detectAddressConflict', () => {
       skippedCheck: false,
     });
 
-    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+    const conflicts = await orderService.detectAddressConflict(
+      'addr_1',
+      'user_1'
+    );
 
     expect(conflicts).toEqual([
       expect.objectContaining({ type: 'delivery_unavailable' }),
@@ -587,7 +745,11 @@ describe('detectAddressConflict', () => {
   });
 
   it('flags an invalid_pincode conflict when Ekart does not recognize the pincode at all', async () => {
-    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '999999' });
+    mockAddress.findUnique.mockResolvedValue({
+      id: 'addr_1',
+      userId: 'user_1',
+      pincode: '999999',
+    });
     shippingService.checkDeliveryEligibility.mockResolvedValue({
       serviceable: false,
       reason: 'INVALID_PINCODE',
@@ -595,7 +757,10 @@ describe('detectAddressConflict', () => {
       skippedCheck: false,
     });
 
-    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+    const conflicts = await orderService.detectAddressConflict(
+      'addr_1',
+      'user_1'
+    );
 
     expect(conflicts).toEqual([
       expect.objectContaining({ type: 'invalid_pincode' }),
@@ -603,7 +768,11 @@ describe('detectAddressConflict', () => {
   });
 
   it('flags an invalid_pincode conflict (and blocks placement) for a malformed/unrecognizable stored pincode', async () => {
-    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '' });
+    mockAddress.findUnique.mockResolvedValue({
+      id: 'addr_1',
+      userId: 'user_1',
+      pincode: '',
+    });
     shippingService.checkDeliveryEligibility.mockResolvedValue({
       serviceable: false,
       reason: 'INVALID_FORMAT',
@@ -611,7 +780,10 @@ describe('detectAddressConflict', () => {
       skippedCheck: false,
     });
 
-    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+    const conflicts = await orderService.detectAddressConflict(
+      'addr_1',
+      'user_1'
+    );
 
     expect(conflicts).toEqual([
       expect.objectContaining({ type: 'invalid_pincode' }),
@@ -619,7 +791,11 @@ describe('detectAddressConflict', () => {
   });
 
   it('flags a cod_unavailable conflict when a COD order is placed against a prepaid-only pincode', async () => {
-    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' });
+    mockAddress.findUnique.mockResolvedValue({
+      id: 'addr_1',
+      userId: 'user_1',
+      pincode: '400001',
+    });
     shippingService.checkDeliveryEligibility.mockResolvedValue({
       serviceable: true,
       reason: null,
@@ -627,7 +803,12 @@ describe('detectAddressConflict', () => {
       skippedCheck: false,
     });
 
-    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1', undefined, 'COD');
+    const conflicts = await orderService.detectAddressConflict(
+      'addr_1',
+      'user_1',
+      undefined,
+      'COD'
+    );
 
     expect(conflicts).toEqual([
       expect.objectContaining({ type: 'cod_unavailable' }),
@@ -639,7 +820,11 @@ describe('detectAddressConflict', () => {
   });
 
   it('does not flag cod_unavailable for a prepaid order even when the pincode has no COD coverage', async () => {
-    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' });
+    mockAddress.findUnique.mockResolvedValue({
+      id: 'addr_1',
+      userId: 'user_1',
+      pincode: '400001',
+    });
     shippingService.checkDeliveryEligibility.mockResolvedValue({
       serviceable: true,
       reason: null,
@@ -647,13 +832,20 @@ describe('detectAddressConflict', () => {
       skippedCheck: false,
     });
 
-    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+    const conflicts = await orderService.detectAddressConflict(
+      'addr_1',
+      'user_1'
+    );
 
     expect(conflicts).toEqual([]);
   });
 
   it('does not block the order when the eligibility check itself failed under the fail-open policy', async () => {
-    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' });
+    mockAddress.findUnique.mockResolvedValue({
+      id: 'addr_1',
+      userId: 'user_1',
+      pincode: '400001',
+    });
     shippingService.checkDeliveryEligibility.mockResolvedValue({
       serviceable: true,
       reason: null,
@@ -661,13 +853,22 @@ describe('detectAddressConflict', () => {
       skippedCheck: true,
     });
 
-    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1', undefined, 'COD');
+    const conflicts = await orderService.detectAddressConflict(
+      'addr_1',
+      'user_1',
+      undefined,
+      'COD'
+    );
 
     expect(conflicts).toEqual([]);
   });
 
   it('flags a delivery_check_unavailable conflict (and blocks placement) when the eligibility check failed under a fail-closed policy', async () => {
-    mockAddress.findUnique.mockResolvedValue({ id: 'addr_1', userId: 'user_1', pincode: '400001' });
+    mockAddress.findUnique.mockResolvedValue({
+      id: 'addr_1',
+      userId: 'user_1',
+      pincode: '400001',
+    });
     // Shape checkDeliveryEligibility returns under
     // SHIPPING_SERVICEABILITY_FALLBACK_POLICY=fail_closed (see
     // shipping.service.js) — a distinct reason from AREA_NOT_COVERED, since
@@ -679,7 +880,10 @@ describe('detectAddressConflict', () => {
       skippedCheck: true,
     });
 
-    const conflicts = await orderService.detectAddressConflict('addr_1', 'user_1');
+    const conflicts = await orderService.detectAddressConflict(
+      'addr_1',
+      'user_1'
+    );
 
     expect(conflicts).toEqual([
       expect.objectContaining({ type: 'delivery_check_unavailable' }),
@@ -699,7 +903,12 @@ describe('detectAddressConflict', () => {
 // same figures the createDraftOrderService tests above use.
 describe('detectPricingConflict', () => {
   it('returns no conflicts when the stored delivery charge/total still match the current rule', () => {
-    const order = { subtotal: 398, discount: 0, deliveryCharge: 49, total: 447 };
+    const order = {
+      subtotal: 398,
+      discount: 0,
+      deliveryCharge: 49,
+      total: 447,
+    };
 
     expect(orderService.detectPricingConflict(order)).toEqual([]);
   });
@@ -728,7 +937,12 @@ describe('detectPricingConflict', () => {
   });
 
   it('flags a pricing_changed conflict when the stored total no longer matches subtotal + current delivery charge - discount', () => {
-    const order = { subtotal: 600, discount: 0, deliveryCharge: 49, total: 649 };
+    const order = {
+      subtotal: 600,
+      discount: 0,
+      deliveryCharge: 49,
+      total: 649,
+    };
 
     const conflicts = orderService.detectPricingConflict(order);
 
@@ -764,31 +978,52 @@ describe('getUserOrderHistory', () => {
       })
     );
     expect(result.orders).toHaveLength(2);
-    expect(result.meta).toEqual({ total: 2, page: 1, limit: 10, totalPages: 1 });
+    expect(result.meta).toEqual({
+      total: 2,
+      page: 1,
+      limit: 10,
+      totalPages: 1,
+    });
   });
 
   it('applies page/limit to compute the correct skip and meta', async () => {
     mockOrder.count.mockResolvedValue(23);
     mockOrder.findMany.mockResolvedValue([]);
 
-    const result = await orderService.getUserOrderHistory('user_1', { page: 3, limit: 5 });
+    const result = await orderService.getUserOrderHistory('user_1', {
+      page: 3,
+      limit: 5,
+    });
 
     expect(mockOrder.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ skip: 10, take: 5 })
     );
-    expect(result.meta).toEqual({ total: 23, page: 3, limit: 5, totalPages: 5 });
+    expect(result.meta).toEqual({
+      total: 23,
+      page: 3,
+      limit: 5,
+      totalPages: 5,
+    });
   });
 
   it('clamps a non-positive page and an out-of-range limit to safe defaults', async () => {
     mockOrder.count.mockResolvedValue(0);
     mockOrder.findMany.mockResolvedValue([]);
 
-    const result = await orderService.getUserOrderHistory('user_1', { page: -5, limit: 500 });
+    const result = await orderService.getUserOrderHistory('user_1', {
+      page: -5,
+      limit: 500,
+    });
 
     expect(mockOrder.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ skip: 0, take: 50 })
     );
-    expect(result.meta).toEqual({ total: 0, page: 1, limit: 50, totalPages: 0 });
+    expect(result.meta).toEqual({
+      total: 0,
+      page: 1,
+      limit: 50,
+      totalPages: 0,
+    });
   });
 
   it('returns an empty page (not an error) when the user has no placed orders', async () => {
@@ -826,10 +1061,14 @@ describe('getAllOrders', () => {
     await orderService.getAllOrders({});
 
     expect(mockOrder.count).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ status: { not: 'draft' } }) })
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { not: 'draft' } }),
+      })
     );
     expect(mockOrder.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ status: { not: 'draft' } }) })
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { not: 'draft' } }),
+      })
     );
   });
 
@@ -844,7 +1083,12 @@ describe('getAllOrders', () => {
       expect.objectContaining({ skip: 0, take: 20 })
     );
     expect(result.orders).toHaveLength(1);
-    expect(result.meta).toEqual({ total: 1, page: 1, limit: 20, totalPages: 1 });
+    expect(result.meta).toEqual({
+      total: 1,
+      page: 1,
+      limit: 20,
+      totalPages: 1,
+    });
   });
 
   it('clamps a non-positive page and an out-of-range limit to safe defaults', async () => {
@@ -857,7 +1101,12 @@ describe('getAllOrders', () => {
     expect(mockOrder.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ skip: 0, take: 100 })
     );
-    expect(result.meta).toEqual({ total: 0, page: 1, limit: 100, totalPages: 0 });
+    expect(result.meta).toEqual({
+      total: 0,
+      page: 1,
+      limit: 100,
+      totalPages: 0,
+    });
   });
 
   it('filters by a valid order status', async () => {
@@ -868,7 +1117,9 @@ describe('getAllOrders', () => {
     await orderService.getAllOrders({ status: 'shipped' });
 
     expect(mockOrder.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ status: 'shipped' }) })
+      expect.objectContaining({
+        where: expect.objectContaining({ status: 'shipped' }),
+      })
     );
   });
 
@@ -880,7 +1131,9 @@ describe('getAllOrders', () => {
     await orderService.getAllOrders({ status: 'draft' });
 
     expect(mockOrder.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ status: { not: 'draft' } }) })
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { not: 'draft' } }),
+      })
     );
   });
 
@@ -892,7 +1145,9 @@ describe('getAllOrders', () => {
     await orderService.getAllOrders({ paymentStatus: 'paid' });
 
     expect(mockOrder.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ paymentStatus: 'paid' }) })
+      expect.objectContaining({
+        where: expect.objectContaining({ paymentStatus: 'paid' }),
+      })
     );
   });
 
@@ -901,7 +1156,10 @@ describe('getAllOrders', () => {
     mockOrder.findMany.mockResolvedValue([]);
     mockShipment.findMany.mockResolvedValue([]);
 
-    await orderService.getAllOrders({ dateFrom: '2026-01-01', dateTo: '2026-01-31' });
+    await orderService.getAllOrders({
+      dateFrom: '2026-01-01',
+      dateTo: '2026-01-31',
+    });
 
     const call = mockOrder.findMany.mock.calls[0][0];
     expect(call.where.createdAt.gte).toEqual(new Date('2026-01-01'));
@@ -945,7 +1203,11 @@ describe('getAllOrders', () => {
     mockOrder.count.mockResolvedValue(2);
     mockOrder.findMany.mockResolvedValue([
       orderRow({ id: 'order_1' }),
-      orderRow({ id: 'order_2', status: 'pending', paymentStatus: 'cod_pending' }),
+      orderRow({
+        id: 'order_2',
+        status: 'pending',
+        paymentStatus: 'cod_pending',
+      }),
     ]);
     mockShipment.findMany.mockResolvedValue([
       { orderId: 'order_1', status: 'IN_TRANSIT', trackingId: 'AWB123' },
@@ -954,7 +1216,9 @@ describe('getAllOrders', () => {
     const result = await orderService.getAllOrders({});
 
     expect(mockShipment.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { orderId: { in: ['order_1', 'order_2'] } } })
+      expect.objectContaining({
+        where: { orderId: { in: ['order_1', 'order_2'] } },
+      })
     );
     expect(result.orders.find((o) => o.id === 'order_1')).toMatchObject({
       shipmentStatus: 'IN_TRANSIT',
@@ -979,7 +1243,9 @@ describe('getAllOrders', () => {
 
   it('keeps status and paymentStatus as separate fields on every returned order', async () => {
     mockOrder.count.mockResolvedValue(1);
-    mockOrder.findMany.mockResolvedValue([orderRow({ status: 'pending', paymentStatus: 'failed' })]);
+    mockOrder.findMany.mockResolvedValue([
+      orderRow({ status: 'pending', paymentStatus: 'failed' }),
+    ]);
     mockShipment.findMany.mockResolvedValue([]);
 
     const result = await orderService.getAllOrders({});
@@ -988,7 +1254,6 @@ describe('getAllOrders', () => {
     expect(result.orders[0].paymentStatus).toBe('failed');
   });
 });
-
 
 describe('fetchOrderById', () => {
   const baseOrder = (overrides = {}) => ({
@@ -1005,9 +1270,26 @@ describe('fetchOrderById', () => {
     payment_id: 'pay_rzp_1',
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-01T01:00:00.000Z'),
-    user: { id: 'user_1', name: 'Jane Doe', email: 'jane@example.com', phone: '9999999999' },
-    address: { id: 'addr_1', name: 'Jane Doe', phone: '9999999999', city: 'Pune' },
-    orderItems: [{ id: 'item_1', quantity: 2, price: 999, product: { name: 'Running Shoe' } }],
+    user: {
+      id: 'user_1',
+      name: 'Jane Doe',
+      email: 'jane@example.com',
+      phone: '9999999999',
+    },
+    address: {
+      id: 'addr_1',
+      name: 'Jane Doe',
+      phone: '9999999999',
+      city: 'Pune',
+    },
+    orderItems: [
+      {
+        id: 'item_1',
+        quantity: 2,
+        price: 999,
+        product: { name: 'Running Shoe' },
+      },
+    ],
     ...overrides,
   });
 
@@ -1066,7 +1348,10 @@ describe('fetchOrderById', () => {
 
     const result = await orderService.fetchOrderById('order_1');
 
-    expect(result.shipment).toMatchObject({ status: 'IN_TRANSIT', trackingId: 'AWB123' });
+    expect(result.shipment).toMatchObject({
+      status: 'IN_TRANSIT',
+      trackingId: 'AWB123',
+    });
     expect(result.shipment.raw).toBeUndefined();
     // Never fetched with a bare `include: true` — raw must be excluded at
     // the query level, not stripped after the fact, so it's never even
@@ -1084,7 +1369,10 @@ describe('fetchOrderById', () => {
     // CANCELLED — e.g. cancelled after creation. The response must reflect
     // the real shipment status, not something inferred from order.status.
     mockOrder.findUnique.mockResolvedValue(baseOrder({ status: 'shipped' }));
-    mockShipment.findUnique.mockResolvedValue({ id: 'ship_1', status: 'CANCELLED' });
+    mockShipment.findUnique.mockResolvedValue({
+      id: 'ship_1',
+      status: 'CANCELLED',
+    });
 
     const result = await orderService.fetchOrderById('order_1');
 

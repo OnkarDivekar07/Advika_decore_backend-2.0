@@ -34,8 +34,14 @@ const buildApp = () => {
 const app = buildApp();
 
 const jwt = require('jsonwebtoken');
-const adminToken = jwt.sign({ userId: 'admin1', role: 'admin' }, process.env.JWT_SECRET);
-const customerToken = jwt.sign({ userId: 'user1', role: 'customer' }, process.env.JWT_SECRET);
+const adminToken = jwt.sign(
+  { userId: 'admin1', role: 'admin' },
+  process.env.JWT_SECRET
+);
+const customerToken = jwt.sign(
+  { userId: 'user1', role: 'customer' },
+  process.env.JWT_SECRET
+);
 
 beforeEach(() => {
   mockRedis.incr.mockReset().mockResolvedValue(1);
@@ -69,7 +75,9 @@ describe('GET /api/admin/analytics/overview', () => {
 
   it('422s when dateTo is before dateFrom', async () => {
     const res = await request(app)
-      .get('/api/admin/analytics/overview?dateFrom=2026-02-01&dateTo=2026-01-01')
+      .get(
+        '/api/admin/analytics/overview?dateFrom=2026-02-01&dateTo=2026-01-01'
+      )
       .set('Authorization', `Bearer ${adminToken}`);
     expect(res.status).toBe(422);
     expect(adminAnalyticsService.getAnalyticsOverview).not.toHaveBeenCalled();
@@ -77,7 +85,10 @@ describe('GET /api/admin/analytics/overview', () => {
 
   it('200s for a valid admin token, forwarding dateFrom/dateTo to the service', async () => {
     adminAnalyticsService.getAnalyticsOverview.mockResolvedValue({
-      range: { from: '2026-01-01T00:00:00.000Z', to: '2026-01-31T23:59:59.999Z' },
+      range: {
+        from: '2026-01-01T00:00:00.000Z',
+        to: '2026-01-31T23:59:59.999Z',
+      },
       grossRevenue: 5000,
       paidOrderCount: 10,
       averageOrderValue: 500,
@@ -90,7 +101,9 @@ describe('GET /api/admin/analytics/overview', () => {
     });
 
     const res = await request(app)
-      .get('/api/admin/analytics/overview?dateFrom=2026-01-01&dateTo=2026-01-31')
+      .get(
+        '/api/admin/analytics/overview?dateFrom=2026-01-01&dateTo=2026-01-31'
+      )
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -148,14 +161,19 @@ describe('GET /api/admin/analytics/revenue-trend', () => {
 
   it('200s and forwards granularity/date params to the service', async () => {
     adminAnalyticsService.getRevenueTrend.mockResolvedValue({
-      range: { from: '2026-01-01T00:00:00.000Z', to: '2026-01-31T23:59:59.999Z' },
+      range: {
+        from: '2026-01-01T00:00:00.000Z',
+        to: '2026-01-31T23:59:59.999Z',
+      },
       granularity: 'week',
       buckets: [],
       definitions: {},
     });
 
     const res = await request(app)
-      .get('/api/admin/analytics/revenue-trend?dateFrom=2026-01-01&dateTo=2026-01-31&granularity=week')
+      .get(
+        '/api/admin/analytics/revenue-trend?dateFrom=2026-01-01&dateTo=2026-01-31&granularity=week'
+      )
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
@@ -169,7 +187,10 @@ describe('GET /api/admin/analytics/revenue-trend', () => {
 
   it('200s with no query params (defaults applied server-side)', async () => {
     adminAnalyticsService.getRevenueTrend.mockResolvedValue({
-      range: { from: '2026-01-01T00:00:00.000Z', to: '2026-01-30T23:59:59.999Z' },
+      range: {
+        from: '2026-01-01T00:00:00.000Z',
+        to: '2026-01-30T23:59:59.999Z',
+      },
       granularity: 'day',
       buckets: [],
       definitions: {},

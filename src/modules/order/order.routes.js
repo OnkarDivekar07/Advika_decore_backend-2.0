@@ -37,11 +37,7 @@ router.post(
 // @desc    Get orders of the logged-in user
 // @access  Authenticated User
 // -----------------------------------------------------------------------------
-router.get(
-  '/',
-  authenticate,
-  getUserOrders
-);
+router.get('/', authenticate, getUserOrders);
 
 // -----------------------------------------------------------------------------
 // @route   GET /api/orders/all

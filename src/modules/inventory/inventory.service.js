@@ -172,11 +172,9 @@ exports.adjustStock = async (productId, action, quantity, expectedStock) => {
     case 'decrement':
       // Same atomic conditional update used by the order/payment flow —
       // throws a 409 if the requested quantity isn't available.
-      await exports.decrementStockForOrder(
-        [{ productId, quantity }],
-        prisma,
-        { throwOnInsufficientStock: true }
-      );
+      await exports.decrementStockForOrder([{ productId, quantity }], prisma, {
+        throwOnInsufficientStock: true,
+      });
       return prisma.product.findUnique({ where: { id: productId } });
 
     default:

@@ -96,10 +96,15 @@ describe('admin.analytics.service', () => {
       mockPrisma.user.count.mockResolvedValue(1);
       mockPrisma.product.count.mockResolvedValue(1);
 
-      await analyticsService.getAnalyticsOverview({ dateFrom: '2026-01-01', dateTo: '2026-01-31' });
+      await analyticsService.getAnalyticsOverview({
+        dateFrom: '2026-01-01',
+        dateTo: '2026-01-31',
+      });
 
       const aggregateArgs = mockPrisma.order.aggregate.mock.calls[0][0];
-      expect(aggregateArgs.where.createdAt.gte.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+      expect(aggregateArgs.where.createdAt.gte.toISOString()).toBe(
+        '2026-01-01T00:00:00.000Z'
+      );
       expect(aggregateArgs.where.createdAt.lte.getHours()).toBe(23);
       expect(aggregateArgs.where.createdAt.lte.getMinutes()).toBe(59);
 
@@ -129,14 +134,22 @@ describe('admin.analytics.service', () => {
     });
 
     it('runs a MongoDB-side aggregation pipeline scoped to paid orders in range', async () => {
-      mockPrisma.$runCommandRaw.mockResolvedValue({ cursor: { firstBatch: [] } });
+      mockPrisma.$runCommandRaw.mockResolvedValue({
+        cursor: { firstBatch: [] },
+      });
 
-      await analyticsService.getRevenueTrend({ dateFrom: '2026-01-01', dateTo: '2026-01-07', granularity: 'day' });
+      await analyticsService.getRevenueTrend({
+        dateFrom: '2026-01-01',
+        dateTo: '2026-01-07',
+        granularity: 'day',
+      });
 
       const callArg = mockPrisma.$runCommandRaw.mock.calls[0][0];
       expect(callArg.aggregate).toBe('Order');
       expect(callArg.pipeline[0].$match.paymentStatus).toBe('paid');
-      expect(callArg.pipeline[0].$match.createdAt.$gte.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+      expect(callArg.pipeline[0].$match.createdAt.$gte.toISOString()).toBe(
+        '2026-01-01T00:00:00.000Z'
+      );
     });
 
     it('maps raw aggregation buckets into revenue/orderCount/label/period fields', async () => {
@@ -186,13 +199,17 @@ describe('admin.analytics.service', () => {
         },
       });
 
-      const result = await analyticsService.getRevenueTrend({ granularity: 'week' });
+      const result = await analyticsService.getRevenueTrend({
+        granularity: 'week',
+      });
 
       expect(result.buckets[0].label).toBe('2026-W03');
     });
 
     it('defaults to a trailing 30-day window when no dates are given, and echoes the resolved range', async () => {
-      mockPrisma.$runCommandRaw.mockResolvedValue({ cursor: { firstBatch: [] } });
+      mockPrisma.$runCommandRaw.mockResolvedValue({
+        cursor: { firstBatch: [] },
+      });
 
       const result = await analyticsService.getRevenueTrend({});
 
@@ -203,23 +220,34 @@ describe('admin.analytics.service', () => {
     });
 
     it('falls back to day granularity for an invalid/unsupported value', async () => {
-      mockPrisma.$runCommandRaw.mockResolvedValue({ cursor: { firstBatch: [] } });
+      mockPrisma.$runCommandRaw.mockResolvedValue({
+        cursor: { firstBatch: [] },
+      });
 
-      const result = await analyticsService.getRevenueTrend({ granularity: 'yearly' });
+      const result = await analyticsService.getRevenueTrend({
+        granularity: 'yearly',
+      });
 
       expect(result.granularity).toBe('day');
     });
 
     it('never fabricates a bucket for a period with no paid orders — buckets stay exactly what the DB returned', async () => {
-      mockPrisma.$runCommandRaw.mockResolvedValue({ cursor: { firstBatch: [] } });
+      mockPrisma.$runCommandRaw.mockResolvedValue({
+        cursor: { firstBatch: [] },
+      });
 
-      const result = await analyticsService.getRevenueTrend({ dateFrom: '2026-01-01', dateTo: '2026-01-31' });
+      const result = await analyticsService.getRevenueTrend({
+        dateFrom: '2026-01-01',
+        dateTo: '2026-01-31',
+      });
 
       expect(result.buckets).toEqual([]);
     });
 
     it('ships a backend-authoritative definition for revenue and orderCount', async () => {
-      mockPrisma.$runCommandRaw.mockResolvedValue({ cursor: { firstBatch: [] } });
+      mockPrisma.$runCommandRaw.mockResolvedValue({
+        cursor: { firstBatch: [] },
+      });
 
       const result = await analyticsService.getRevenueTrend({});
 

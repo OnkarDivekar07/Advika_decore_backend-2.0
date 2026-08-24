@@ -13,7 +13,11 @@ jest.mock('../../src/services/external/EkartClient', () => ({
 }));
 
 const mockOrder = { findUnique: jest.fn(), update: jest.fn() };
-const mockShipment = { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() };
+const mockShipment = {
+  findUnique: jest.fn(),
+  create: jest.fn(),
+  update: jest.fn(),
+};
 
 jest.mock('@config/prisma', () => ({
   order: mockOrder,
@@ -22,6 +26,7 @@ jest.mock('@config/prisma', () => ({
 
 const ekartClient = require('../../src/services/external/EkartClient');
 const shippingService = require('@modules/shipping/shipping.service');
+const logger = require('@config/logger');
 
 const baseOrder = {
   id: 'order_1',
@@ -39,7 +44,12 @@ const baseOrder = {
     pincode: '400001',
   },
   orderItems: [
-    { productId: 'p1', quantity: 2, price: 250, product: { name: 'Mug', weightKg: 0.3 } },
+    {
+      productId: 'p1',
+      quantity: 2,
+      price: 250,
+      product: { name: 'Mug', weightKg: 0.3 },
+    },
   ],
 };
 
@@ -49,7 +59,10 @@ beforeEach(() => {
 
 describe('getDeliveryConfig', () => {
   it('mirrors the configured pricing constants', () => {
-    const { FREE_DELIVERY_THRESHOLD, DELIVERY_CHARGE } = require('@constants/pricing');
+    const {
+      FREE_DELIVERY_THRESHOLD,
+      DELIVERY_CHARGE,
+    } = require('@constants/pricing');
 
     expect(shippingService.getDeliveryConfig()).toEqual({
       freeDeliveryThreshold: FREE_DELIVERY_THRESHOLD,
@@ -83,8 +96,12 @@ describe('checkServiceability', () => {
     // Roughly "3 days from now" — bounded rather than asserting an exact
     // timestamp, since addDays() reads the current time internally.
     const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
-    expect(result.estimatedDeliveryDate.getTime()).toBeGreaterThanOrEqual(before + THREE_DAYS_MS - 1000);
-    expect(result.estimatedDeliveryDate.getTime()).toBeLessThanOrEqual(after + THREE_DAYS_MS + 1000);
+    expect(result.estimatedDeliveryDate.getTime()).toBeGreaterThanOrEqual(
+      before + THREE_DAYS_MS - 1000
+    );
+    expect(result.estimatedDeliveryDate.getTime()).toBeLessThanOrEqual(
+      after + THREE_DAYS_MS + 1000
+    );
   });
 
   it('defaults to not serviceable when the fields are missing, with no delivery date to show', async () => {
@@ -158,17 +175,29 @@ describe('checkServiceability', () => {
 
 describe('checkDeliveryEligibility', () => {
   it('passes through a definitive serviceable result', async () => {
-    ekartClient.checkServiceability.mockResolvedValue({ is_serviceable: true, cod_available: true });
+    ekartClient.checkServiceability.mockResolvedValue({
+      is_serviceable: true,
+      cod_available: true,
+    });
 
-    const result = await shippingService.checkDeliveryEligibility({ destinationPincode: '400001' });
+    const result = await shippingService.checkDeliveryEligibility({
+      destinationPincode: '400001',
+    });
 
-    expect(result).toMatchObject({ serviceable: true, skippedCheck: undefined });
+    expect(result).toMatchObject({
+      serviceable: true,
+      skippedCheck: undefined,
+    });
   });
 
   it('passes through a definitive not-serviceable result so callers can block on it', async () => {
-    ekartClient.checkServiceability.mockResolvedValue({ is_serviceable: false });
+    ekartClient.checkServiceability.mockResolvedValue({
+      is_serviceable: false,
+    });
 
-    const result = await shippingService.checkDeliveryEligibility({ destinationPincode: '400001' });
+    const result = await shippingService.checkDeliveryEligibility({
+      destinationPincode: '400001',
+    });
 
     expect(result.serviceable).toBe(false);
     expect(result.reason).toBe('AREA_NOT_COVERED');
@@ -178,9 +207,11 @@ describe('checkDeliveryEligibility', () => {
     const timeoutError = new Error('timed out');
     timeoutError.isTimeout = true;
     ekartClient.checkServiceability.mockRejectedValue(timeoutError);
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
 
-    const result = await shippingService.checkDeliveryEligibility({ destinationPincode: '400001' });
+    const result = await shippingService.checkDeliveryEligibility({
+      destinationPincode: '400001',
+    });
 
     expect(result).toEqual({
       serviceable: true,
@@ -206,6 +237,7 @@ describe('checkDeliveryEligibility — SHIPPING_SERVICEABILITY_FALLBACK_POLICY=f
   const ORIGINAL_ENV = { ...process.env };
   let ekartClientFailClosed;
   let shippingServiceFailClosed;
+  let loggerFailClosed;
 
   beforeEach(() => {
     jest.resetModules();
@@ -228,6 +260,13 @@ describe('checkDeliveryEligibility — SHIPPING_SERVICEABILITY_FALLBACK_POLICY=f
     ekartClientFailClosed = require('../../src/services/external/EkartClient');
     // eslint-disable-next-line global-require
     shippingServiceFailClosed = require('@modules/shipping/shipping.service');
+    // jest.resetModules() above means shipping.service.js's own internal
+    // require('@config/logger') resolves to a fresh module instance, not
+    // the one this file's top-level `logger` const captured before any
+    // reset — spying on that stale instance would never see the call this
+    // fresh shippingServiceFailClosed actually makes.
+    // eslint-disable-next-line global-require
+    loggerFailClosed = require('@config/logger');
   });
 
   afterEach(() => {
@@ -239,7 +278,9 @@ describe('checkDeliveryEligibility — SHIPPING_SERVICEABILITY_FALLBACK_POLICY=f
     const timeoutError = new Error('timed out');
     timeoutError.isTimeout = true;
     ekartClientFailClosed.checkServiceability.mockRejectedValue(timeoutError);
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnSpy = jest
+      .spyOn(loggerFailClosed, 'warn')
+      .mockImplementation(() => {});
 
     const result = await shippingServiceFailClosed.checkDeliveryEligibility({
       destinationPincode: '400001',
@@ -267,7 +308,10 @@ describe('checkDeliveryEligibility — SHIPPING_SERVICEABILITY_FALLBACK_POLICY=f
       destinationPincode: '400001',
     });
 
-    expect(result).toMatchObject({ serviceable: true, skippedCheck: undefined });
+    expect(result).toMatchObject({
+      serviceable: true,
+      skippedCheck: undefined,
+    });
   });
 });
 
@@ -281,18 +325,23 @@ describe('checkServiceability — pincode format', () => {
     ['abcdef', 'non-numeric'],
     [undefined, 'missing entirely'],
     [null, 'null'],
-  ])('rejects %s (%s) as INVALID_FORMAT without calling Ekart', async (badPincode) => {
-    const result = await shippingService.checkServiceability({ destinationPincode: badPincode });
+  ])(
+    'rejects %s (%s) as INVALID_FORMAT without calling Ekart',
+    async (badPincode) => {
+      const result = await shippingService.checkServiceability({
+        destinationPincode: badPincode,
+      });
 
-    expect(result).toEqual({
-      serviceable: false,
-      reason: 'INVALID_FORMAT',
-      estimatedDays: null,
-      estimatedDeliveryDate: null,
-      codAvailable: false,
-    });
-    expect(ekartClient.checkServiceability).not.toHaveBeenCalled();
-  });
+      expect(result).toEqual({
+        serviceable: false,
+        reason: 'INVALID_FORMAT',
+        estimatedDays: null,
+        estimatedDeliveryDate: null,
+        codAvailable: false,
+      });
+      expect(ekartClient.checkServiceability).not.toHaveBeenCalled();
+    }
+  );
 
   it('proceeds to call Ekart for a well-formed pincode', async () => {
     ekartClient.checkServiceability.mockResolvedValue({ is_serviceable: true });
@@ -307,7 +356,9 @@ describe('checkServiceability — normalized pricing contract (subtotal)', () =>
   it('omits deliveryCharge/freeDeliveryThreshold/freeDeliveryEligible when no subtotal is given', async () => {
     ekartClient.checkServiceability.mockResolvedValue({ is_serviceable: true });
 
-    const result = await shippingService.checkServiceability({ destinationPincode: '400001' });
+    const result = await shippingService.checkServiceability({
+      destinationPincode: '400001',
+    });
 
     expect(result).not.toHaveProperty('deliveryCharge');
     expect(result).not.toHaveProperty('freeDeliveryThreshold');
@@ -315,8 +366,14 @@ describe('checkServiceability — normalized pricing contract (subtotal)', () =>
   });
 
   it('folds in the delivery-charge/free-delivery fields for a given subtotal, using the same rule as order/cart totals', async () => {
-    const { FREE_DELIVERY_THRESHOLD, DELIVERY_CHARGE } = require('@constants/pricing');
-    ekartClient.checkServiceability.mockResolvedValue({ is_serviceable: true, cod_available: true });
+    const {
+      FREE_DELIVERY_THRESHOLD,
+      DELIVERY_CHARGE,
+    } = require('@constants/pricing');
+    ekartClient.checkServiceability.mockResolvedValue({
+      is_serviceable: true,
+      cod_available: true,
+    });
 
     const belowThreshold = await shippingService.checkServiceability({
       destinationPincode: '400001',
@@ -360,7 +417,9 @@ describe('createShipmentForOrder', () => {
   it('throws a 404 if the order does not exist', async () => {
     mockOrder.findUnique.mockResolvedValue(null);
 
-    await expect(shippingService.createShipmentForOrder('order_1')).rejects.toMatchObject({
+    await expect(
+      shippingService.createShipmentForOrder('order_1')
+    ).rejects.toMatchObject({
       statusCode: 404,
     });
     expect(ekartClient.createShipment).not.toHaveBeenCalled();
@@ -369,7 +428,9 @@ describe('createShipmentForOrder', () => {
   it("throws a 400 if the order isn't confirmed yet", async () => {
     mockOrder.findUnique.mockResolvedValue({ ...baseOrder, status: 'draft' });
 
-    await expect(shippingService.createShipmentForOrder('order_1')).rejects.toMatchObject({
+    await expect(
+      shippingService.createShipmentForOrder('order_1')
+    ).rejects.toMatchObject({
       statusCode: 400,
     });
     expect(ekartClient.createShipment).not.toHaveBeenCalled();
@@ -377,7 +438,10 @@ describe('createShipmentForOrder', () => {
 
   it('is idempotent — returns the existing shipment without calling Ekart again', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
-    mockShipment.findUnique.mockResolvedValue({ id: 'shipment_1', orderId: 'order_1' });
+    mockShipment.findUnique.mockResolvedValue({
+      id: 'shipment_1',
+      orderId: 'order_1',
+    });
 
     const result = await shippingService.createShipmentForOrder('order_1');
 
@@ -430,7 +494,10 @@ describe('createShipmentForOrder', () => {
   });
 
   it('marks a COD order with the full order total as the COD amount', async () => {
-    mockOrder.findUnique.mockResolvedValue({ ...baseOrder, paymentStatus: 'cod_pending' });
+    mockOrder.findUnique.mockResolvedValue({
+      ...baseOrder,
+      paymentStatus: 'cod_pending',
+    });
     mockShipment.findUnique.mockResolvedValue(null);
     ekartClient.createShipment.mockResolvedValue({ tracking_id: 'EKT123' });
     mockShipment.create.mockResolvedValue({ id: 'shipment_1' });
@@ -449,7 +516,9 @@ describe('createShipmentForOrder', () => {
     ekartError.statusCode = 400;
     ekartClient.createShipment.mockRejectedValue(ekartError);
 
-    await expect(shippingService.createShipmentForOrder('order_1')).rejects.toMatchObject({
+    await expect(
+      shippingService.createShipmentForOrder('order_1')
+    ).rejects.toMatchObject({
       statusCode: 422,
     });
     expect(mockShipment.create).not.toHaveBeenCalled();
@@ -462,7 +531,9 @@ describe('createShipmentForOrder', () => {
     timeoutError.isTimeout = true;
     ekartClient.createShipment.mockRejectedValue(timeoutError);
 
-    await expect(shippingService.createShipmentForOrder('order_1')).rejects.toMatchObject({
+    await expect(
+      shippingService.createShipmentForOrder('order_1')
+    ).rejects.toMatchObject({
       statusCode: 503,
     });
   });
@@ -490,7 +561,7 @@ describe('trackOrderShipment', () => {
     expect(mockShipment.findUnique).not.toHaveBeenCalled();
   });
 
-  it('allows an admin to track a shipment on someone else\'s order', async () => {
+  it("allows an admin to track a shipment on someone else's order", async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue({
       orderId: 'order_1',
@@ -498,9 +569,15 @@ describe('trackOrderShipment', () => {
       status: 'CREATED',
     });
     ekartClient.trackShipment.mockResolvedValue({ status: 'IN_TRANSIT' });
-    mockShipment.update.mockResolvedValue({ orderId: 'order_1', status: 'IN_TRANSIT' });
+    mockShipment.update.mockResolvedValue({
+      orderId: 'order_1',
+      status: 'IN_TRANSIT',
+    });
 
-    const result = await shippingService.trackOrderShipment('order_1', requestingAdmin);
+    const result = await shippingService.trackOrderShipment(
+      'order_1',
+      requestingAdmin
+    );
 
     expect(result.status).toBe('IN_TRANSIT');
   });
@@ -516,11 +593,22 @@ describe('trackOrderShipment', () => {
 
   it('returns the shipment as-is if Ekart has not yet returned a tracking id', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
-    mockShipment.findUnique.mockResolvedValue({ orderId: 'order_1', trackingId: null, status: 'CREATED' });
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      trackingId: null,
+      status: 'CREATED',
+    });
 
-    const result = await shippingService.trackOrderShipment('order_1', requestingOwner);
+    const result = await shippingService.trackOrderShipment(
+      'order_1',
+      requestingOwner
+    );
 
-    expect(result).toEqual({ orderId: 'order_1', trackingId: null, status: 'CREATED' });
+    expect(result).toEqual({
+      orderId: 'order_1',
+      trackingId: null,
+      status: 'CREATED',
+    });
     expect(ekartClient.trackShipment).not.toHaveBeenCalled();
   });
 
@@ -535,13 +623,19 @@ describe('trackOrderShipment', () => {
       status: 'DELIVERED',
       current_location: 'Mumbai Hub',
     });
-    mockShipment.update.mockResolvedValue({ orderId: 'order_1', status: 'DELIVERED' });
+    mockShipment.update.mockResolvedValue({
+      orderId: 'order_1',
+      status: 'DELIVERED',
+    });
 
     await shippingService.trackOrderShipment('order_1', requestingOwner);
 
     expect(mockShipment.update).toHaveBeenCalledWith({
       where: { orderId: 'order_1' },
-      data: expect.objectContaining({ status: 'DELIVERED', lastLocation: 'Mumbai Hub' }),
+      data: expect.objectContaining({
+        status: 'DELIVERED',
+        lastLocation: 'Mumbai Hub',
+      }),
     });
     expect(mockOrder.update).toHaveBeenCalledWith({
       where: { id: 'order_1' },
@@ -551,9 +645,15 @@ describe('trackOrderShipment', () => {
 
   it('does not touch the order for a non-terminal status like IN_TRANSIT', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
-    mockShipment.findUnique.mockResolvedValue({ orderId: 'order_1', trackingId: 'EKT123' });
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      trackingId: 'EKT123',
+    });
     ekartClient.trackShipment.mockResolvedValue({ status: 'IN_TRANSIT' });
-    mockShipment.update.mockResolvedValue({ orderId: 'order_1', status: 'IN_TRANSIT' });
+    mockShipment.update.mockResolvedValue({
+      orderId: 'order_1',
+      status: 'IN_TRANSIT',
+    });
 
     await shippingService.trackOrderShipment('order_1', requestingOwner);
 
@@ -570,13 +670,18 @@ describe('trackOrderShipment', () => {
       estimatedDeliveryDate: existingEstimate,
     });
     ekartClient.trackShipment.mockResolvedValue({ status: 'IN_TRANSIT' });
-    mockShipment.update.mockResolvedValue({ orderId: 'order_1', status: 'IN_TRANSIT' });
+    mockShipment.update.mockResolvedValue({
+      orderId: 'order_1',
+      status: 'IN_TRANSIT',
+    });
 
     await shippingService.trackOrderShipment('order_1', requestingOwner);
 
     expect(mockShipment.update).toHaveBeenCalledWith({
       where: { orderId: 'order_1' },
-      data: expect.objectContaining({ estimatedDeliveryDate: existingEstimate }),
+      data: expect.objectContaining({
+        estimatedDeliveryDate: existingEstimate,
+      }),
     });
   });
 
@@ -592,7 +697,10 @@ describe('trackOrderShipment', () => {
       status: 'IN_TRANSIT',
       expected_delivery_date: '2026-08-25T00:00:00.000Z',
     });
-    mockShipment.update.mockResolvedValue({ orderId: 'order_1', status: 'IN_TRANSIT' });
+    mockShipment.update.mockResolvedValue({
+      orderId: 'order_1',
+      status: 'IN_TRANSIT',
+    });
 
     await shippingService.trackOrderShipment('order_1', requestingOwner);
 
@@ -627,7 +735,10 @@ describe('cancelOrderShipment', () => {
 
   it('throws a 400 if the shipment is already in a terminal state', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
-    mockShipment.findUnique.mockResolvedValue({ orderId: 'order_1', status: 'DELIVERED' });
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      status: 'DELIVERED',
+    });
 
     await expect(
       shippingService.cancelOrderShipment('order_1', requestingOwner)
@@ -642,11 +753,21 @@ describe('cancelOrderShipment', () => {
       trackingId: 'EKT123',
       status: 'CREATED',
     });
-    mockShipment.update.mockResolvedValue({ orderId: 'order_1', status: 'CANCELLED' });
+    mockShipment.update.mockResolvedValue({
+      orderId: 'order_1',
+      status: 'CANCELLED',
+    });
 
-    const result = await shippingService.cancelOrderShipment('order_1', requestingOwner, 'Changed my mind');
+    const result = await shippingService.cancelOrderShipment(
+      'order_1',
+      requestingOwner,
+      'Changed my mind'
+    );
 
-    expect(ekartClient.cancelShipment).toHaveBeenCalledWith('EKT123', 'Changed my mind');
+    expect(ekartClient.cancelShipment).toHaveBeenCalledWith(
+      'EKT123',
+      'Changed my mind'
+    );
     expect(mockShipment.update).toHaveBeenCalledWith({
       where: { orderId: 'order_1' },
       data: { status: 'CANCELLED' },
@@ -660,8 +781,15 @@ describe('cancelOrderShipment', () => {
 
   it('skips the Ekart call if no tracking id was ever assigned', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
-    mockShipment.findUnique.mockResolvedValue({ orderId: 'order_1', trackingId: null, status: 'CREATED' });
-    mockShipment.update.mockResolvedValue({ orderId: 'order_1', status: 'CANCELLED' });
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      trackingId: null,
+      status: 'CREATED',
+    });
+    mockShipment.update.mockResolvedValue({
+      orderId: 'order_1',
+      status: 'CANCELLED',
+    });
 
     await shippingService.cancelOrderShipment('order_1', requestingOwner);
 
@@ -678,9 +806,12 @@ describe('handleEkartWebhookEvent', () => {
 
   it('warns and no-ops on a tracking id it does not recognize', async () => {
     mockShipment.findUnique.mockResolvedValue(null);
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
 
-    await shippingService.handleEkartWebhookEvent({ tracking_id: 'UNKNOWN', status: 'DELIVERED' });
+    await shippingService.handleEkartWebhookEvent({
+      tracking_id: 'UNKNOWN',
+      status: 'DELIVERED',
+    });
 
     expect(mockShipment.update).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
@@ -693,7 +824,10 @@ describe('handleEkartWebhookEvent', () => {
       trackingId: 'EKT123',
       status: 'OUT_FOR_DELIVERY',
     });
-    mockShipment.update.mockResolvedValue({ orderId: 'order_1', status: 'DELIVERED' });
+    mockShipment.update.mockResolvedValue({
+      orderId: 'order_1',
+      status: 'DELIVERED',
+    });
 
     await shippingService.handleEkartWebhookEvent({
       tracking_id: 'EKT123',
@@ -712,8 +846,14 @@ describe('handleEkartWebhookEvent', () => {
   });
 
   it('maps an RTO_DELIVERED event to a returned order', async () => {
-    mockShipment.findUnique.mockResolvedValue({ orderId: 'order_1', trackingId: 'EKT123' });
-    mockShipment.update.mockResolvedValue({ orderId: 'order_1', status: 'RTO_DELIVERED' });
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      trackingId: 'EKT123',
+    });
+    mockShipment.update.mockResolvedValue({
+      orderId: 'order_1',
+      status: 'RTO_DELIVERED',
+    });
 
     await shippingService.handleEkartWebhookEvent({
       tracking_id: 'EKT123',

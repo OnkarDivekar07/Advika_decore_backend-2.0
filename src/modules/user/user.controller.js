@@ -98,9 +98,6 @@ exports.setDefaultAddress = async (req, res, next) => {
   }
 };
 
-
-
-
 exports.getUserProfile = async (req, res, next) => {
   try {
     const userId = req.user.userId; // Assuming JWT middleware attaches user

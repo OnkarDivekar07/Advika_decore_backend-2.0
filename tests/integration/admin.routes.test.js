@@ -72,7 +72,12 @@ describe('POST /api/admin/login', () => {
   it('logs in with valid credentials', async () => {
     adminService.login.mockResolvedValue({
       token: 'jwt-token',
-      user: { id: 'admin1', name: 'Admin', email: 'admin@advika.com', role: 'admin' },
+      user: {
+        id: 'admin1',
+        name: 'Admin',
+        email: 'admin@advika.com',
+        role: 'admin',
+      },
     });
 
     const res = await request(app)
@@ -104,7 +109,9 @@ describe('POST /api/admin/login', () => {
       .send({ email: 'admin@advika.com', password: 'wrong-password' });
 
     expect(res.status).toBe(429);
-    expect(res.body.message).toBe('Too many login attempts. Please try again later.');
+    expect(res.body.message).toBe(
+      'Too many login attempts. Please try again later.'
+    );
     expect(adminService.login).not.toHaveBeenCalled();
   });
 

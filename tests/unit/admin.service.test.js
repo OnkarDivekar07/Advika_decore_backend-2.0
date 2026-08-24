@@ -70,7 +70,10 @@ describe('admin.service', () => {
       });
 
       await expect(
-        adminService.login({ email: 'customer@advika.com', password: 'secret1' })
+        adminService.login({
+          email: 'customer@advika.com',
+          password: 'secret1',
+        })
       ).rejects.toMatchObject({ statusCode: 401 });
     });
 
@@ -263,7 +266,10 @@ describe('admin.service', () => {
 
     it('returns null when no user exists for the given id (controller maps this to 404)', async () => {
       mockPrisma.user.findUnique.mockResolvedValue(null);
-      mockPrisma.order.aggregate.mockResolvedValue({ _count: { _all: 0 }, _sum: { total: null } });
+      mockPrisma.order.aggregate.mockResolvedValue({
+        _count: { _all: 0 },
+        _sum: { total: null },
+      });
 
       const result = await adminService.getUserDetailById('nonexistent');
       expect(result).toBeNull();
@@ -278,7 +284,15 @@ describe('admin.service', () => {
         role: 'customer',
         createdAt: new Date('2026-01-01'),
         addresses: [{ id: 'a1', city: 'Pune', isDefault: true }],
-        orders: [{ id: 'o1', status: 'delivered', paymentStatus: 'paid', total: 500, createdAt: new Date('2026-02-01') }],
+        orders: [
+          {
+            id: 'o1',
+            status: 'delivered',
+            paymentStatus: 'paid',
+            total: 500,
+            createdAt: new Date('2026-02-01'),
+          },
+        ],
       });
       mockPrisma.order.aggregate.mockResolvedValue({
         _count: { _all: 42 },
@@ -289,20 +303,40 @@ describe('admin.service', () => {
 
       expect(result.id).toBe('u1');
       expect(result.password).toBeUndefined();
-      expect(result.addresses).toEqual([{ id: 'a1', city: 'Pune', isDefault: true }]);
+      expect(result.addresses).toEqual([
+        { id: 'a1', city: 'Pune', isDefault: true },
+      ]);
       expect(result.recentOrders).toEqual([
-        { id: 'o1', status: 'delivered', paymentStatus: 'paid', total: 500, createdAt: new Date('2026-02-01') },
+        {
+          id: 'o1',
+          status: 'delivered',
+          paymentStatus: 'paid',
+          total: 500,
+          createdAt: new Date('2026-02-01'),
+        },
       ]);
       // orderSummary comes from the full aggregate, not just recentOrders.length
-      expect(result.orderSummary).toEqual({ totalOrders: 42, totalSpent: 99999 });
+      expect(result.orderSummary).toEqual({
+        totalOrders: 42,
+        totalSpent: 99999,
+      });
     });
 
     it('falls back to 0 totalSpent when the customer has no paid orders', async () => {
       mockPrisma.user.findUnique.mockResolvedValue({
-        id: 'u1', name: 'Jane', email: 'jane@x.com', phone: '9', role: 'customer',
-        createdAt: new Date(), addresses: [], orders: [],
+        id: 'u1',
+        name: 'Jane',
+        email: 'jane@x.com',
+        phone: '9',
+        role: 'customer',
+        createdAt: new Date(),
+        addresses: [],
+        orders: [],
       });
-      mockPrisma.order.aggregate.mockResolvedValue({ _count: { _all: 0 }, _sum: { total: null } });
+      mockPrisma.order.aggregate.mockResolvedValue({
+        _count: { _all: 0 },
+        _sum: { total: null },
+      });
 
       const result = await adminService.getUserDetailById('u1');
       expect(result.orderSummary).toEqual({ totalOrders: 0, totalSpent: 0 });

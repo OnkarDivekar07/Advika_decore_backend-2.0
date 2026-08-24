@@ -9,7 +9,10 @@ jest.mock('razorpay', () =>
   }))
 );
 
-const { assertImplementsContract, REQUIRED_METHODS } = require('@modules/payment/gateways/paymentGateway.contract');
+const {
+  assertImplementsContract,
+  REQUIRED_METHODS,
+} = require('@modules/payment/gateways/paymentGateway.contract');
 
 const completeGateway = () => {
   const gateway = { name: 'fake' };
@@ -38,7 +41,9 @@ describe('paymentGateway.contract', () => {
     const gateway = completeGateway();
     gateway.name = '';
 
-    expect(() => assertImplementsContract(gateway)).toThrow(/non-empty string `name`/);
+    expect(() => assertImplementsContract(gateway)).toThrow(
+      /non-empty string `name`/
+    );
   });
 });
 
@@ -64,6 +69,8 @@ describe('gateways/index (selector)', () => {
     jest.resetModules();
 
     // eslint-disable-next-line global-require
-    expect(() => require('@modules/payment/gateways')).toThrow(/Unknown PAYMENT_GATEWAY/);
+    expect(() => require('@modules/payment/gateways')).toThrow(
+      /Unknown PAYMENT_GATEWAY/
+    );
   });
 });

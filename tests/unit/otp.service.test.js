@@ -27,7 +27,8 @@ describe('otp.service', () => {
       global.fetch.mockResolvedValue({
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({ type: 'success', message: 'OTP sent successfully' }),
+        text: async () =>
+          JSON.stringify({ type: 'success', message: 'OTP sent successfully' }),
       });
 
       await otpService.sendOtpService('+91 9876543210');
@@ -36,7 +37,9 @@ describe('otp.service', () => {
       const [requestUrl, options] = global.fetch.mock.calls[0];
       const url = new URL(requestUrl);
 
-      expect(url.origin + url.pathname).toBe('https://control.msg91.com/api/v5/otp');
+      expect(url.origin + url.pathname).toBe(
+        'https://control.msg91.com/api/v5/otp'
+      );
       expect(url.searchParams.get('template_id')).toBe('test-template-id');
       expect(url.searchParams.get('mobile')).toBe('919876543210');
       expect(url.searchParams.get('authkey')).toBe('test-msg91-auth-key');
@@ -47,7 +50,8 @@ describe('otp.service', () => {
       global.fetch.mockResolvedValue({
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({ type: 'error', message: 'Template not found' }),
+        text: async () =>
+          JSON.stringify({ type: 'error', message: 'Template not found' }),
       });
 
       await expect(
@@ -61,7 +65,8 @@ describe('otp.service', () => {
       global.fetch.mockResolvedValue({
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({ type: 'success', message: 'OTP verified success' }),
+        text: async () =>
+          JSON.stringify({ type: 'success', message: 'OTP verified success' }),
       });
       mockUser.findUnique.mockResolvedValue({
         id: 'user_1',
@@ -97,7 +102,8 @@ describe('otp.service', () => {
       global.fetch.mockResolvedValue({
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({ type: 'error', message: 'OTP expired' }),
+        text: async () =>
+          JSON.stringify({ type: 'error', message: 'OTP expired' }),
       });
 
       await expect(
@@ -112,7 +118,8 @@ describe('otp.service', () => {
       global.fetch.mockResolvedValue({
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({ type: 'error', message: 'Invalid OTP' }),
+        text: async () =>
+          JSON.stringify({ type: 'error', message: 'Invalid OTP' }),
       });
 
       await expect(
@@ -129,7 +136,8 @@ describe('otp.service', () => {
       global.fetch.mockResolvedValue({
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({ type: 'success', message: 'OTP verified success' }),
+        text: async () =>
+          JSON.stringify({ type: 'success', message: 'OTP verified success' }),
       });
       mockUser.findUnique.mockResolvedValue(null);
       mockUser.create.mockResolvedValue({
@@ -152,6 +160,61 @@ describe('otp.service', () => {
       });
       expect(result.user.id).toBe('user_new');
       expect(result.token).toBe('signed-jwt-token');
+    });
+
+    it('recovers from a concurrent create race for the same brand-new phone number instead of 500ing', async () => {
+      global.fetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({ type: 'success', message: 'OTP verified success' }),
+      });
+      // Both requests' findUnique ran before either had written a row.
+      mockUser.findUnique.mockResolvedValueOnce(null);
+      const duplicatePhoneError = Object.assign(
+        new Error('Unique constraint failed on the fields: (`phone`)'),
+        { code: 'P2002' }
+      );
+      mockUser.create.mockRejectedValue(duplicatePhoneError);
+      // The re-read after losing the race finds the row the other request
+      // just created.
+      mockUser.findUnique.mockResolvedValueOnce({
+        id: 'user_winner',
+        phone: '9876543210',
+        role: 'customer',
+      });
+
+      const result = await otpService.verifyOtpService(
+        '+919876543210',
+        '123456'
+      );
+
+      expect(mockUser.findUnique).toHaveBeenCalledTimes(2);
+      expect(result.user.id).toBe('user_winner');
+      expect(result.token).toBe('signed-jwt-token');
+    });
+
+    it('re-throws a P2002 that is not actually a duplicate-phone race', async () => {
+      global.fetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({ type: 'success', message: 'OTP verified success' }),
+      });
+      mockUser.findUnique.mockResolvedValueOnce(null);
+      const otherUniqueError = Object.assign(
+        new Error('Unique constraint failed on the fields: (`email`)'),
+        { code: 'P2002' }
+      );
+      mockUser.create.mockRejectedValue(otherUniqueError);
+      // Re-read after the P2002 still finds nothing for this phone — not a
+      // race after all, so the original error should surface rather than
+      // being swallowed.
+      mockUser.findUnique.mockResolvedValueOnce(null);
+
+      await expect(
+        otpService.verifyOtpService('+919876543210', '123456')
+      ).rejects.toBe(otherUniqueError);
     });
   });
 });

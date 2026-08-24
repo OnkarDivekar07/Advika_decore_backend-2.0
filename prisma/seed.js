@@ -11,7 +11,9 @@ async function seedAdmin() {
     process.exit(1);
   }
 
-  const existingAdmin = await prisma.user.findFirst({ where: { email: adminEmail } });
+  const existingAdmin = await prisma.user.findFirst({
+    where: { email: adminEmail },
+  });
   if (existingAdmin) {
     console.log('✅ Admin user already exists. No need to seed.');
     return;
@@ -142,7 +144,13 @@ const PRODUCTS = [
     description:
       'A 48-inch curved light bar for big trucks and trailers that need wide, even coverage across the front. Dual-voltage driver — one SKU fits a Signa and an Ace alike.',
     voltage: '12V/24V',
-    specs: { Wattage: '180W', Lumens: '16,200 lm', 'Beam Pattern': 'Combo', Voltage: '9-32V DC (12V & 24V)', 'IP Rating': 'IP68' },
+    specs: {
+      Wattage: '180W',
+      Lumens: '16,200 lm',
+      'Beam Pattern': 'Combo',
+      Voltage: '9-32V DC (12V & 24V)',
+      'IP Rating': 'IP68',
+    },
     compatibility: DUAL_VOLTAGE_COMPAT,
     rating: 4.7,
     reviewCount: 189,
@@ -173,7 +181,8 @@ const PRODUCTS = [
     price: 1299,
     mrp: 1799,
     stock: 60,
-    description: 'A 5-metre flexible LED strip kit for cabin and chassis trim lighting, cut-to-length every 3 LEDs.',
+    description:
+      'A 5-metre flexible LED strip kit for cabin and chassis trim lighting, cut-to-length every 3 LEDs.',
     voltage: '12V',
     specs: { Length: '5M', Voltage: '12V', 'IP Rating': 'IP65' },
     compatibility: LIGHT_12V_COMPAT,
@@ -189,7 +198,8 @@ const PRODUCTS = [
     price: 1899,
     mrp: 2699,
     stock: 40,
-    description: 'A cushioned, breathable seat cover set sized for long-haul driver seats — no voltage, no fitment restriction, fits any cab.',
+    description:
+      'A cushioned, breathable seat cover set sized for long-haul driver seats — no voltage, no fitment restriction, fits any cab.',
     rating: 4.4,
     reviewCount: 76,
     isBestSeller: true,
@@ -202,9 +212,15 @@ const PRODUCTS = [
     price: 2499,
     mrp: 3499,
     stock: 35,
-    description: 'A pair of amber LED fog lights for cutting through monsoon haze, 24V system for medium and big commercial vehicles.',
+    description:
+      'A pair of amber LED fog lights for cutting through monsoon haze, 24V system for medium and big commercial vehicles.',
     voltage: '24V',
-    specs: { Wattage: '48W (pair)', 'Beam Pattern': 'Flood', Voltage: '24V', 'IP Rating': 'IP67' },
+    specs: {
+      Wattage: '48W (pair)',
+      'Beam Pattern': 'Flood',
+      Voltage: '24V',
+      'IP Rating': 'IP67',
+    },
     compatibility: HEAVY_24V_COMPAT,
     rating: 4.6,
     reviewCount: 121,
@@ -218,7 +234,8 @@ const PRODUCTS = [
     price: 899,
     mrp: 1299,
     stock: 50,
-    description: 'A set of reinforced rubber mud flaps that hold shape at highway speed — no electrical fitment, fits any vehicle size.',
+    description:
+      'A set of reinforced rubber mud flaps that hold shape at highway speed — no electrical fitment, fits any vehicle size.',
     rating: 4.3,
     reviewCount: 54,
     isBestSeller: true,
@@ -231,7 +248,8 @@ const PRODUCTS = [
     price: 749,
     mrp: 999,
     stock: 70,
-    description: 'A dash-mount 24V charger with dual USB-A ports for phone and GPS charging on medium and big trucks. Not for 12V pickups.',
+    description:
+      'A dash-mount 24V charger with dual USB-A ports for phone and GPS charging on medium and big trucks. Not for 12V pickups.',
     voltage: '24V',
     specs: { Input: '24V DC', Output: '2× USB-A, 3.1A total' },
     compatibility: HEAVY_24V_COMPAT,
@@ -247,7 +265,8 @@ const PRODUCTS = [
     price: 649,
     mrp: 899,
     stock: 80,
-    description: 'A grippy steering wheel cover paired with a spinner knob for tight-turn manoeuvring — no voltage, fits any cab.',
+    description:
+      'A grippy steering wheel cover paired with a spinner knob for tight-turn manoeuvring — no voltage, fits any cab.',
     rating: 4.1,
     reviewCount: 33,
     isBestSeller: true,
@@ -261,9 +280,14 @@ const PRODUCTS = [
     price: 7299,
     mrp: 8999,
     stock: 20,
-    description: 'A dual-beam fog light set combining spot and flood patterns, dual-voltage driver.',
+    description:
+      'A dual-beam fog light set combining spot and flood patterns, dual-voltage driver.',
     voltage: '12V/24V',
-    specs: { Wattage: '48W', 'Beam Pattern': 'Dual (Spot + Flood)', Voltage: '9-32V DC (12V & 24V)' },
+    specs: {
+      Wattage: '48W',
+      'Beam Pattern': 'Dual (Spot + Flood)',
+      Voltage: '9-32V DC (12V & 24V)',
+    },
     compatibility: DUAL_VOLTAGE_COMPAT,
     rating: 4.5,
     reviewCount: 87,
@@ -277,9 +301,14 @@ const PRODUCTS = [
     price: 9999,
     mrp: 12999,
     stock: 3,
-    description: 'A slim-profile 72W light bar for grille-mount installs where clearance is tight.',
+    description:
+      'A slim-profile 72W light bar for grille-mount installs where clearance is tight.',
     voltage: '12V/24V',
-    specs: { Wattage: '72W', 'Beam Pattern': 'Combo', Voltage: '9-32V DC (12V & 24V)' },
+    specs: {
+      Wattage: '72W',
+      'Beam Pattern': 'Combo',
+      Voltage: '9-32V DC (12V & 24V)',
+    },
     compatibility: DUAL_VOLTAGE_COMPAT,
     rating: 4.6,
     reviewCount: 58,
@@ -293,7 +322,8 @@ const PRODUCTS = [
     price: 549,
     mrp: 799,
     stock: 0,
-    description: 'A large cotton dash mat that cuts glare off the windshield on long day runs.',
+    description:
+      'A large cotton dash mat that cuts glare off the windshield on long day runs.',
     rating: 4.0,
     reviewCount: 19,
     isBestSeller: false,
@@ -306,7 +336,8 @@ const PRODUCTS = [
     price: 1099,
     mrp: 1499,
     stock: 45,
-    description: 'A 12V reverse horn with built-in proximity sensor for small commercial vehicles and pickups.',
+    description:
+      'A 12V reverse horn with built-in proximity sensor for small commercial vehicles and pickups.',
     voltage: '12V',
     specs: { Voltage: '12V', 'Sound Level': '112 dB' },
     compatibility: LIGHT_12V_COMPAT,
@@ -322,7 +353,8 @@ const PRODUCTS = [
     price: 1899,
     mrp: 2499,
     stock: 22,
-    description: 'A braided, heat-resistant wiring harness kit for a clean auxiliary-light install, dual-voltage rated.',
+    description:
+      'A braided, heat-resistant wiring harness kit for a clean auxiliary-light install, dual-voltage rated.',
     voltage: '12V/24V',
     specs: { Voltage: '9-32V DC (12V & 24V)', Length: '5M' },
     rating: 4.2,
@@ -337,7 +369,8 @@ const PRODUCTS = [
     price: 399,
     mrp: 599,
     stock: 90,
-    description: 'A pair of foldable reflective warning triangles for breakdown safety on the highway.',
+    description:
+      'A pair of foldable reflective warning triangles for breakdown safety on the highway.',
     rating: 4.4,
     reviewCount: 64,
     isBestSeller: false,
@@ -350,7 +383,8 @@ const PRODUCTS = [
     price: 449,
     mrp: 599,
     stock: 55,
-    description: 'A universal steel bracket set for mounting light bars and fog lights across bumper profiles.',
+    description:
+      'A universal steel bracket set for mounting light bars and fog lights across bumper profiles.',
     rating: 4.1,
     reviewCount: 22,
     isBestSeller: false,
@@ -361,7 +395,9 @@ const PRODUCTS = [
 async function seedProducts() {
   let created = 0;
   for (const product of PRODUCTS) {
-    const existing = await prisma.product.findFirst({ where: { name: product.name } });
+    const existing = await prisma.product.findFirst({
+      where: { name: product.name },
+    });
     if (existing) continue;
     await prisma.product.create({ data: product });
     created += 1;

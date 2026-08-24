@@ -27,7 +27,9 @@ exports.createAddress = async (data) => {
     // The very first address a user saves is always their default — there
     // is never a valid state where a user has addresses but none of them
     // is default (see prisma/schema.prisma's comment on Address.isDefault).
-    const existingCount = userId ? await tx.address.count({ where: { userId } }) : 0;
+    const existingCount = userId
+      ? await tx.address.count({ where: { userId } })
+      : 0;
     const shouldBeDefault = existingCount === 0 || data.isDefault === true;
 
     const address = await tx.address.create({
@@ -124,7 +126,10 @@ exports.deleteAddressById = async (id, userId) => {
         orderBy: { createdAt: 'desc' },
       });
       if (next) {
-        await tx.address.update({ where: { id: next.id }, data: { isDefault: true } });
+        await tx.address.update({
+          where: { id: next.id },
+          data: { isDefault: true },
+        });
       }
     }
 
@@ -145,7 +150,10 @@ exports.setDefaultAddressById = async (id, userId) => {
   if (address.isDefault) return address; // already the default — no-op
 
   return prisma.$transaction(async (tx) => {
-    const updated = await tx.address.update({ where: { id }, data: { isDefault: true } });
+    const updated = await tx.address.update({
+      where: { id },
+      data: { isDefault: true },
+    });
     await clearOtherDefaults(tx, userId, id);
     return updated;
   });
@@ -184,7 +192,9 @@ exports.updateUserProfile = async (userId, data) => {
   // previously-set vehicle/DOB.
   if (data.vehicle !== undefined) updateData.vehicle = data.vehicle || null;
   if (data.dateOfBirth !== undefined) {
-    updateData.dateOfBirth = data.dateOfBirth ? new Date(data.dateOfBirth) : null;
+    updateData.dateOfBirth = data.dateOfBirth
+      ? new Date(data.dateOfBirth)
+      : null;
   }
 
   const user = await prisma.user.update({
@@ -232,7 +242,9 @@ exports.sendPhoneChangeOtp = async (userId, newPhoneE164) => {
     throw new customError('This is already your mobile number.', 400);
   }
 
-  const existing = await prisma.user.findUnique({ where: { phone: normalized } });
+  const existing = await prisma.user.findUnique({
+    where: { phone: normalized },
+  });
   if (existing) {
     throw new customError('This mobile number is already in use.', 409);
   }
@@ -251,7 +263,9 @@ exports.confirmPhoneChange = async (userId, newPhoneE164, otp) => {
 
   const normalized = formatNumber(newPhoneE164);
 
-  const existing = await prisma.user.findUnique({ where: { phone: normalized } });
+  const existing = await prisma.user.findUnique({
+    where: { phone: normalized },
+  });
   if (existing && existing.id !== userId) {
     throw new customError('This mobile number is already in use.', 409);
   }

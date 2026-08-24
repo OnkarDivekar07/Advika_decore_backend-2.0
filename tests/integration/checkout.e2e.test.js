@@ -30,7 +30,9 @@ jest.mock('razorpay', () =>
 // or silently relying on the fail-open fallback path to paper over an
 // unmocked dependency.
 jest.mock('../../src/services/external/EkartClient', () => ({
-  checkServiceability: jest.fn().mockResolvedValue({ is_serviceable: true, cod_available: true }),
+  checkServiceability: jest
+    .fn()
+    .mockResolvedValue({ is_serviceable: true, cod_available: true }),
   createShipment: jest.fn(),
   trackShipment: jest.fn(),
   cancelShipment: jest.fn(),
@@ -73,7 +75,14 @@ const resetDb = () => {
 
 const seedProduct = (overrides = {}) => {
   const id = genId();
-  db.products[id] = { id, name: 'Trail Runner', price: 500, stock: 10, ...overrides, id };
+  db.products[id] = {
+    id,
+    name: 'Trail Runner',
+    price: 500,
+    stock: 10,
+    ...overrides,
+    id,
+  };
   return db.products[id];
 };
 
@@ -145,7 +154,10 @@ const mockPrisma = {
       if (include?.orderItems) {
         let items = db.orderItems.filter((i) => i.orderId === order.id);
         if (include.orderItems.include?.product) {
-          items = items.map((i) => ({ ...i, product: db.products[i.productId] }));
+          items = items.map((i) => ({
+            ...i,
+            product: db.products[i.productId],
+          }));
         }
         result.orderItems = items;
       }
@@ -205,7 +217,10 @@ const mockPrisma = {
       if (include?.orderItems) {
         let items = db.orderItems.filter((i) => i.orderId === order.id);
         if (include.orderItems.include?.product) {
-          items = items.map((i) => ({ ...i, product: db.products[i.productId] }));
+          items = items.map((i) => ({
+            ...i,
+            product: db.products[i.productId],
+          }));
         }
         result.orderItems = items;
       }
@@ -268,7 +283,30 @@ jest.mock('../../src/jobs/queues/clearCartQueue', () => mockCartQueue);
 // available in the test environment, `.add()` never resolves and the test
 // times out instead of failing fast on an assertion.
 const mockNotificationQueue = { add: jest.fn(async () => {}) };
-jest.mock('../../src/jobs/queues/notificationQueue', () => mockNotificationQueue);
+jest.mock(
+  '../../src/jobs/queues/notificationQueue',
+  () => mockNotificationQueue
+);
+
+// -- Redis: createDraftOrderService now takes a short-lived per-user lock
+// via @config/redis directly (see order.service.js) — same "never hit a
+// real connection" reasoning as the queues above. A tiny in-memory
+// NX-respecting stand-in keeps the lock's actual acquire/release semantics
+// (rather than always-succeeding stubs) so a real double-tap-style race
+// within one test would still surface as a 409, same as it would in prod.
+const redisLockStore = new Map();
+const mockRedis = {
+  set: jest.fn(async (key, value, mode, ttl, flag) => {
+    if (flag === 'NX' && redisLockStore.has(key)) return null;
+    redisLockStore.set(key, value);
+    return 'OK';
+  }),
+  del: jest.fn(async (key) => {
+    const existed = redisLockStore.delete(key);
+    return existed ? 1 : 0;
+  }),
+};
+jest.mock('@config/redis', () => mockRedis);
 
 const Razorpay = require('razorpay');
 const cartRoutes = require('@modules/cart/cart.routes');
@@ -301,6 +339,7 @@ const app = buildApp();
 beforeEach(() => {
   resetDb();
   jest.clearAllMocks();
+  redisLockStore.clear();
   // jest.clearAllMocks() wipes the razorpay mock's constructor call log too,
   // but the *instance* it already returned (captured above) is unaffected —
   // only its own jest.fn() methods need re-arming per test where used.
@@ -400,7 +439,7 @@ describe('checkout flow — Cash on Delivery', () => {
     expect(cartAfter.body.data).toHaveLength(1);
   });
 
-  it('rejects placing a COD order for another user\'s order', async () => {
+  it("rejects placing a COD order for another user's order", async () => {
     const product = seedProduct({ price: 500, stock: 10 });
     const address = seedAddress('user_1');
 
@@ -572,7 +611,9 @@ describe('checkout flow — Razorpay online payment', () => {
       });
 
     expect(verifyRes.status).toBe(400);
-    expect(verifyRes.body.message).toBe('Payment amount does not match order total');
+    expect(verifyRes.body.message).toBe(
+      'Payment amount does not match order total'
+    );
     expect(db.orders[orderId].status).toBe('draft');
     // Same as the forged-signature case above — create-orderid already
     // moved this to 'attempted'; a rejected /verify call doesn't change it.

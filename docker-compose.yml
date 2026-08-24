@@ -2,7 +2,7 @@ services:
   app:
     build: .
     ports:
-      - "${PORT:-5000}:${PORT:-5000}"
+      - '${PORT:-5000}:${PORT:-5000}'
     env_file:
       - .env
     environment:
@@ -13,16 +13,33 @@ services:
         condition: service_healthy
       mongo:
         condition: service_healthy
+    healthcheck:
+      # Reuses the app's own GET /health (src/routes/health.js), which pings
+      # both Mongo and Redis — so this reports "unhealthy" on a real
+      # dependency outage, not just "the Node process is still running".
+      # No curl/wget in the node:20-alpine runtime image, so this shells out
+      # to Node's own http client instead of adding either as a dependency.
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://localhost:' + (process.env.PORT || 5000) + '/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - '6379:6379'
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
       timeout: 3s
       retries: 5
@@ -33,9 +50,9 @@ services:
   # initiated once by the mongo-init service below.
   mongo:
     image: mongo:7
-    command: ["--replSet", "rs0", "--bind_ip_all"]
+    command: ['--replSet', 'rs0', '--bind_ip_all']
     ports:
-      - "27017:27017"
+      - '27017:27017'
     volumes:
       - mongo_data:/data/db
     healthcheck:
@@ -51,7 +68,7 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
-    restart: "no"
+    restart: 'no'
     entrypoint: >
       mongosh --host mongo:27017 --quiet --eval
       "try { rs.status(); } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongo:27017'}]}); }"

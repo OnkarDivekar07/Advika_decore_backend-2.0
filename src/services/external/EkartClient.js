@@ -8,8 +8,10 @@
 // against that documentation (marked with TODOs) before going live.
 
 const crypto = require('crypto');
+const logger = require('@config/logger');
 
-const EKART_BASE_URL = process.env.EKART_BASE_URL || 'https://api.ekartlogistics.com';
+const EKART_BASE_URL =
+  process.env.EKART_BASE_URL || 'https://api.ekartlogistics.com';
 const EKART_API_KEY = process.env.EKART_API_KEY;
 const EKART_MERCHANT_ID = process.env.EKART_MERCHANT_ID;
 const EKART_WEBHOOK_SECRET = process.env.EKART_WEBHOOK_SECRET;
@@ -19,11 +21,15 @@ const EKART_WEBHOOK_SECRET = process.env.EKART_WEBHOOK_SECRET;
 // pincode widgets — so a hung Ekart call needs a ceiling rather than being
 // able to stall a COD confirmation / Razorpay order creation indefinitely.
 // Kept generous (checkout is already a multi-step flow) but finite.
-const EKART_REQUEST_TIMEOUT_MS = Number(process.env.EKART_REQUEST_TIMEOUT_MS) || 8000;
+const EKART_REQUEST_TIMEOUT_MS =
+  Number(process.env.EKART_REQUEST_TIMEOUT_MS) || 8000;
 
 async function ekartRequest(path, { method = 'GET', body } = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), EKART_REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(
+    () => controller.abort(),
+    EKART_REQUEST_TIMEOUT_MS
+  );
 
   try {
     const response = await fetch(`${EKART_BASE_URL}${path}`, {
@@ -43,7 +49,8 @@ async function ekartRequest(path, { method = 'GET', body } = {}) {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      const message = data?.message || data?.error || `Ekart API error (${response.status})`;
+      const message =
+        data?.message || data?.error || `Ekart API error (${response.status})`;
       const err = new Error(message);
       err.statusCode = response.status;
       err.raw = data;
@@ -59,7 +66,9 @@ async function ekartRequest(path, { method = 'GET', body } = {}) {
       error.isTimeout = true;
       error.message = `Ekart API request timed out after ${EKART_REQUEST_TIMEOUT_MS}ms`;
     }
-    console.error(`Error calling Ekart API [${method} ${path}]:`, error.message);
+    logger.error(
+      `Error calling Ekart API [${method} ${path}]: ${error.message}`
+    );
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -70,7 +79,12 @@ async function ekartRequest(path, { method = 'GET', body } = {}) {
  * Check pincode serviceability + SLA before creating a shipment.
  * TODO: confirm exact path/payload shape against Ekart's "Serviceability and SLA" doc.
  */
-exports.checkServiceability = ({ originPincode, destinationPincode, paymentMode, weightKg }) =>
+exports.checkServiceability = ({
+  originPincode,
+  destinationPincode,
+  paymentMode,
+  weightKg,
+}) =>
   ekartRequest('/v1/serviceability', {
     method: 'POST',
     body: {
@@ -92,21 +106,28 @@ exports.createShipment = (payload) =>
  * Track a shipment by tracking ID / AWB number.
  * TODO: confirm exact path against Ekart's "Track Shipment" doc.
  */
-exports.trackShipment = (trackingId) => ekartRequest(`/v1/shipments/${trackingId}/track`);
+exports.trackShipment = (trackingId) =>
+  ekartRequest(`/v1/shipments/${trackingId}/track`);
 
 /**
  * Cancel a shipment before it's out for delivery.
  * TODO: confirm exact path against Ekart's "Cancel/RTO" doc.
  */
 exports.cancelShipment = (trackingId, reason) =>
-  ekartRequest(`/v1/shipments/${trackingId}/cancel`, { method: 'POST', body: { reason } });
+  ekartRequest(`/v1/shipments/${trackingId}/cancel`, {
+    method: 'POST',
+    body: { reason },
+  });
 
 /**
  * Update shipment details (e.g. corrected address) before dispatch.
  * TODO: confirm exact path against Ekart's "Update Shipment" doc.
  */
 exports.updateShipment = (trackingId, updates) =>
-  ekartRequest(`/v1/shipments/${trackingId}`, { method: 'PATCH', body: updates });
+  ekartRequest(`/v1/shipments/${trackingId}`, {
+    method: 'PATCH',
+    body: updates,
+  });
 
 /**
  * Verify the signature Ekart sends on webhook calls, so we know a status
@@ -117,7 +138,21 @@ exports.updateShipment = (trackingId, updates) =>
  * EKART_WEBHOOK_SECRET, which is the common pattern but needs verifying.
  */
 exports.verifyWebhookSignature = (rawBody, signature) => {
-  if (!EKART_WEBHOOK_SECRET) return true; // not configured yet — skip rather than block all webhooks
+  // Fail CLOSED, not open, when unconfigured — unlike SMS/notification
+  // integrations elsewhere in this codebase, where "not configured yet"
+  // safely means "no-op, skip the send", an unconfigured secret here
+  // would otherwise mean "trust every unsigned request." Anyone who can
+  // guess/observe a trackingId could forge shipment/order status updates
+  // (e.g. a fake DELIVERED) with zero authentication. See
+  // shipping.controller.js's ekartWebhook, which already correctly
+  // rejects with 400 on a false return — this only had to stop returning
+  // `true` for the unconfigured case.
+  if (!EKART_WEBHOOK_SECRET) {
+    logger.error(
+      'EKART_WEBHOOK_SECRET is not set — rejecting Ekart webhook request rather than trusting it unsigned. Set EKART_WEBHOOK_SECRET before going live with the Ekart integration.'
+    );
+    return false;
+  }
 
   const expected = crypto
     .createHmac('sha256', EKART_WEBHOOK_SECRET)

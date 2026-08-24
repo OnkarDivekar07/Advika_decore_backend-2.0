@@ -99,7 +99,9 @@ describe('GET /api/products (public)', () => {
   });
 
   it('422s on a sort field outside the allow-list', async () => {
-    const res = await request(app).get('/api/products').query({ sort: 'password' });
+    const res = await request(app)
+      .get('/api/products')
+      .query({ sort: 'password' });
 
     expect(res.status).toBe(422);
     expect(productService.getAllProducts).not.toHaveBeenCalled();
@@ -140,7 +142,9 @@ describe('GET /api/products/batch (public)', () => {
   });
 
   it('422s when ids is an empty string', async () => {
-    const res = await request(app).get('/api/products/batch').query({ ids: '' });
+    const res = await request(app)
+      .get('/api/products/batch')
+      .query({ ids: '' });
 
     expect(res.status).toBe(422);
   });
@@ -148,7 +152,9 @@ describe('GET /api/products/batch (public)', () => {
   it('422s when more than 50 ids are requested', async () => {
     const tooMany = Array.from({ length: 51 }, (_, i) => `prod_${i}`).join(',');
 
-    const res = await request(app).get('/api/products/batch').query({ ids: tooMany });
+    const res = await request(app)
+      .get('/api/products/batch')
+      .query({ ids: tooMany });
 
     expect(res.status).toBe(422);
     expect(productService.getProductsByIds).not.toHaveBeenCalled();
@@ -161,7 +167,10 @@ describe('GET /api/products/batch (public)', () => {
       .get('/api/products/batch')
       .query({ ids: 'prod_1,prod_2,prod_1' });
 
-    expect(productService.getProductsByIds).toHaveBeenCalledWith(['prod_1', 'prod_2']);
+    expect(productService.getProductsByIds).toHaveBeenCalledWith([
+      'prod_1',
+      'prod_2',
+    ]);
   });
 
   it('200s with the matching products, silently omitting unavailable ids', async () => {
@@ -282,6 +291,28 @@ describe('PATCH /api/products/:id (admin only)', () => {
       []
     );
   });
+
+  // Regression test: the admin panel sends category as one comma-joined
+  // string (multipart/form-data has no array type — see ProductForm.jsx),
+  // and Product.category is a String[] column in prisma/schema.prisma.
+  // createProduct already split this back into an array; updateProduct
+  // didn't, so a real category-changing update crashed at the Prisma layer
+  // with "Expected ProductUpdatecategoryInput or String[], provided
+  // String." once it reached imageWorker.js's Prisma.product.update().
+  it('splits a comma-joined category string into an array before queueing the update', async () => {
+    productService.queueProductUpdate.mockResolvedValue({ id: 'job_3' });
+
+    const res = await request(app)
+      .patch(`/api/products/${VALID_PRODUCT_ID}`)
+      .field({ category: 'Truck,Lights' });
+
+    expect(res.status).toBe(200);
+    expect(productService.queueProductUpdate).toHaveBeenCalledWith(
+      VALID_PRODUCT_ID,
+      expect.objectContaining({ category: ['Truck', 'Lights'] }),
+      []
+    );
+  });
 });
 
 describe('GET /api/products/jobs/:jobId (admin only)', () => {
@@ -350,9 +381,7 @@ describe('DELETE /api/products/:id (admin only)', () => {
       new CustomError('Product not found', 404)
     );
 
-    const res = await request(app).delete(
-      `/api/products/${VALID_PRODUCT_ID}`
-    );
+    const res = await request(app).delete(`/api/products/${VALID_PRODUCT_ID}`);
 
     expect(res.status).toBe(404);
   });
@@ -360,14 +389,10 @@ describe('DELETE /api/products/:id (admin only)', () => {
   it('200s and soft-deletes the product for an admin', async () => {
     productService.deleteProduct.mockResolvedValue();
 
-    const res = await request(app).delete(
-      `/api/products/${VALID_PRODUCT_ID}`
-    );
+    const res = await request(app).delete(`/api/products/${VALID_PRODUCT_ID}`);
 
     expect(res.status).toBe(200);
     expect(res.body.message).toBe('Product deleted successfully');
-    expect(productService.deleteProduct).toHaveBeenCalledWith(
-      VALID_PRODUCT_ID
-    );
+    expect(productService.deleteProduct).toHaveBeenCalledWith(VALID_PRODUCT_ID);
   });
 });

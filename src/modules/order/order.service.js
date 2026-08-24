@@ -1,8 +1,24 @@
 const prisma = require('@config/prisma');
+const redis = require('@config/redis');
 const CustomError = require('@utils/customError');
-const { calculateDeliveryCharge, calculateDiscount } = require('@constants/pricing');
+const {
+  calculateDeliveryCharge,
+  calculateDiscount,
+} = require('@constants/pricing');
 const shippingService = require('@modules/shipping/shipping.service');
 
+// createDraftOrderService's own $transaction gives atomicity within a
+// single read-then-write, but MongoDB has no partial-unique-index support
+// through Prisma to express "at most one draft order per user" as a real
+// constraint the DB enforces. Without this, two concurrent requests for the
+// same user (a double-tapped checkout button, two open tabs) can both pass
+// the "no draft order exists yet" read before either has written one, and
+// both create a draft order. This short-lived per-user lock — same
+// redis.set/NX primitive rateLimiter.js uses for OTP throttling — serializes
+// the two: the loser gets a clear 409 instead of silently duplicating the
+// draft order. 10s is generous for what's a single fast transaction, not an
+// expected hold time.
+const DRAFT_ORDER_LOCK_TTL_MS = 10000;
 
 /**
  * Compares a set of already-priced order items (an OrderItem snapshot — see
@@ -33,7 +49,9 @@ exports.detectOrderConflicts = async (orderItems, client = prisma) => {
   const conflicts = [];
 
   for (const item of orderItems) {
-    const product = await client.product.findUnique({ where: { id: item.productId } });
+    const product = await client.product.findUnique({
+      where: { id: item.productId },
+    });
 
     if (!product || product.isDeleted) {
       conflicts.push({
@@ -57,7 +75,8 @@ exports.detectOrderConflicts = async (orderItems, client = prisma) => {
         type: 'price_changed',
         orderedPrice: item.price,
         currentPrice: product.price,
-        message: 'The price of this item has changed since it was added to your order.',
+        message:
+          'The price of this item has changed since it was added to your order.',
       });
     }
 
@@ -75,7 +94,6 @@ exports.detectOrderConflicts = async (orderItems, client = prisma) => {
 
   return conflicts;
 };
-
 
 /**
  * Companion check to detectOrderConflicts above, but for the address side
@@ -112,7 +130,12 @@ exports.detectOrderConflicts = async (orderItems, client = prisma) => {
  * @param {'COD'|'PREPAID'} [paymentMode] - which payment path is calling this, so a COD order whose pincode only supports prepaid is caught here rather than surfacing later at shipment creation
  * @returns {Promise<Array<object>>} conflicts — empty array if the address is still valid and deliverable
  */
-exports.detectAddressConflict = async (addressId, userId, client = prisma, paymentMode = 'PREPAID') => {
+exports.detectAddressConflict = async (
+  addressId,
+  userId,
+  client = prisma,
+  paymentMode = 'PREPAID'
+) => {
   const address = addressId
     ? await client.address.findUnique({ where: { id: addressId } })
     : null;
@@ -154,7 +177,8 @@ exports.detectAddressConflict = async (addressId, userId, client = prisma, payme
     //   AREA_NOT_COVERED (the default/fallback case below) — a real,
     //     checked pincode Ekart just doesn't cover.
     const invalidPincode =
-      eligibility.reason === 'INVALID_FORMAT' || eligibility.reason === 'INVALID_PINCODE';
+      eligibility.reason === 'INVALID_FORMAT' ||
+      eligibility.reason === 'INVALID_PINCODE';
     const checkUnavailable = eligibility.reason === 'CHECK_UNAVAILABLE';
     return [
       {
@@ -184,7 +208,6 @@ exports.detectAddressConflict = async (addressId, userId, client = prisma, payme
 
   return [];
 };
-
 
 /**
  * Companion check to detectOrderConflicts/detectAddressConflict above, but
@@ -218,7 +241,10 @@ exports.detectAddressConflict = async (addressId, userId, client = prisma, payme
  */
 exports.detectPricingConflict = (order) => {
   const deliveryCharge = calculateDeliveryCharge(order.subtotal);
-  const total = Math.max(0, order.subtotal + deliveryCharge - (order.discount || 0));
+  const total = Math.max(
+    0,
+    order.subtotal + deliveryCharge - (order.discount || 0)
+  );
 
   if (deliveryCharge !== order.deliveryCharge || total !== order.total) {
     return [
@@ -235,211 +261,243 @@ exports.detectPricingConflict = (order) => {
   return [];
 };
 
-
-exports.createDraftOrderService  = async ( userId, selectedAddressId, couponCode = null, buyNowItem = null ) => {
+exports.createDraftOrderService = async (
+  userId,
+  selectedAddressId,
+  couponCode = null,
+  buyNowItem = null
+) => {
   if (!userId) throw new CustomError('User ID is required', 404);
 
   if (selectedAddressId) {
-    const address = await prisma.address.findUnique({ where: { id: selectedAddressId } });
+    const address = await prisma.address.findUnique({
+      where: { id: selectedAddressId },
+    });
     if (!address || address.userId !== userId) {
-      throw new CustomError("Invalid or unauthorized address.", 404);
+      throw new CustomError('Invalid or unauthorized address.', 404);
     }
   }
 
-  return await prisma.$transaction(async (tx) => {
-    let cartItems;
+  const lockKey = `draft-order-lock:${userId}`;
+  const acquired = await redis.set(
+    lockKey,
+    '1',
+    'PX',
+    DRAFT_ORDER_LOCK_TTL_MS,
+    'NX'
+  );
+  if (!acquired) {
+    throw new CustomError(
+      'Your checkout is already being processed. Please wait a moment and try again.',
+      409
+    );
+  }
 
-    if (buyNowItem) {
-      // Buy Now bypasses the cart table entirely, but it must go through
-      // the exact same server-side price/stock re-validation the cart path
-      // gets below — that's what stops Buy Now from being the one checkout
-      // path that trusts client-supplied price/quantity instead of live
-      // Product data (see checkout-architecture.md §4.4/§5). The draft
-      // order this produces has exactly one line item and fully replaces
-      // whatever was in a prior draft order for this user (same
-      // upsert-by-replacing-orderItems behavior as the cart path).
-      const product = await tx.product.findUnique({
-        where: { id: buyNowItem.productId },
-      });
+  try {
+    return await prisma.$transaction(async (tx) => {
+      let cartItems;
 
-      if (!product || product.isDeleted) {
-        throw new CustomError(
-          'This item is no longer available.',
-          409
+      if (buyNowItem) {
+        // Buy Now bypasses the cart table entirely, but it must go through
+        // the exact same server-side price/stock re-validation the cart path
+        // gets below — that's what stops Buy Now from being the one checkout
+        // path that trusts client-supplied price/quantity instead of live
+        // Product data (see checkout-architecture.md §4.4/§5). The draft
+        // order this produces has exactly one line item and fully replaces
+        // whatever was in a prior draft order for this user (same
+        // upsert-by-replacing-orderItems behavior as the cart path).
+        const product = await tx.product.findUnique({
+          where: { id: buyNowItem.productId },
+        });
+
+        if (!product || product.isDeleted) {
+          throw new CustomError('This item is no longer available.', 409);
+        }
+
+        if (buyNowItem.quantity > product.stock) {
+          throw new CustomError(
+            'The requested quantity exceeds the available stock.',
+            409,
+            {
+              insufficientStock: [
+                {
+                  productId: product.id,
+                  name: product.name,
+                  requestedQuantity: buyNowItem.quantity,
+                  availableStock: product.stock,
+                },
+              ],
+            }
+          );
+        }
+
+        cartItems = [
+          { productId: product.id, quantity: buyNowItem.quantity, product },
+        ];
+      } else {
+        const rawCartItems = await tx.cart.findMany({
+          where: { userId },
+          include: { product: true },
+        });
+
+        if (!rawCartItems || rawCartItems.length === 0) {
+          throw new CustomError('No items found in cart', 404);
+        }
+
+        // This reads the cart table directly rather than going through
+        // cart.service.getCart, so none of that module's guarantees apply here
+        // for free — a row can still point at a product that's since been
+        // soft-deleted (cart.service's own GET only sweeps these on read, and
+        // draft-order creation can race that sweep) or whose stock has since
+        // dropped below what's in the cart. Re-checking both here, right
+        // before the order total is computed, is what actually makes "price
+        // consistency" and "product availability" hold at checkout and not
+        // just inside the cart CRUD endpoints — otherwise a stale/oversold
+        // line item would silently ride along into the order total and only
+        // surface (if at all) as an oversell warning after payment is captured
+        // (see payment.service's decrementStockForOrder).
+        const filteredCartItems = rawCartItems.filter(
+          (item) => item.product && !item.product.isDeleted
         );
-      }
 
-      if (buyNowItem.quantity > product.stock) {
-        throw new CustomError(
-          'The requested quantity exceeds the available stock.',
-          409,
-          {
-            insufficientStock: [{
-              productId: product.id,
-              name: product.name,
-              requestedQuantity: buyNowItem.quantity,
-              availableStock: product.stock,
-            }],
-          }
-        );
-      }
+        if (filteredCartItems.length === 0) {
+          throw new CustomError(
+            'The items in your cart are no longer available. Please review your cart.',
+            409
+          );
+        }
 
-      cartItems = [
-        { productId: product.id, quantity: buyNowItem.quantity, product },
-      ];
-    } else {
-      const rawCartItems = await tx.cart.findMany({
-        where: { userId },
-        include: { product: true },
-      });
-
-      if (!rawCartItems || rawCartItems.length === 0) {
-        throw new CustomError('No items found in cart', 404);
-      }
-
-      // This reads the cart table directly rather than going through
-      // cart.service.getCart, so none of that module's guarantees apply here
-      // for free — a row can still point at a product that's since been
-      // soft-deleted (cart.service's own GET only sweeps these on read, and
-      // draft-order creation can race that sweep) or whose stock has since
-      // dropped below what's in the cart. Re-checking both here, right
-      // before the order total is computed, is what actually makes "price
-      // consistency" and "product availability" hold at checkout and not
-      // just inside the cart CRUD endpoints — otherwise a stale/oversold
-      // line item would silently ride along into the order total and only
-      // surface (if at all) as an oversell warning after payment is captured
-      // (see payment.service's decrementStockForOrder).
-      const filteredCartItems = rawCartItems.filter((item) => item.product && !item.product.isDeleted);
-
-      if (filteredCartItems.length === 0) {
-        throw new CustomError(
-          'The items in your cart are no longer available. Please review your cart.',
-          409
-        );
-      }
-
-      const insufficientStock = filteredCartItems
-        .filter((item) => item.quantity > item.product.stock)
-        .map((item) => ({
-          productId: item.productId,
-          name: item.product.name,
-          requestedQuantity: item.quantity,
-          availableStock: item.product.stock,
-        }));
-
-      if (insufficientStock.length > 0) {
-        throw new CustomError(
-          'Some items in your cart exceed the available stock. Please update your cart.',
-          409,
-          { insufficientStock }
-        );
-      }
-
-      cartItems = filteredCartItems;
-    }
-
-    const subtotal = cartItems.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
-    // Single source of truth for the flat delivery-charge rule — see
-    // src/constants/pricing.js. `total` (subtotal + deliveryCharge -
-    // discount) is what payment.controller.js actually sends to Razorpay
-    // and what shipping.service.js collects for COD, so computing it here
-    // is what makes the amount the customer is charged match what the cart
-    // page previewed, not just what the cart's line items sum to.
-    const deliveryCharge = calculateDeliveryCharge(subtotal);
-    // Discount/coupon placeholder — see calculateDiscount in
-    // src/constants/pricing.js. Throws (rather than silently ignoring) if
-    // couponCode is set but doesn't resolve to a real coupon, so a bad code
-    // never gets to ride along into a draft order as if it had been
-    // applied. No coupon system exists yet, so this is 0 on every order
-    // today; the seam is here so that changes when one does.
-    const discount = calculateDiscount(subtotal, couponCode);
-    const total = Math.max(0, subtotal + deliveryCharge - discount);
-
-    let draftOrder = await tx.order.findFirst({
-      where: { userId, status: 'draft' },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    if (draftOrder) {
-      await tx.orderItem.deleteMany({ where: { orderId: draftOrder.id } });
-
-      await Promise.all(cartItems.map(item =>
-        tx.orderItem.create({
-          data: {
-            orderId: draftOrder.id,
+        const insufficientStock = filteredCartItems
+          .filter((item) => item.quantity > item.product.stock)
+          .map((item) => ({
             productId: item.productId,
-            quantity: item.quantity,
-            price: item.product.price,
-          },
-        })
-      ));
+            name: item.product.name,
+            requestedQuantity: item.quantity,
+            availableStock: item.product.stock,
+          }));
 
-      draftOrder = await tx.order.update({
+        if (insufficientStock.length > 0) {
+          throw new CustomError(
+            'Some items in your cart exceed the available stock. Please update your cart.',
+            409,
+            { insufficientStock }
+          );
+        }
+
+        cartItems = filteredCartItems;
+      }
+
+      const subtotal = cartItems.reduce(
+        (sum, item) => sum + item.product.price * item.quantity,
+        0
+      );
+      // Single source of truth for the flat delivery-charge rule — see
+      // src/constants/pricing.js. `total` (subtotal + deliveryCharge -
+      // discount) is what payment.controller.js actually sends to Razorpay
+      // and what shipping.service.js collects for COD, so computing it here
+      // is what makes the amount the customer is charged match what the cart
+      // page previewed, not just what the cart's line items sum to.
+      const deliveryCharge = calculateDeliveryCharge(subtotal);
+      // Discount/coupon placeholder — see calculateDiscount in
+      // src/constants/pricing.js. Throws (rather than silently ignoring) if
+      // couponCode is set but doesn't resolve to a real coupon, so a bad code
+      // never gets to ride along into a draft order as if it had been
+      // applied. No coupon system exists yet, so this is 0 on every order
+      // today; the seam is here so that changes when one does.
+      const discount = calculateDiscount(subtotal, couponCode);
+      const total = Math.max(0, subtotal + deliveryCharge - discount);
+
+      let draftOrder = await tx.order.findFirst({
+        where: { userId, status: 'draft' },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (draftOrder) {
+        await tx.orderItem.deleteMany({ where: { orderId: draftOrder.id } });
+
+        await Promise.all(
+          cartItems.map((item) =>
+            tx.orderItem.create({
+              data: {
+                orderId: draftOrder.id,
+                productId: item.productId,
+                quantity: item.quantity,
+                price: item.product.price,
+              },
+            })
+          )
+        );
+
+        draftOrder = await tx.order.update({
+          where: { id: draftOrder.id },
+          data: {
+            total,
+            subtotal,
+            deliveryCharge,
+            discount,
+            couponCode: couponCode || null,
+            addressId: selectedAddressId,
+          },
+        });
+      } else {
+        draftOrder = await tx.order.create({
+          data: {
+            userId,
+            total,
+            subtotal,
+            deliveryCharge,
+            discount,
+            couponCode: couponCode || null,
+            status: 'draft',
+            addressId: selectedAddressId,
+          },
+        });
+
+        await Promise.all(
+          cartItems.map((item) =>
+            tx.orderItem.create({
+              data: {
+                orderId: draftOrder.id,
+                productId: item.productId,
+                quantity: item.quantity,
+                price: item.product.price,
+              },
+            })
+          )
+        );
+      }
+
+      // Cart clearing happens once the order is actually confirmed (COD placed,
+      // or payment verified/webhook-captured) — see payment.service.js. Doing
+      // it here, at draft creation, would wipe the customer's cart before any
+      // payment has happened, so an abandoned or failed checkout loses it for nothing.
+
+      const fullOrder = await tx.order.findUnique({
         where: { id: draftOrder.id },
-        data: {
-          total,
-          subtotal,
-          deliveryCharge,
-          discount,
-          couponCode: couponCode || null,
-          addressId: selectedAddressId,
-        },
-      });
-    } else {
-      draftOrder = await tx.order.create({
-        data: {
-          userId,
-          total,
-          subtotal,
-          deliveryCharge,
-          discount,
-          couponCode: couponCode || null,
-          status: 'draft',
-          addressId: selectedAddressId,
+        include: {
+          orderItems: {
+            include: {
+              product: true,
+            },
+          },
         },
       });
 
-      await Promise.all(cartItems.map(item =>
-        tx.orderItem.create({
-          data: {
-            orderId: draftOrder.id,
-            productId: item.productId,
-            quantity: item.quantity,
-            price: item.product.price,
-          },
-        })
-      ));
-    }
-
-    // Cart clearing happens once the order is actually confirmed (COD placed,
-    // or payment verified/webhook-captured) — see payment.service.js. Doing
-    // it here, at draft creation, would wipe the customer's cart before any
-    // payment has happened, so an abandoned or failed checkout loses it for nothing.
-
-    const fullOrder = await tx.order.findUnique({
-      where: { id: draftOrder.id },
-      include: {
-        orderItems: {
-          include: {
-            product: true,
-          },
-        },
-      },
+      return fullOrder;
     });
-
-    return fullOrder;
-  });
+  } finally {
+    await redis.del(lockKey).catch(() => {});
+  }
 };
-
 
 exports.getUserDraftOrder = async (userId) => {
   const draftOrder = await prisma.order.findFirst({
     where: {
       userId,
-      status: 'draft'
+      status: 'draft',
     },
     select: {
-      id: true,               // order ID
+      id: true, // order ID
       userId: true,
       total: true,
       subtotal: true,
@@ -468,16 +526,15 @@ exports.getUserDraftOrder = async (userId) => {
               category: true,
               voltage: true,
               specs: true,
-            }
-          }
-        }
-      }
-    }
+            },
+          },
+        },
+      },
+    },
   });
 
   return draftOrder;
 };
-
 
 // Paginated order-placement history for the logged-in user — their own
 // non-draft orders (pending/confirmed/shipped/delivered/cancelled/
@@ -499,7 +556,10 @@ exports.getUserDraftOrder = async (userId) => {
 const ORDER_HISTORY_DEFAULT_LIMIT = 10;
 const ORDER_HISTORY_MAX_LIMIT = 50;
 
-exports.getUserOrderHistory = async (userId, { page = 1, limit = ORDER_HISTORY_DEFAULT_LIMIT } = {}) => {
+exports.getUserOrderHistory = async (
+  userId,
+  { page = 1, limit = ORDER_HISTORY_DEFAULT_LIMIT } = {}
+) => {
   const safePage = Math.max(1, parseInt(page, 10) || 1);
   const safeLimit = Math.min(
     ORDER_HISTORY_MAX_LIMIT,
@@ -564,7 +624,6 @@ exports.getUserOrderHistory = async (userId, { page = 1, limit = ORDER_HISTORY_D
   };
 };
 
-
 // Admin order workbench — GET /api/orders/all. Paginated (never an
 // unbounded dump — same reasoning as getUserOrderHistory above) and
 // filterable by status/paymentStatus/date range/search. Query params are
@@ -582,9 +641,25 @@ const ORDER_LIST_MAX_LIMIT = 100;
 // already rejected anything else before this function is ever called with
 // caller-supplied input. re-checked here anyway so a direct/unit-test call
 // with a bogus value can't leak into the `where` clause.
-const ORDER_LIST_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'returned'];
+const ORDER_LIST_STATUSES = [
+  'pending',
+  'confirmed',
+  'shipped',
+  'delivered',
+  'cancelled',
+  'returned',
+];
 const ORDER_LIST_PAYMENT_STATUSES = [
-  'pending', 'attempted', 'processing', 'paid', 'failed', 'cancelled', 'timeout', 'unknown', 'refunded', 'cod_pending',
+  'pending',
+  'attempted',
+  'processing',
+  'paid',
+  'failed',
+  'cancelled',
+  'timeout',
+  'unknown',
+  'refunded',
+  'cod_pending',
 ];
 
 exports.getAllOrders = async ({
@@ -720,7 +795,6 @@ exports.getAllOrders = async ({
     },
   };
 };
-
 
 // GET /api/orders/:id — owner-or-admin order detail. Used both by the
 // customer-facing order-confirmation/success page (checkout-architecture.md

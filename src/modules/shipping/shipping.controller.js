@@ -86,7 +86,11 @@ exports.cancelShipment = async (req, res, next) => {
     const { orderId } = req.params;
     const { reason } = req.body;
 
-    const result = await shippingService.cancelOrderShipment(orderId, req.user, reason);
+    const result = await shippingService.cancelOrderShipment(
+      orderId,
+      req.user,
+      reason
+    );
 
     res.sendResponse({
       message: 'Shipment cancelled successfully',

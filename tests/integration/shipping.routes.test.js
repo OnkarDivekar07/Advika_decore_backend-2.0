@@ -73,7 +73,10 @@ describe('GET /api/shipping/delivery-config', () => {
     const res = await request(app).get('/api/shipping/delivery-config');
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ freeDeliveryThreshold: 600, deliveryCharge: 49 });
+    expect(res.body.data).toEqual({
+      freeDeliveryThreshold: 600,
+      deliveryCharge: 49,
+    });
   });
 });
 
@@ -134,7 +137,10 @@ describe('POST /api/shipping/serviceability', () => {
       .send({ pincode: '400001', subtotal: 799 });
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toMatchObject({ deliveryCharge: 0, freeDeliveryEligible: true });
+    expect(res.body.data).toMatchObject({
+      deliveryCharge: 0,
+      freeDeliveryEligible: true,
+    });
     expect(shippingService.checkServiceability).toHaveBeenCalledWith({
       destinationPincode: '400001',
       paymentMode: undefined,
@@ -198,7 +204,9 @@ describe('POST /api/shipping/:orderId/create', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.message).toBe('Shipment created successfully');
-    expect(shippingService.createShipmentForOrder).toHaveBeenCalledWith(VALID_ORDER_ID);
+    expect(shippingService.createShipmentForOrder).toHaveBeenCalledWith(
+      VALID_ORDER_ID
+    );
   });
 
   it("reports 'already created' without treating it as an error", async () => {
@@ -252,7 +260,10 @@ describe('GET /api/shipping/:orderId/track', () => {
       orderId: VALID_ORDER_ID,
       status: 'IN_TRANSIT',
       trackingId: 'EKT123',
-      raw: { some_ekart_internal_field: 'should-not-leak', is_serviceable: true },
+      raw: {
+        some_ekart_internal_field: 'should-not-leak',
+        is_serviceable: true,
+      },
     });
 
     const res = await request(app)
@@ -297,10 +308,15 @@ describe('POST /api/shipping/:orderId/cancel', () => {
 
   it('propagates a 400 when the shipment is already in a terminal state', async () => {
     shippingService.cancelOrderShipment.mockRejectedValue(
-      new CustomError("Cannot cancel a shipment that is already 'DELIVERED'", 400)
+      new CustomError(
+        "Cannot cancel a shipment that is already 'DELIVERED'",
+        400
+      )
     );
 
-    const res = await request(app).post(`/api/shipping/${VALID_ORDER_ID}/cancel`).send({});
+    const res = await request(app)
+      .post(`/api/shipping/${VALID_ORDER_ID}/cancel`)
+      .send({});
 
     expect(res.status).toBe(400);
   });

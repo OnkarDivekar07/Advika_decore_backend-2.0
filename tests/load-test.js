@@ -12,9 +12,13 @@ export default function () {
     console.log(`🔁 Starting test for phone: ${phone}`);
 
     // Step 1: Send OTP
-    const sendOtpRes = http.post(`${BASE_URL}/api/otp/send-otp`, JSON.stringify({ phone }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    const sendOtpRes = http.post(
+      `${BASE_URL}/api/otp/send-otp`,
+      JSON.stringify({ phone }),
+      {
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
 
     check(sendOtpRes, {
       '✅ OTP sent': (res) => res.status === 200,
@@ -30,12 +34,17 @@ export default function () {
     sleep(1); // Give Redis time to store OTP
 
     // Step 2: Verify OTP
-    const verifyOtpRes = http.post(`${BASE_URL}/api/otp/verify-otp`, JSON.stringify({ phone, otp: HARDCODED_OTP }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    const verifyOtpRes = http.post(
+      `${BASE_URL}/api/otp/verify-otp`,
+      JSON.stringify({ phone, otp: HARDCODED_OTP }),
+      {
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
 
     check(verifyOtpRes, {
-      '✅ OTP verified': (res) => res.status === 200 && !!res.json('data.token'),
+      '✅ OTP verified': (res) =>
+        res.status === 200 && !!res.json('data.token'),
     });
 
     console.log('🔐 Verify OTP response:', verifyOtpRes.json('data'));
@@ -54,16 +63,20 @@ export default function () {
     sleep(1); // Let user session stabilize
 
     // Step 3: Save Cart
-    const cartRes = http.post(`${BASE_URL}/api/cart`, JSON.stringify({
-      cartItems: [
-        {
-          productId: HARDCODED_PRODUCT_ID,
-          quantity: 1,
-        },
-      ],
-    }), {
-      headers: authHeader,
-    });
+    const cartRes = http.post(
+      `${BASE_URL}/api/cart`,
+      JSON.stringify({
+        cartItems: [
+          {
+            productId: HARDCODED_PRODUCT_ID,
+            quantity: 1,
+          },
+        ],
+      }),
+      {
+        headers: authHeader,
+      }
+    );
 
     check(cartRes, {
       '✅ Cart saved': (res) => res.status === 201,
@@ -79,9 +92,13 @@ export default function () {
     sleep(1); // Let cart be fully saved
 
     // Step 4: Create Order
-    const orderRes = http.post(`${BASE_URL}/api/order`, JSON.stringify({ selectedAddressId: HARDCODED_ADDRESS_ID }), {
-      headers: authHeader,
-    });
+    const orderRes = http.post(
+      `${BASE_URL}/api/order`,
+      JSON.stringify({ selectedAddressId: HARDCODED_ADDRESS_ID }),
+      {
+        headers: authHeader,
+      }
+    );
 
     check(orderRes, {
       '✅ Status is 201': (res) => res.status === 201,

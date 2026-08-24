@@ -7,20 +7,20 @@ REST API server powering the Advika e-commerce platform. Built with **Node.js, E
 ## 1. Tech Stack
 
 | Layer            | Technology                                   |
-|------------------|-----------------------------------------------|
-| Runtime          | Node.js (CommonJS)                            |
-| Framework        | Express 5                                     |
-| Database         | MongoDB (via Prisma ORM)                      |
-| Caching / Queues | Redis (ioredis) + BullMQ (background jobs)    |
-| Auth             | JWT (jsonwebtoken), bcrypt password hashing    |
-| File storage     | AWS S3 (`@aws-sdk/client-s3`)                 |
-| Image processing | sharp                                          |
+| ---------------- | -------------------------------------------- |
+| Runtime          | Node.js (CommonJS)                           |
+| Framework        | Express 5                                    |
+| Database         | MongoDB (via Prisma ORM)                     |
+| Caching / Queues | Redis (ioredis) + BullMQ (background jobs)   |
+| Auth             | JWT (jsonwebtoken), bcrypt password hashing  |
+| File storage     | AWS S3 (`@aws-sdk/client-s3`)                |
+| Image processing | sharp                                        |
 | SMS / OTP        | MSG91                                        |
-| Payments         | Razorpay                                       |
-| API docs         | Swagger (swagger-jsdoc + swagger-ui-express)  |
-| Validation       | express-validator                              |
-| Security         | Helmet, CORS, custom rate limiter              |
-| Logging          | Morgan                                         |
+| Payments         | Razorpay                                     |
+| API docs         | Swagger (swagger-jsdoc + swagger-ui-express) |
+| Validation       | express-validator                            |
+| Security         | Helmet, CORS, custom rate limiter            |
+| Logging          | Morgan                                       |
 
 ---
 
@@ -38,7 +38,7 @@ backend 2.0/
 │   │   ├── admin/            # Admin login, dashboard stats, user list
 │   │   ├── cart/              # Cart save/fetch
 │   │   ├── homepage/          # Banners + new arrivals
-│   │   ├── inventory/         # Inventory management (stub)
+│   │   ├── inventory/         # Atomic stock decrement/adjustment, admin stock endpoints
 │   │   ├── order/             # Draft orders, order history, admin order views
 │   │   ├── otp/                # Send/verify OTP login
 │   │   ├── payment/           # Order creation, verification, COD — see
@@ -149,17 +149,20 @@ The API will be available at `http://localhost:5000/api`, and Swagger docs at `h
 
 Make sure Redis is running locally (or point `REDIS_URL` to a remote instance) before starting the server, since job workers connect to it on boot.
 
+Alternatively, `docker compose up` brings up the app plus a MongoDB replica set and Redis together (see §10) — no local Node/Mongo/Redis install needed, just an `.env` file.
+
 ---
 
 ## 6. NPM Scripts
 
-| Script          | Description                                      |
-|------------------|---------------------------------------------------|
-| `npm start`       | Runs the server with nodemon                     |
-| `npm run seed`    | Runs `prisma/seed.js` to populate sample data     |
-| `npm run format`  | Formats the codebase with Prettier                |
+| Script           | Description                                   |
+| ---------------- | --------------------------------------------- |
+| `npm start`      | Runs the server with nodemon                  |
+| `npm run seed`   | Runs `prisma/seed.js` to populate sample data |
+| `npm run format` | Formats the codebase with Prettier            |
 
 Additional CLI helper (not an npm script):
+
 ```bash
 node scripts/gen-feature.js <folder_name>   # scaffolds a new module folder
 ```
@@ -170,18 +173,20 @@ node scripts/gen-feature.js <folder_name>   # scaffolds a new module folder
 
 All routes are mounted under `/api`:
 
-| Base path            | Module      | Notes                                             |
-|-----------------------|-------------|----------------------------------------------------|
-| `/api/otp`            | otp         | `POST /send-otp`, `POST /verify-otp` (public, rate-limited) |
-| `/api/user`            | user        | Address CRUD + profile (auth required)            |
-| `/api/admin`           | admin       | `POST /login` (public), `GET /stats`, `GET /users` (admin only) |
-| `/api/products`        | product     | Public list/detail/related; admin create/update/delete |
-| `/api/cart`            | cart        | Save & fetch cart (auth required)                 |
-| `/api/order`           | order       | Create draft order, user order history, admin order views |
-| `/api/payment`         | payment     | Razorpay order creation, payment verification, COD placement |
-| `/api/homepage`        | homepage    | Public banners & new arrivals; admin banner/new-arrival management |
+| Base path       | Module   | Notes                                                              |
+| --------------- | -------- | ------------------------------------------------------------------ |
+| `/api/otp`      | otp      | `POST /send-otp`, `POST /verify-otp` (public, rate-limited)        |
+| `/api/user`     | user     | Address CRUD + profile (auth required)                             |
+| `/api/admin`    | admin    | `POST /login` (public), `GET /stats`, `GET /users` (admin only)    |
+| `/api/products` | product  | Public list/detail/related; admin create/update/delete             |
+| `/api/cart`     | cart     | Save & fetch cart (auth required)                                  |
+| `/api/order`    | order    | Create draft order, user order history, admin order views          |
+| `/api/payment`  | payment  | Razorpay order creation, payment verification, COD placement       |
+| `/api/homepage` | homepage | Public banners & new arrivals; admin banner/new-arrival management |
 
 Full request/response schemas are documented via Swagger at `/api-docs` once the server is running.
+
+`GET /health` (outside `/api`) reports liveness for hosting-platform health checks / uptime monitors — it pings both MongoDB and Redis, not just the Node process, and is what the Docker Compose app service's own health check (§10) polls.
 
 ---
 
@@ -196,6 +201,7 @@ Full request/response schemas are documented via Swagger at `/api-docs` once the
 ## 9. Background Jobs
 
 BullMQ workers are initialized on server start (`src/jobs/index.js`):
+
 - **imageWorker** — processes/optimizes uploaded images (via `sharp`) before pushing to S3.
 - **clearCartWorker** — clears abandoned/stale carts on a schedule.
 
@@ -205,6 +211,6 @@ These require a reachable Redis instance to function.
 
 ## 10. Notes / Known Gaps
 
-- `docker-compose.yml` and `Dockerfile` exist in the repo but are currently empty placeholders — containerization is not yet implemented.
-- The `inventory` module currently has route/controller/service files scaffolded but no implemented logic.
+- `docker-compose.yml` and `Dockerfile` are implemented — `docker compose up` brings up the app plus a MongoDB replica set (required for Prisma transactions) and Redis, each with its own health check; the app container's health check reuses `GET /health` (§7) so it reports unhealthy on a real DB/Redis outage, not just a crashed process.
+- The `inventory` module (`src/modules/inventory/`) is fully implemented — atomic stock decrement/adjustment with oversell protection (via a conditional `stock: { gte: quantity }` update), plus admin stock-adjustment endpoints. See `inventory.service.js`.
 - `.env` is git-ignored; never commit real credentials.

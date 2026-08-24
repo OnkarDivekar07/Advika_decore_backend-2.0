@@ -18,7 +18,7 @@ exports.createDraftOrder = async (req, res, next) => {
     // tests/integration/order.routes.test.js's "ignores a client-supplied
     // deliveryCharge/subtotal/total/discount" test for the regression check.
     const { selectedAddressId, couponCode, buyNow } = req.body;
-  
+
     if (!userId) {
       throw new CustomError('Unauthorized access. User ID missing.', 401);
     }
@@ -39,7 +39,7 @@ exports.createDraftOrder = async (req, res, next) => {
       userId,
       selectedAddressId,
       couponCode || null,
-      buyNow || null,
+      buyNow || null
     );
 
     return res.sendResponse({
@@ -51,8 +51,6 @@ exports.createDraftOrder = async (req, res, next) => {
     next(error);
   }
 };
-
-
 
 // GET /api/order/draft
 exports.getUserOrders = async (req, res, next) => {
@@ -74,7 +72,6 @@ exports.getUserOrders = async (req, res, next) => {
   }
 };
 
-
 // GET /api/order/history
 // Paginated "My Orders" list for the logged-in user — placed orders only
 // (never the in-progress draft order GET /api/order returns). page/limit
@@ -85,7 +82,10 @@ exports.getOrderHistory = async (req, res, next) => {
     const userId = req.user.userId;
     const { page, limit } = req.query;
 
-    const { orders, meta } = await orderService.getUserOrderHistory(userId, { page, limit });
+    const { orders, meta } = await orderService.getUserOrderHistory(userId, {
+      page,
+      limit,
+    });
 
     res.sendResponse({
       message: 'Order history fetched successfully',
@@ -97,14 +97,14 @@ exports.getOrderHistory = async (req, res, next) => {
   }
 };
 
-
 // GET /api/orders/all (Admin) — paginated, filterable order workbench
 // list. page/limit/status/paymentStatus/dateFrom/dateTo/search are already
 // shape/enum-validated by validateOrderListQuery; getAllOrders still
 // clamps/re-checks them defensively (see order.service.js).
 exports.getOrders = async (req, res, next) => {
   try {
-    const { page, limit, status, paymentStatus, dateFrom, dateTo, search } = req.query;
+    const { page, limit, status, paymentStatus, dateFrom, dateTo, search } =
+      req.query;
 
     const { orders, meta } = await orderService.getAllOrders({
       page,
@@ -125,7 +125,6 @@ exports.getOrders = async (req, res, next) => {
     next(error);
   }
 };
-
 
 // GET /api/order/:id
 // Owner-or-admin: any authenticated customer can fetch their own order by id

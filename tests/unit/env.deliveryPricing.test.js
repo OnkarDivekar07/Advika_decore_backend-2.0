@@ -32,7 +32,10 @@ describe('delivery pricing env config', () => {
   });
 
   it('honors valid overrides from the environment', () => {
-    const env = loadEnvWith({ FREE_DELIVERY_THRESHOLD: '999', DELIVERY_CHARGE: '25' });
+    const env = loadEnvWith({
+      FREE_DELIVERY_THRESHOLD: '999',
+      DELIVERY_CHARGE: '25',
+    });
 
     expect(env.freeDeliveryThreshold).toBe(999);
     expect(env.deliveryCharge).toBe(25);
@@ -45,13 +48,15 @@ describe('delivery pricing env config', () => {
   });
 
   it('throws at load time on a negative value', () => {
-    expect(() => loadEnvWith({ DELIVERY_CHARGE: '-5' })).toThrow(/DELIVERY_CHARGE/);
+    expect(() => loadEnvWith({ DELIVERY_CHARGE: '-5' })).toThrow(
+      /DELIVERY_CHARGE/
+    );
   });
 
   it('throws at load time on a non-numeric value', () => {
-    expect(() => loadEnvWith({ FREE_DELIVERY_THRESHOLD: 'not-a-number' })).toThrow(
-      /FREE_DELIVERY_THRESHOLD/
-    );
+    expect(() =>
+      loadEnvWith({ FREE_DELIVERY_THRESHOLD: 'not-a-number' })
+    ).toThrow(/FREE_DELIVERY_THRESHOLD/);
   });
 });
 
@@ -65,13 +70,17 @@ describe('shipping serviceability fallback policy env config', () => {
   });
 
   it('honors an explicit fail_open override', () => {
-    const env = loadEnvWith({ SHIPPING_SERVICEABILITY_FALLBACK_POLICY: 'fail_open' });
+    const env = loadEnvWith({
+      SHIPPING_SERVICEABILITY_FALLBACK_POLICY: 'fail_open',
+    });
 
     expect(env.shippingServiceabilityFallbackPolicy).toBe('fail_open');
   });
 
   it('honors an explicit fail_closed override', () => {
-    const env = loadEnvWith({ SHIPPING_SERVICEABILITY_FALLBACK_POLICY: 'fail_closed' });
+    const env = loadEnvWith({
+      SHIPPING_SERVICEABILITY_FALLBACK_POLICY: 'fail_closed',
+    });
 
     expect(env.shippingServiceabilityFallbackPolicy).toBe('fail_closed');
   });
