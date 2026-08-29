@@ -37,6 +37,7 @@ const MODELS_IN_DELETE_ORDER = [
   'contactQuery',
   'address',
   'banner',
+  'siteContent',
   'product',
   'user',
 ];

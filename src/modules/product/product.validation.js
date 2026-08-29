@@ -1,13 +1,18 @@
 const { body, query } = require('express-validator');
 
-// Mirrors frontend/src/config/advikaAuto.js's CATEGORIES — the two
-// category labels the design's voltage system actually applies to.
-// Kept as plain English labels (not ids) because Product.category is a
+// Mirrors frontend/src/config/advikaAuto.js's CATEGORIES — the only
+// category with `voltageRelevant: true` in that source of truth (voltage
+// is meaningless for decoration items like seat covers or tassels).
+// Kept as a plain English label (not an id) because Product.category is a
 // free-text String[] on the schema, same convention product.service.js's
 // getAllProducts already uses for its `hasSome` filter.
-const VOLTAGE_REQUIRED_CATEGORIES = ['Lights', 'Electrical & Wiring'];
+const VOLTAGE_REQUIRED_CATEGORIES = ['Lights'];
 
 const VALID_VOLTAGES = ['12V', '24V', '12V/24V'];
+
+// Selling unit shown as a "/unit" suffix next to the price (e.g. "₹10/pc")
+// — see prisma/schema.prisma's `unit` field.
+const VALID_UNITS = ['pc', 'dozen', 'jodi'];
 
 // Shared by validateCreateProduct/validateUpdateProduct — see
 // design_handoff_advika_auto/README.md's "Domain rule: 12V vs 24V":
@@ -285,6 +290,11 @@ exports.validateCreateProduct = [
 
   voltageValidator({ requireOnCreate: true }),
 
+  body('unit')
+    .optional()
+    .isIn(VALID_UNITS)
+    .withMessage(`unit must be one of ${VALID_UNITS.join(', ')}`),
+
   body('isBestSeller')
     .optional()
     .isBoolean()
@@ -377,6 +387,11 @@ exports.validateUpdateProduct = [
   // the enum check below still applies whenever voltage IS sent.
   voltageValidator({ requireOnCreate: false }),
 
+  body('unit')
+    .optional()
+    .isIn(VALID_UNITS)
+    .withMessage(`unit must be one of ${VALID_UNITS.join(', ')}`),
+
   body('isBestSeller')
     .optional()
     .isBoolean()
@@ -402,3 +417,4 @@ exports.validateUpdateProduct = [
 
 exports.VOLTAGE_REQUIRED_CATEGORIES = VOLTAGE_REQUIRED_CATEGORIES;
 exports.VALID_VOLTAGES = VALID_VOLTAGES;
+exports.VALID_UNITS = VALID_UNITS;

@@ -7,6 +7,7 @@
     "start": "pm2-runtime start ecosystem.config.js --env production",
     "dev": "nodemon server.js",
     "seed": "node prisma/seed.js",
+    "seed:content": "node prisma/seed.js --only=content",
     "format": "prettier --write .",
     "test": "jest --runInBand",
     "test:watch": "jest --runInBand --watch",
@@ -15,6 +16,7 @@
     "e2e:db:push": "node scripts/run-with-e2e-env.js npx prisma db push --skip-generate",
     "e2e:reset-db": "node scripts/run-with-e2e-env.js node prisma/reset-e2e.js",
     "e2e:seed": "node scripts/run-with-e2e-env.js node prisma/seed.js",
+    "e2e:seed:content": "node scripts/run-with-e2e-env.js node prisma/seed.js --only=content",
     "e2e:setup": "npm run e2e:db:push && npm run e2e:reset-db && npm run e2e:seed",
     "e2e:server": "node scripts/run-with-e2e-env.js node server.js"
   },

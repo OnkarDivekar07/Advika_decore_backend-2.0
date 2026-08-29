@@ -56,6 +56,7 @@ exports.createProduct = async (req, res, next) => {
       // design_handoff_advika_auto/README.md "Domain rule: 12V vs 24V") ---
       mrp,
       voltage,
+      unit,
       isBestSeller,
       rating,
       reviewCount,
@@ -74,6 +75,7 @@ exports.createProduct = async (req, res, next) => {
         isNewArrival,
         mrp,
         voltage,
+        unit,
         isBestSeller,
         rating,
         reviewCount,

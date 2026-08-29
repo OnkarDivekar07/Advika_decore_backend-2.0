@@ -122,6 +122,12 @@ model Product {
   // detail. Left absent for non-electrical accessories (seat covers,
   // mud flaps, steering covers), which render no voltage badge at all.
   voltage       String?
+  // Selling unit shown as a "/unit" suffix next to the price on the
+  // product detail page (e.g. "₹10/pc") — one of 'pc' (single piece),
+  // 'dozen' (12 pc), or 'jodi' (2 pc / a pair). Absent means no suffix
+  // is shown at all, same "render nothing rather than fake data" rule
+  // as every other optional storefront field on this model.
+  unit          String?
   // Key/value spec rows for the product page's Specifications tab
   // (e.g. { "Wattage": "100W", "Lumens": "9,000 lm", "IP Rating":
   // "IP68" }) — order is insertion order, since Mongo/Prisma Json
@@ -294,6 +300,25 @@ model Banner {
   imageUrl  String
   linkUrl   String?
   createdAt DateTime @default(now())
+}
+
+// Admin-editable storefront text, trilingual (English/Hindi/Marathi) — the
+// same content-management need every static i18n string in
+// frontend-improved/src/i18n/*.json has (a wording change otherwise
+// requires a code change + redeploy, which is what this exists to avoid).
+// `key` is a dotted path matching the i18n key it overrides (e.g.
+// "ticker.cod" for advika.ticker.cod) so the frontend can look one up
+// without a separate mapping table. Deliberately NOT one row per language —
+// a single row per key keeps "edit this line in all three languages" one
+// admin action instead of three separate ones, and makes it structurally
+// impossible for a key to exist in one language but not another.
+model SiteContent {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  key       String   @unique
+  valueEn   String
+  valueHi   String
+  valueMr   String
+  updatedAt DateTime @updatedAt
 }
 
 model Address {
