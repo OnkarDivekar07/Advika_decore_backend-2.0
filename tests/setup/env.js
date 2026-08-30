@@ -21,9 +21,19 @@ process.env.RAZORPAY_WEBHOOK_SECRET = 'dummy_webhook_secret';
 process.env.MSG91_AUTH_KEY = 'test_msg91_auth_key';
 process.env.MSG91_TEMPLATE_ID = 'test_msg91_template_id';
 
+// Legacy S3 — no longer read by AWSUploads.js, kept only in case other
+// tooling still expects these to be set.
 process.env.AWS_ACCESS_KEY_ID = 'dummy_access_key';
 process.env.AWS_SECRET_ACCESS_KEY = 'dummy_secret_key';
 process.env.BUCKET_NAME = 'dummy-bucket';
+
+// Cloudflare R2 — see src/services/external/AWSUploads.js.
+process.env.R2_ACCOUNT_ID = 'dummy_r2_account_id';
+process.env.R2_ACCESS_KEY_ID = 'dummy_r2_access_key';
+process.env.R2_SECRET_ACCESS_KEY = 'dummy_r2_secret_key';
+process.env.R2_BUCKET_NAME = 'dummy-r2-bucket';
+process.env.R2_ENDPOINT = 'https://dummy-account.r2.cloudflarestorage.com';
+process.env.R2_PUBLIC_URL = 'https://media.test.example';
 
 process.env.EKART_API_KEY = 'dummy_ekart_api_key';
 process.env.EKART_BASE_URL = 'https://api.ekartlogistics.com';

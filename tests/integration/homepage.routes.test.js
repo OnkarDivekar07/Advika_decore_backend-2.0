@@ -155,19 +155,27 @@ describe('DELETE /api/homepage/banners/:id (admin only)', () => {
     expect(awsService.deleteFromS3).not.toHaveBeenCalled();
   });
 
-  it('deletes the S3 object and the DB row for an existing banner', async () => {
+  it('deletes the R2/S3 object and the DB row for an existing banner', async () => {
     homepageService.getBannerById.mockResolvedValue({
       id: 'b1',
       imageUrl:
         'https://bucket.s3.ap-south-1.amazonaws.com/banner-images/foo.jpg',
     });
     homepageService.deleteBannerById.mockResolvedValue({ id: 'b1' });
+    // awsService is automocked (jest.mock(...) with no factory above), so
+    // keyFromPublicUrl needs its own return value here — the controller
+    // now derives the delete key by calling it instead of parsing the URL
+    // inline (see homepage.controller.js's deleteBanner).
+    awsService.keyFromPublicUrl.mockReturnValue('banner-images/foo.jpg');
 
     const res = await request(app)
       .delete('/api/homepage/banners/b1')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
+    expect(awsService.keyFromPublicUrl).toHaveBeenCalledWith(
+      'https://bucket.s3.ap-south-1.amazonaws.com/banner-images/foo.jpg'
+    );
     expect(awsService.deleteFromS3).toHaveBeenCalledWith(
       'banner-images/foo.jpg'
     );

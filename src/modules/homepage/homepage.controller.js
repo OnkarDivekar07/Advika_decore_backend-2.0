@@ -59,7 +59,7 @@ const deleteBanner = async (req, res, next) => {
       throw new CustomError('Banner not found', 404);
     }
 
-    const key = banner.imageUrl.split('.com/')[1];
+    const key = awsService.keyFromPublicUrl(banner.imageUrl);
     await awsService.deleteFromS3(key);
     await homepageService.deleteBannerById(id);
 

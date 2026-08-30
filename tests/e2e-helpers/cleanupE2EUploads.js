@@ -1,15 +1,16 @@
 // tests/e2e-helpers/cleanupE2EUploads.js
 //
-// Deletes the real S3 objects an admin real-E2E product-creation test
-// uploaded to the real `advikaauto` bucket, WITHOUT any application code
-// change. This is possible because of how the app already names uploaded
-// files (src/utils/bannerHelpers.js's generateUniqueProductFilenames):
+// Deletes the real Cloudflare R2 objects an admin real-E2E
+// product-creation test uploaded to the real `advika-auto-media` bucket,
+// WITHOUT any application code change. This is possible because of how
+// the app already names uploaded files
+// (src/utils/bannerHelpers.js's generateUniqueProductFilenames):
 //
 //   product-images/{timestamp}_{index}_{basename-of-uploaded-filename}.webp
 //
 // The E2E test fixture image is named "e2e-fixture-<runId>.jpg" (see
 // admin_panel_fixed/e2e-real/fixtures/e2e-fixture.jpg + how the spec copies
-// it to a run-unique filename before uploading), so every S3 key this
+// it to a run-unique filename before uploading), so every object key this
 // script ever deletes is guaranteed to contain "e2e-fixture-" in its
 // basename — it can never match a real product image, whose original
 // filename an admin chose themselves.
@@ -20,6 +21,9 @@
 // product-create API response's `images` URLs) into a JSON file, which the
 // spec's own afterAll reads and passes here — see
 // admin_panel_fixed/e2e-real/support/s3KeyLog.js.
+//
+// Migrated from AWS S3 to R2 alongside src/services/external/AWSUploads.js
+// — same S3-compatible client, just pointed at R2's endpoint/credentials.
 const {
   S3Client,
   DeleteObjectsCommand,
@@ -32,10 +36,11 @@ async function deleteE2EUploads(bucketName, keys) {
   if (safeKeys.length === 0) return { deleted: 0, skipped: keys.length };
 
   const client = new S3Client({
-    region: 'ap-south-1',
+    region: 'auto',
+    endpoint: process.env.R2_ENDPOINT,
     credentials: {
-      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+      accessKeyId: process.env.R2_ACCESS_KEY_ID,
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
     },
     forcePathStyle: true,
   });
