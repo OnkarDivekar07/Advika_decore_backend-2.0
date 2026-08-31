@@ -23,18 +23,19 @@ jest.mock('@modules/shipping/shipping.service', () => ({
   createShipmentForOrder: jest.fn(),
   trackOrderShipment: jest.fn(),
   cancelOrderShipment: jest.fn(),
-  handleEkartWebhookEvent: jest.fn(),
+  handleDelhiveryWebhookEvent: jest.fn(),
 }));
 
-// The webhook route verifies the signature via the Ekart client directly
-// (mirroring how payment.controller.js calls paymentService for Razorpay's
-// signature check) — mocked the same way as in shipping.service.test.js.
-jest.mock('../../src/services/external/EkartClient', () => ({
+// The webhook route verifies the signature via the Delhivery client
+// directly (mirroring how payment.controller.js calls paymentService for
+// Razorpay's signature check) — mocked the same way as in
+// shipping.service.test.js.
+jest.mock('../../src/services/external/DelhiveryClient', () => ({
   verifyWebhookSignature: jest.fn(),
 }));
 
 const shippingService = require('@modules/shipping/shipping.service');
-const ekartClient = require('../../src/services/external/EkartClient');
+const delhiveryClient = require('../../src/services/external/DelhiveryClient');
 const shippingRoutes = require('@modules/shipping/shipping.routes');
 const responseMiddleware = require('@middlewares/responseMiddleware');
 const errorHandler = require('@middlewares/errorHandler');
@@ -60,7 +61,7 @@ const VALID_ORDER_ID = '507f1f77bcf86cd799439011';
 
 beforeEach(() => {
   Object.values(shippingService).forEach((fn) => fn.mockReset());
-  ekartClient.verifyWebhookSignature.mockReset();
+  delhiveryClient.verifyWebhookSignature.mockReset();
 });
 
 describe('GET /api/shipping/delivery-config', () => {
@@ -255,14 +256,13 @@ describe('GET /api/shipping/:orderId/track', () => {
     );
   });
 
-  it("never leaks Ekart's raw payload out through the API — only the normalized shipment fields", async () => {
+  it("never leaks Delhivery's raw payload out through the API — only the normalized shipment fields", async () => {
     shippingService.trackOrderShipment.mockResolvedValue({
       orderId: VALID_ORDER_ID,
       status: 'IN_TRANSIT',
-      trackingId: 'EKT123',
+      trackingId: 'AWB123',
       raw: {
-        some_ekart_internal_field: 'should-not-leak',
-        is_serviceable: true,
+        ShipmentData: [{ Shipment: { Status: { Status: 'In Transit' } } }],
       },
     });
 
@@ -271,7 +271,7 @@ describe('GET /api/shipping/:orderId/track', () => {
       .set('x-user-id', 'user_1');
 
     expect(res.status).toBe(200);
-    expect(res.body.data.trackingId).toBe('EKT123');
+    expect(res.body.data.trackingId).toBe('AWB123');
     expect(res.body.data).not.toHaveProperty('raw');
   });
 
@@ -324,43 +324,43 @@ describe('POST /api/shipping/:orderId/cancel', () => {
 
 describe('POST /api/shipping/webhook', () => {
   it('400s on an invalid webhook signature', async () => {
-    ekartClient.verifyWebhookSignature.mockReturnValue(false);
+    delhiveryClient.verifyWebhookSignature.mockReturnValue(false);
 
     const res = await request(app)
       .post('/api/shipping/webhook')
-      .set('x-ekart-signature', 'bad-sig')
-      .send({ tracking_id: 'EKT123', status: 'DELIVERED' });
+      .set('x-delhivery-signature', 'bad-sig')
+      .send({ AWB: 'AWB123', Status: { Status: 'Delivered' } });
 
     expect(res.status).toBe(400);
-    expect(shippingService.handleEkartWebhookEvent).not.toHaveBeenCalled();
+    expect(shippingService.handleDelhiveryWebhookEvent).not.toHaveBeenCalled();
   });
 
   it('acks with 200 and reconciles the shipment on a valid signature', async () => {
-    ekartClient.verifyWebhookSignature.mockReturnValue(true);
-    shippingService.handleEkartWebhookEvent.mockResolvedValue();
+    delhiveryClient.verifyWebhookSignature.mockReturnValue(true);
+    shippingService.handleDelhiveryWebhookEvent.mockResolvedValue();
 
     const res = await request(app)
       .post('/api/shipping/webhook')
-      .set('x-ekart-signature', 'good-sig')
-      .send({ tracking_id: 'EKT123', status: 'DELIVERED' });
+      .set('x-delhivery-signature', 'good-sig')
+      .send({ AWB: 'AWB123', Status: { Status: 'Delivered' } });
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ received: true });
-    expect(shippingService.handleEkartWebhookEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ tracking_id: 'EKT123' })
+    expect(shippingService.handleDelhiveryWebhookEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ AWB: 'AWB123' })
     );
   });
 
   // The webhook route is registered before the `authenticate` middleware in
-  // shipping.routes.js (Ekart calls it directly, with no user JWT) — this
-  // guards against that ever regressing.
+  // shipping.routes.js (Delhivery calls it directly, with no user JWT) —
+  // this guards against that ever regressing.
   it('does not require a user JWT', async () => {
-    ekartClient.verifyWebhookSignature.mockReturnValue(true);
-    shippingService.handleEkartWebhookEvent.mockResolvedValue();
+    delhiveryClient.verifyWebhookSignature.mockReturnValue(true);
+    shippingService.handleDelhiveryWebhookEvent.mockResolvedValue();
 
     const res = await request(app)
       .post('/api/shipping/webhook')
-      .send({ tracking_id: 'EKT123', status: 'DELIVERED' });
+      .send({ AWB: 'AWB123', Status: { Status: 'Delivered' } });
 
     expect(res.status).not.toBe(401);
   });

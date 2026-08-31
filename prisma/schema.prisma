@@ -368,8 +368,8 @@ model Address {
 model WebhookEvent {
   id         String   @id @default(auto()) @map("_id") @db.ObjectId
   // 'razorpay' today; kept as a field (not hardcoded) so another provider's
-  // webhook (e.g. Ekart shipping) could reuse this table later without a
-  // schema change — @@unique below is scoped per-source accordingly.
+  // webhook (e.g. Delhivery shipping) could reuse this table later without
+  // a schema change — @@unique below is scoped per-source accordingly.
   source     String
   // Razorpay's x-razorpay-event-id header value.
   eventId    String
@@ -388,7 +388,7 @@ model WebhookEvent {
   @@index([orderId])
 }
 
-// --- Shipping module (Ekart Logistics) ---
+// --- Shipping module (Delhivery) ---
 // No formal Prisma relation to Order is declared here on purpose, so
 // adding this doesn't require touching the existing Order model — orderId
 // is a plain reference, resolved manually in shipping.service.js.
@@ -408,24 +408,29 @@ enum ShipmentStatus {
 model Shipment {
   id                    String         @id @default(auto()) @map("_id") @db.ObjectId
   orderId               String         @unique // references Order.id
-  trackingId            String?        @unique // Ekart tracking ID / AWB number, set once Ekart returns one
+  trackingId            String?        @unique // Delhivery waybill/AWB number, set once Delhivery returns one
   awbNumber             String?
-  courierPartner        String         @default("Ekart")
+  courierPartner        String         @default("Delhivery")
   status                ShipmentStatus @default(CREATED)
   paymentMode           String // 'COD' | 'PREPAID', copied from the order at creation time
   codAmount             Float          @default(0)
+  // Field name predates the Delhivery migration — stores Delhivery's
+  // pickup_location *name* (a registered text name, not a numeric code),
+  // kept as-is rather than renamed to avoid an unnecessary schema/data
+  // migration for a purely cosmetic mismatch.
   pickupLocationCode    String?
   lastLocation          String?
-  // Delivery-by estimate for this shipment. Set from Ekart's create-shipment
-  // response at creation time (see createShipmentForOrder), and kept fresh
-  // by trackOrderShipment / handleEkartWebhookEvent whenever Ekart returns a
-  // refreshed one on a later poll or webhook (e.g. after a delay). Distinct
-  // from the pre-shipment `estimatedDays`/`estimatedDeliveryDate` returned by
-  // checkServiceability — that's a rough pre-order preview computed from an
-  // SLA day-count; this is the real per-shipment estimate once one exists.
+  // Delivery-by estimate for this shipment. Null at creation time —
+  // Delhivery's create-shipment response doesn't include one (unlike the
+  // earlier, unverified Ekart assumption) — and populated by
+  // trackOrderShipment / handleDelhiveryWebhookEvent once Delhivery's
+  // tracking response actually reports one. Distinct from the pre-shipment
+  // `estimatedDays`/`estimatedDeliveryDate` returned by checkServiceability
+  // (always null for Delhivery, see that function's own docs) — this is
+  // the real per-shipment estimate once one exists.
   estimatedDeliveryDate DateTime?
   lastSyncedAt          DateTime?
-  raw                   Json? // last raw payload received from Ekart, kept for debugging
+  raw                   Json? // last raw payload received from Delhivery, kept for debugging
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt
 }

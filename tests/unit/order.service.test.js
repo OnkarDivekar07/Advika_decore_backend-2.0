@@ -41,7 +41,7 @@ jest.mock('@config/redis', () => mockRedis);
 
 // detectAddressConflict now also checks delivery eligibility for the
 // address's pincode — mocked here so these tests never reach the real
-// shipping.service.js (and, through it, the Ekart client / network).
+// shipping.service.js (and, through it, the Delhivery client / network).
 jest.mock('@modules/shipping/shipping.service', () => ({
   checkDeliveryEligibility: jest.fn(),
 }));
@@ -721,7 +721,7 @@ describe('detectAddressConflict', () => {
     expect(mockAddress.findUnique).not.toHaveBeenCalled();
   });
 
-  it('flags a delivery_unavailable conflict when the pincode is a real one Ekart just does not cover', async () => {
+  it('flags a delivery_unavailable conflict when the pincode is a real one Delhivery just does not cover', async () => {
     mockAddress.findUnique.mockResolvedValue({
       id: 'addr_1',
       userId: 'user_1',
@@ -744,7 +744,7 @@ describe('detectAddressConflict', () => {
     ]);
   });
 
-  it('flags an invalid_pincode conflict when Ekart does not recognize the pincode at all', async () => {
+  it('flags an invalid_pincode conflict when Delhivery does not recognize the pincode at all', async () => {
     mockAddress.findUnique.mockResolvedValue({
       id: 'addr_1',
       userId: 'user_1',
@@ -1335,7 +1335,7 @@ describe('fetchOrderById', () => {
       id: 'ship_1',
       trackingId: 'AWB123',
       awbNumber: 'AWB123',
-      courierPartner: 'Ekart',
+      courierPartner: 'Delhivery',
       status: 'IN_TRANSIT',
       paymentMode: 'PREPAID',
       codAmount: 0,

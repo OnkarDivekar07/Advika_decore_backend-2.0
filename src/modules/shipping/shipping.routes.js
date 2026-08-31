@@ -7,7 +7,7 @@ const {
   createShipment,
   trackShipment,
   cancelShipment,
-  ekartWebhook,
+  delhiveryWebhook,
 } = require('./shipping.controller');
 
 const authenticate = require('@middlewares/authenticate');
@@ -21,12 +21,12 @@ const {
 
 /**
  * @route   POST /api/shipping/webhook
- * @desc    Ekart shipment status webhook — source of truth for delivery status
- * @access  Public (Ekart calls this directly; authenticated by HMAC
+ * @desc    Delhivery shipment status webhook — source of truth for delivery status
+ * @access  Public (Delhivery calls this directly; authenticated by HMAC
  *          signature inside the controller, not by a user JWT, so it must
  *          be registered before the `authenticate` middleware below)
  */
-router.post('/webhook', ekartWebhook);
+router.post('/webhook', delhiveryWebhook);
 
 /**
  * @route   GET /api/shipping/delivery-config

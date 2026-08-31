@@ -134,11 +134,11 @@ exports.detectOrderConflicts = async (orderItems, client = prisma) => {
  * instead of a crash discovered downstream after the fact.
  *
  * As of the delivery-serviceability check below, this also covers an
- * address that still exists but sits in a pincode Ekart doesn't (or no
+ * address that still exists but sits in a pincode Delhivery doesn't (or no
  * longer) deliver to — e.g. a pincode that was covered when the address
  * was saved, or one that never was and just slipped past the *shape*-only
  * check the address form does (see user.validation.js — that only checks
- * "6 digits", never whether Ekart actually recognizes or covers it). Same
+ * "6 digits", never whether Delhivery actually recognizes or covers it). Same
  * checkpoints, same reasoning: refused before payment/stock, not after.
  *
  * @param {string} addressId
@@ -192,7 +192,7 @@ exports.detectAddressConflict = async (
     //     outage/timeout) and the configured fallback policy is
     //     fail-closed; nothing wrong with the address, just try again.
     //   AREA_NOT_COVERED (the default/fallback case below) — a real,
-    //     checked pincode Ekart just doesn't cover.
+    //     checked pincode Delhivery just doesn't cover.
     const invalidPincode =
       eligibility.reason === 'INVALID_FORMAT' ||
       eligibility.reason === 'INVALID_PINCODE';
@@ -846,12 +846,12 @@ exports.getAllOrders = async ({
 // additive field, not a shape change.
 //
 // `shipment` is a new top-level field, deliberately populated from our own
-// persisted Shipment row (a plain read) rather than by live-polling Ekart
+// persisted Shipment row (a plain read) rather than by live-polling Delhivery
 // the way GET /api/shipping/:orderId/track does — this endpoint is read
 // many times (every order-detail page view, both customer and admin) and
 // must stay cheap/side-effect-free; live tracking stays an explicit,
 // on-demand action via the dedicated /track route. Selected explicitly
-// (not `include: true`) so `raw` — Ekart's last unprocessed
+// (not `include: true`) so `raw` — Delhivery's last unprocessed
 // webhook/API payload, kept only for internal debugging (see
 // prisma/schema.prisma's comment on Shipment.raw) — never reaches either
 // frontend, mirroring shipping.controller.js's toPublicShipment.

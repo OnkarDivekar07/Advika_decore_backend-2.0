@@ -21,7 +21,7 @@ jest.mock('razorpay', () =>
   }))
 );
 
-// -- Ekart client: never hit the network ---------------------------------
+// -- Delhivery client: never hit the network ------------------------------
 // Same "mock only the outermost boundary" rule this suite applies to
 // Razorpay — checkout now also runs a real delivery-serviceability check
 // (order.service.js's detectAddressConflict, via shipping.service.js) at
@@ -29,10 +29,10 @@ jest.mock('razorpay', () =>
 // deterministic stand-in too rather than either hitting the real network
 // or silently relying on the fail-open fallback path to paper over an
 // unmocked dependency.
-jest.mock('../../src/services/external/EkartClient', () => ({
+jest.mock('../../src/services/external/DelhiveryClient', () => ({
   checkServiceability: jest
     .fn()
-    .mockResolvedValue({ is_serviceable: true, cod_available: true }),
+    .mockResolvedValue({ serviceable: true, recognized: true, codAvailable: true }),
   createShipment: jest.fn(),
   trackShipment: jest.fn(),
   cancelShipment: jest.fn(),

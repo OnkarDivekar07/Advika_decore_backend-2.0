@@ -35,9 +35,9 @@ process.env.R2_BUCKET_NAME = 'dummy-r2-bucket';
 process.env.R2_ENDPOINT = 'https://dummy-account.r2.cloudflarestorage.com';
 process.env.R2_PUBLIC_URL = 'https://media.test.example';
 
-process.env.EKART_API_KEY = 'dummy_ekart_api_key';
-process.env.EKART_BASE_URL = 'https://api.ekartlogistics.com';
-process.env.EKART_MERCHANT_ID = 'dummy_merchant_id';
-process.env.EKART_PICKUP_LOCATION_CODE = 'dummy_pickup_location';
-process.env.EKART_PICKUP_PINCODE = '400001';
-process.env.EKART_WEBHOOK_SECRET = 'dummy_ekart_webhook_secret';
+process.env.DELHIVERY_API_TOKEN = 'dummy_delhivery_api_token';
+process.env.DELHIVERY_BASE_URL = 'https://track.delhivery.com';
+process.env.DELHIVERY_PICKUP_LOCATION_NAME = 'dummy_pickup_location';
+process.env.DELHIVERY_SELLER_NAME = 'dummy_seller_name';
+process.env.DELHIVERY_PICKUP_PINCODE = '400001';
+process.env.DELHIVERY_WEBHOOK_SECRET = 'dummy_delhivery_webhook_secret';

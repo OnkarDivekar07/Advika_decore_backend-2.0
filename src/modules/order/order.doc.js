@@ -412,7 +412,7 @@
  *                       nullable: true
  *                       description: >
  *                         Last-known persisted shipment state (a plain DB read — not a live
- *                         Ekart poll; see POST /api/shipping/{orderId}/create,
+ *                         Delhivery poll; see POST /api/shipping/{orderId}/create,
  *                         GET /api/shipping/{orderId}/track, POST /api/shipping/{orderId}/cancel
  *                         for the actions that create/refresh/cancel it). null when no
  *                         shipment has been created for this order yet.

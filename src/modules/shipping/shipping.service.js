@@ -1,7 +1,7 @@
 const prisma = require('@config/prisma');
 const logger = require('@config/logger');
 const CustomError = require('@utils/customError');
-const ekartClient = require('../../services/external/EkartClient');
+const delhiveryClient = require('../../services/external/DelhiveryClient');
 const {
   FREE_DELIVERY_THRESHOLD,
   DELIVERY_CHARGE,
@@ -10,69 +10,59 @@ const {
 const { isValidIndianPincodeFormat } = require('@constants/pincode');
 const { shippingServiceabilityFallbackPolicy } = require('@config/env');
 
-const EKART_PICKUP_LOCATION_CODE = process.env.EKART_PICKUP_LOCATION_CODE;
-const EKART_PICKUP_PINCODE = process.env.EKART_PICKUP_PINCODE;
+const DELHIVERY_PICKUP_LOCATION_NAME = process.env.DELHIVERY_PICKUP_LOCATION_NAME;
+const DELHIVERY_SELLER_NAME = process.env.DELHIVERY_SELLER_NAME;
 
 // Fallback used when a product has no declared weight yet (Product model
 // doesn't carry a weight field today). Swap this out once that's added —
 // left as a constant here rather than touching the Product schema.
 const DEFAULT_ITEM_WEIGHT_KG = 0.5;
 
-// Maps Ekart's raw status codes to our internal ShipmentStatus enum.
-// TODO: fill this in against Ekart's real status code list from their docs
-// (left side = Ekart's raw code/string, right side = our enum value).
+// Maps Delhivery's raw shipment status strings (ShipmentData[0].Shipment.
+// Status.Status from the tracking API) to our internal ShipmentStatus
+// enum. This vocabulary reflects Delhivery's long-standing, publicly
+// documented status terminology — high confidence on the general set, but
+// exact spelling/casing should be smoke-tested against a real account
+// before relying on it, same as the rest of this integration (see
+// DelhiveryClient.js's header note).
 const RAW_TO_SHIPMENT_STATUS = {
-  MANIFESTED: 'CREATED',
-  PICKED: 'PICKED_UP',
-  IN_TRANSIT: 'IN_TRANSIT',
-  OUT_FOR_DELIVERY: 'OUT_FOR_DELIVERY',
-  DELIVERED: 'DELIVERED',
-  UNDELIVERED: 'DELIVERY_FAILED',
+  Manifested: 'CREATED',
+  'Not Picked': 'CREATED',
+  'Pickup Scheduled': 'CREATED',
+  'Picked Up': 'PICKED_UP',
+  'In Transit': 'IN_TRANSIT',
+  Pending: 'IN_TRANSIT',
+  Dispatched: 'OUT_FOR_DELIVERY',
+  'Out for Delivery': 'OUT_FOR_DELIVERY',
+  Delivered: 'DELIVERED',
+  Undelivered: 'DELIVERY_FAILED',
+  Lost: 'DELIVERY_FAILED',
   RTO: 'RTO_INITIATED',
-  RTO_DELIVERED: 'RTO_DELIVERED',
-  CANCELLED: 'CANCELLED',
+  'RTO Initiated': 'RTO_INITIATED',
+  'RTO Delivered': 'RTO_DELIVERED',
+  'Return Delivered': 'RTO_DELIVERED',
+  Cancelled: 'CANCELLED',
+  Canceled: 'CANCELLED',
 };
 
-function mapEkartStatus(rawStatus) {
+function mapDelhiveryStatus(rawStatus) {
   return RAW_TO_SHIPMENT_STATUS[rawStatus] || 'CREATED';
 }
 
-// Turns a raw day-count SLA into a concrete calendar date, so the frontend
-// never has to do its own "today + N days" arithmetic (and risk drifting
-// from whatever timezone/business-day rules the backend eventually applies
-// here — e.g. skipping Sundays — without a frontend change). Backend stays
-// the single source of truth for what "estimated delivery" actually means;
-// the frontend only ever displays what this returns.
-function addDays(days) {
-  const date = new Date();
-  date.setDate(date.getDate() + Number(days));
-  return date;
-}
-
-// Ekart's raw response field name for an estimated/expected delivery date
-// isn't confirmed yet (see the TODOs in EkartClient.js) — this tries the
-// handful of plausible shapes a carrier API might use for an explicit date,
-// and only falls back to deriving one from a day-count SLA if none of them
-// are present. Centralized here (rather than duplicated at each call site)
-// so a single spot needs updating once the real field name is confirmed
-// against Ekart's docs.
-function extractEstimatedDeliveryDate(ekartResponse) {
-  const rawDate =
-    ekartResponse?.estimated_delivery_date ??
-    ekartResponse?.expected_delivery_date ??
-    ekartResponse?.edd ??
-    null;
+// Delhivery's tracking response nests an explicit expected-delivery date
+// under ShipmentData[0].Shipment (see trackShipment/webhook call sites,
+// which pass that nested `.Shipment` object in here directly) as
+// `ExpectedDeliveryDate` — Delhivery's serviceability lookup itself
+// doesn't return an SLA day-count at all (unlike the earlier, unverified
+// Ekart assumption), so there's no day-count fallback to derive a date
+// from at shipment-creation time; `estimatedDeliveryDate` legitimately
+// stays null until the first real tracking poll reports one.
+function extractEstimatedDeliveryDate(delhiveryShipment) {
+  const rawDate = delhiveryShipment?.ExpectedDeliveryDate ?? null;
   if (rawDate) {
     const parsed = new Date(rawDate);
     if (!Number.isNaN(parsed.getTime())) return parsed;
   }
-
-  const days =
-    ekartResponse?.estimated_delivery_days ?? ekartResponse?.sla_days ?? null;
-  if (days != null && Number.isFinite(Number(days))) {
-    return addDays(days);
-  }
-
   return null;
 }
 
@@ -84,6 +74,16 @@ const SHIPMENT_TO_ORDER_STATUS = {
   RTO_DELIVERED: 'returned',
   CANCELLED: 'cancelled',
 };
+
+// Once a shipment reaches one of these, nothing should ever move it back
+// out — confirmed live: Delhivery's own tracking API reports a
+// cancelled-before-pickup shipment's Status.Status as "Not Picked" (mapped
+// to CREATED, see RAW_TO_SHIPMENT_STATUS), not "Cancelled". Without this
+// guard, a customer or admin simply reloading the tracking page after a
+// cancellation would silently flip the record right back to CREATED on
+// the next poll — trackOrderShipment/handleDelhiveryWebhookEvent both
+// check this before applying anything Delhivery reports.
+const TERMINAL_SHIPMENT_STATUSES = ['DELIVERED', 'RTO_DELIVERED', 'CANCELLED'];
 
 async function syncOrderStatusFromShipment(orderId, shipmentStatus) {
   const orderStatus = SHIPMENT_TO_ORDER_STATUS[shipmentStatus];
@@ -146,7 +146,7 @@ function withPricing(base, subtotal) {
 // "we don't deliver here":
 //   INVALID_FORMAT    — empty, or doesn't even look like a 6-digit Indian
 //                        pincode (see src/constants/pincode.js). Caught
-//                        entirely locally, before ever calling Ekart —
+//                        entirely locally, before ever calling Delhivery —
 //                        there's nothing for the carrier to answer about
 //                        "abc123" or "". The route-level validator (see
 //                        shipping.validation.js) already rejects this for
@@ -158,14 +158,23 @@ function withPricing(base, subtotal) {
 //                        which never goes through that route middleware at
 //                        all, so a malformed/blank pincode on a stored
 //                        address must still be caught here rather than
-//                        silently reaching Ekart or slipping through.
+//                        silently reaching Delhivery or slipping through.
 //   INVALID_PINCODE   — well-formed (passes the shape check above), but
-//                       Ekart doesn't recognize it at all (isn't a real
-//                       Indian PIN in their system — a typo, or a code
-//                       that simply doesn't exist). E.g. "999999".
-//   AREA_NOT_COVERED  — a real, recognized pincode that Ekart just doesn't
-//                       deliver to (yet). The normal, expected shape of a
-//                       "not serviceable" answer.
+//                       Delhivery's pincode lookup returns no entry for it
+//                       at all (isn't a real Indian PIN in their system —
+//                       a typo, or a code that simply doesn't exist). This
+//                       comes back as a normal empty `delivery_codes`
+//                       array, not an error — see
+//                       DelhiveryClient.checkServiceability.
+//   AREA_NOT_COVERED  — currently unused for Delhivery: its pincode
+//                       lookup doesn't distinguish "recognized but not
+//                       delivered to" from "not recognized" the way the
+//                       earlier (unverified) Ekart assumption implied —
+//                       an unrecognized entry is the only "no" it returns.
+//                       Kept in the enum since it's still part of the
+//                       stable contract callers (frontend included) rely
+//                       on, and may become reachable again if a future
+//                       Delhivery lookup call distinguishes the two.
 //   CHECK_UNAVAILABLE — never returned by checkServiceability itself (which
 //                       always throws a 503 rather than guessing — see its
 //                       own docs below). Only ever produced by
@@ -185,51 +194,34 @@ const UNSERVICEABLE_REASON = {
 };
 exports.UNSERVICEABLE_REASON = UNSERVICEABLE_REASON;
 
-// Substrings an Ekart error response might use to say "this pincode isn't
-// one we recognize" specifically, as opposed to "we recognize it but don't
-// deliver there" — the latter normally comes back as a clean 200 with
-// serviceable:false, not an error at all.
-// TODO: confirm the real error code/message Ekart uses for an unrecognized
-// pincode against their Serviceability API docs — this is a best-effort
-// heuristic until then, deliberately conservative (falls through to the
-// generic "check unavailable" path below rather than mis-tagging a
-// legitimate outage as an invalid pincode) if nothing matches.
-const INVALID_PINCODE_ERROR_HINTS = [
-  'invalid pincode',
-  'invalid postal code',
-  'pincode not found',
-  'unrecognized pincode',
-  'invalid_pincode',
-  'pincode_not_found',
-];
-
-function looksLikeInvalidPincodeError(error) {
-  const haystack =
-    `${error?.message || ''} ${error?.raw?.error_code || ''} ${error?.raw?.code || ''}`.toLowerCase();
-  return INVALID_PINCODE_ERROR_HINTS.some((hint) => haystack.includes(hint));
-}
-
 /**
- * Check pincode serviceability + delivery estimate. Called from the
- * checkout/product page, before an order even exists — and, via
- * exports.checkDeliveryEligibility below, as a server-side enforcement
- * check right before an order is actually placed.
+ * Check pincode serviceability. Called from the checkout/product page,
+ * before an order even exists — and, via exports.checkDeliveryEligibility
+ * below, as a server-side enforcement check right before an order is
+ * actually placed.
  *
- * Never throws for a *business* answer about the pincode — "not real" and
- * "real but uncovered" both come back as a normal `{ serviceable: false,
- * reason }` result. It only throws (a 503) when we genuinely couldn't get
- * an answer at all — Ekart timed out, is down, or returned something
- * unrecognized — so callers can tell "we checked and the answer is no"
- * apart from "we couldn't check".
+ * Never throws for a *business* answer about the pincode — an
+ * unrecognized pincode comes back as a normal `{ serviceable: false,
+ * reason }` result, not an error (Delhivery's pincode lookup itself never
+ * errors for a well-formed-but-unknown pincode). It only throws (a 503)
+ * when we genuinely couldn't get an answer at all — Delhivery timed out,
+ * is down, or returned something unrecognized — so callers can tell "we
+ * checked and the answer is no" apart from "we couldn't check".
  *
  * Returns the stable normalized shape every caller (frontend and backend
  * alike) can rely on:
  *   { serviceable, reason, estimatedDays, estimatedDeliveryDate, codAvailable }
- * — always exactly these keys, regardless of what Ekart's raw response
- * happens to look like (see mapEkartStatus/extractEstimatedDeliveryDate for
- * the same normalization pattern elsewhere in this file). Carrier-specific
- * field names (is_serviceable, sla_days, edd, ...) never escape this
- * function.
+ * — always exactly these keys, regardless of what Delhivery's raw response
+ * happens to look like. Carrier-specific field names (cod, pre_paid, ...)
+ * never escape this function.
+ *
+ * `estimatedDays`/`estimatedDeliveryDate` are always null here — unlike
+ * the earlier, unverified Ekart assumption, Delhivery's pincode-lookup API
+ * doesn't return an SLA day-count at all, so there's genuinely nothing to
+ * estimate before a shipment exists. A real estimate only becomes
+ * available once trackOrderShipment's first poll reports one (see
+ * extractEstimatedDeliveryDate) — the frontend already renders a null
+ * estimate as "not yet available" rather than a broken display.
  *
  * When `subtotal` is also passed, the response additionally carries the
  * delivery-charge / free-delivery side of the contract for that amount —
@@ -240,13 +232,8 @@ function looksLikeInvalidPincodeError(error) {
  * second copy of the rule. Omit `subtotal` and the response is exactly the
  * base shape above, unchanged.
  */
-exports.checkServiceability = async ({
-  destinationPincode,
-  paymentMode = 'PREPAID',
-  weightKg,
-  subtotal,
-}) => {
-  // Cheapest, most common "not serviceable" case first — no Ekart call
+exports.checkServiceability = async ({ destinationPincode, subtotal }) => {
+  // Cheapest, most common "not serviceable" case first — no Delhivery call
   // needed to know an empty string or "abc123" isn't a real pincode. See
   // UNSERVICEABLE_REASON.INVALID_FORMAT's docs above for why this can't
   // just rely on the route-level validator alone.
@@ -265,63 +252,31 @@ exports.checkServiceability = async ({
 
   let response;
   try {
-    response = await ekartClient.checkServiceability({
-      originPincode: EKART_PICKUP_PINCODE,
+    response = await delhiveryClient.checkServiceability({
       destinationPincode,
-      paymentMode,
-      weightKg,
     });
   } catch (error) {
-    if (
-      !error.isTimeout &&
-      error.statusCode >= 400 &&
-      error.statusCode < 500 &&
-      looksLikeInvalidPincodeError(error)
-    ) {
-      return withPricing(
-        {
-          serviceable: false,
-          reason: UNSERVICEABLE_REASON.INVALID_PINCODE,
-          estimatedDays: null,
-          estimatedDeliveryDate: null,
-          codAvailable: false,
-        },
-        subtotal
-      );
-    }
-
-    // Anything else — a timeout, a network error, an Ekart 5xx, or a 4xx
-    // that doesn't match the invalid-pincode heuristic above — is our (or
-    // Ekart's) infrastructure having a bad moment, not a real answer about
-    // this pincode. Surfaced as a distinct 503 rather than a generic 500,
-    // and deliberately not tagged with either UNSERVICEABLE_REASON, so it's
-    // never confused with a definitive "no" from Ekart.
+    // A timeout, a network error, a Delhivery 5xx, or a 4xx — our (or
+    // Delhivery's) infrastructure having a bad moment, not a real answer
+    // about this pincode. Surfaced as a distinct 503 rather than a
+    // generic 500, and deliberately not tagged with either
+    // UNSERVICEABLE_REASON, so it's never confused with a definitive "no"
+    // from Delhivery.
     throw new CustomError(
       'Could not check delivery availability right now. Please try again in a moment.',
       503
     );
   }
 
-  const serviceable = Boolean(
-    response?.serviceable ?? response?.is_serviceable
-  );
-  const estimatedDays =
-    response?.estimated_delivery_days ?? response?.sla_days ?? null;
-
   return withPricing(
     {
-      serviceable,
-      reason: serviceable ? null : UNSERVICEABLE_REASON.AREA_NOT_COVERED,
-      estimatedDays,
-      // Only meaningful when the pincode is actually serviceable — a
-      // non-serviceable pincode has nothing to estimate a date against, so
-      // this stays null rather than showing a date for a delivery that
-      // can't happen. Computed here (not left for the frontend to derive
-      // from estimatedDays) so the same day-count-to-date rule applies
-      // everywhere — see extractEstimatedDeliveryDate/addDays above.
-      estimatedDeliveryDate:
-        serviceable && estimatedDays != null ? addDays(estimatedDays) : null,
-      codAvailable: Boolean(response?.cod_available),
+      serviceable: response.serviceable,
+      reason: response.serviceable
+        ? null
+        : UNSERVICEABLE_REASON.INVALID_PINCODE,
+      estimatedDays: null,
+      estimatedDeliveryDate: null,
+      codAvailable: response.codAvailable,
     },
     subtotal
   );
@@ -335,12 +290,12 @@ exports.checkServiceability = async ({
  *
  * The distinction that matters here: a *definitive* negative answer
  * (not serviceable / invalid pincode) should always block the order. Our
- * own check failing to get an answer at all (Ekart down, network blip, a
- * timeout) is different — that's our integration having a bad moment, not
- * evidence the address can't be delivered to — and what happens then is
- * governed by SHIPPING_SERVICEABILITY_FALLBACK_POLICY (src/config/env.js),
- * an explicit, ops-configurable policy rather than a silent hardcoded
- * choice:
+ * own check failing to get an answer at all (Delhivery down, network blip,
+ * a timeout) is different — that's our integration having a bad moment,
+ * not evidence the address can't be delivered to — and what happens then
+ * is governed by SHIPPING_SERVICEABILITY_FALLBACK_POLICY
+ * (src/config/env.js), an explicit, ops-configurable policy rather than a
+ * silent hardcoded choice:
  *
  *   'fail_open'   (default) — returns serviceable: true, so a carrier
  *                  hiccup never blocks checkout by itself. This is the
@@ -353,15 +308,20 @@ exports.checkServiceability = async ({
  * Either way this never throws, never returns a bare "yes" that was
  * actually a guess, and always logs a warning so a carrier outage stays
  * visible in either mode.
+ *
+ * `paymentMode` is accepted (existing callers pass it) but no longer
+ * forwarded to checkServiceability — Delhivery's pincode lookup doesn't
+ * take a payment mode as input, unlike the earlier, unverified Ekart
+ * assumption.
  */
 exports.checkDeliveryEligibility = async ({
   destinationPincode,
   paymentMode,
 }) => {
+  void paymentMode;
   try {
     const result = await exports.checkServiceability({
       destinationPincode,
-      paymentMode,
     });
     // `skippedCheck` is always present on the returned shape (even when we
     // got a definitive answer) — undefined here, `true` on the fallback
@@ -409,9 +369,9 @@ exports.checkDeliveryEligibility = async ({
 };
 
 /**
- * Create a shipment with Ekart for a confirmed order, and persist the
- * resulting tracking ID against it. Idempotent — calling this again for an
- * order that already has a shipment just returns the existing one, the
+ * Create a shipment with Delhivery for a confirmed order, and persist the
+ * resulting waybill (AWB) against it. Idempotent — calling this again for
+ * an order that already has a shipment just returns the existing one, the
  * same pattern payment.service.js uses for alreadyProcessed.
  */
 exports.createShipmentForOrder = async (orderId) => {
@@ -446,70 +406,98 @@ exports.createShipmentForOrder = async (orderId) => {
       sum + (item.product?.weightKg || DEFAULT_ITEM_WEIGHT_KG) * item.quantity,
     0
   );
+  const totalQuantity = order.orderItems.reduce(
+    (sum, item) => sum + item.quantity,
+    0
+  );
+  // Delhivery's create-shipment payload takes one products_desc string for
+  // the whole package (labeling/customs use, not itemized line items the
+  // way the earlier, unverified Ekart assumption had) — a comma-joined
+  // list of what's inside, capped so an unusually large cart doesn't
+  // produce an unreasonably long label description.
+  const productsDesc = order.orderItems
+    .map((item) => item.product?.name)
+    .filter(Boolean)
+    .join(', ')
+    .slice(0, 500);
 
-  // TODO: confirm this payload shape against Ekart's "Create Shipment" doc.
-  let ekartResponse;
+  // `area` postdates some existing addresses (schema-optional — see
+  // prisma/schema.prisma), so it's appended only when present rather than
+  // assumed to always be there.
+  const consigneeAddress = order.address.area
+    ? `${order.address.houseArea}, ${order.address.area}`
+    : order.address.houseArea;
+
+  let delhiveryResponse;
   try {
-    ekartResponse = await ekartClient.createShipment({
+    delhiveryResponse = await delhiveryClient.createShipment({
       order_id: order.id,
       payment_mode: paymentMode,
       cod_amount: codAmount,
-      pickup_location_code: EKART_PICKUP_LOCATION_CODE,
+      pickup_location_name: DELHIVERY_PICKUP_LOCATION_NAME,
+      seller_name: DELHIVERY_SELLER_NAME,
       consignee: {
         name: order.address.name,
         phone: order.address.phone,
-        // `area` postdates some existing addresses (schema-optional — see
-        // prisma/schema.prisma), so it's appended only when present rather
-        // than assumed to always be there.
-        address: order.address.area
-          ? `${order.address.houseArea}, ${order.address.area}`
-          : order.address.houseArea,
-        landmark: order.address.landmark || undefined,
+        address: consigneeAddress,
         city: order.address.city,
         state: order.address.state,
         pincode: order.address.pincode,
-        instructions: order.address.deliveryInstructions || undefined,
       },
-      items: order.orderItems.map((item) => ({
-        sku: item.productId,
-        name: item.product?.name,
-        quantity: item.quantity,
-        unit_price: item.price,
-      })),
-      weight: totalWeightKg,
+      products_desc: productsDesc || 'General merchandise',
+      quantity: totalQuantity,
+      total_amount: order.total,
+      weight_kg: totalWeightKg,
     });
   } catch (error) {
     // The order was confirmed (and, for COD, its stock reserved) already —
     // this can still fail here if the address's pincode has since drifted
-    // out of Ekart's coverage between confirmation and this manual
+    // out of Delhivery's coverage between confirmation and this manual
     // shipment-creation step (order.service.js's detectAddressConflict only
     // checks at confirmation time, not continuously). Surfaced as a clean
-    // 422 naming the actual cause rather than a raw 500 with Ekart's
+    // 422 naming the actual cause rather than a raw 500 with Delhivery's
     // internal error text, so an admin retrying this knows to fix the
-    // address (or that Ekart itself is unavailable) rather than guessing.
-    if (looksLikeInvalidPincodeError(error) || error.statusCode === 422) {
+    // address (or that Delhivery itself is unavailable) rather than
+    // guessing.
+    if (error.statusCode === 422) {
       throw new CustomError(
-        `Could not create shipment — Ekart no longer services this address's pincode (${order.address.pincode}).`,
+        `Could not create shipment — Delhivery no longer services this address's pincode (${order.address.pincode}).`,
         422
       );
     }
     throw new CustomError(
-      'Could not create shipment with Ekart right now. Please try again in a moment.',
+      'Could not create shipment with Delhivery right now. Please try again in a moment.',
       error.isTimeout ? 503 : error.statusCode >= 500 ? 503 : 502
+    );
+  }
+
+  const createdPackage = delhiveryResponse?.packages?.[0];
+  if (!delhiveryResponse?.success || createdPackage?.status !== 'Success') {
+    throw new CustomError(
+      `Could not create shipment with Delhivery: ${createdPackage?.remarks?.join?.(', ') || 'unknown error'}`,
+      422
     );
   }
 
   const shipment = await prisma.shipment.create({
     data: {
       orderId: order.id,
-      trackingId: ekartResponse?.tracking_id ?? ekartResponse?.awb_number,
-      awbNumber: ekartResponse?.awb_number,
+      trackingId: createdPackage.waybill,
+      awbNumber: createdPackage.waybill,
+      // Set explicitly rather than relying on the Prisma schema's
+      // @default("Delhivery") — confirmed live that the schema default
+      // alone silently doesn't take effect until `prisma generate` is
+      // re-run (a plain `prisma db push --skip-generate`, as this app's
+      // own e2e:db:push script uses, does NOT regenerate the client), so
+      // a real shipment was created with courierPartner still reading
+      // "Ekart" despite the schema already saying "Delhivery".
+      courierPartner: 'Delhivery',
       status: 'CREATED',
       paymentMode,
       codAmount,
-      pickupLocationCode: EKART_PICKUP_LOCATION_CODE,
-      estimatedDeliveryDate: extractEstimatedDeliveryDate(ekartResponse),
-      raw: ekartResponse,
+      pickupLocationCode: DELHIVERY_PICKUP_LOCATION_NAME,
+      estimatedDeliveryDate: null,
+      raw: delhiveryResponse,
     },
   });
 
@@ -524,7 +512,7 @@ exports.createShipmentForOrder = async (orderId) => {
 };
 
 /**
- * Fetch the latest status for an order's shipment, polling Ekart and
+ * Fetch the latest status for an order's shipment, polling Delhivery and
  * refreshing our own record. Restricted to the order's owner or an admin.
  */
 exports.trackOrderShipment = async (orderId, requestingUser) => {
@@ -545,25 +533,36 @@ exports.trackOrderShipment = async (orderId, requestingUser) => {
   }
 
   if (!shipment.trackingId) {
-    // Shipment record exists but Ekart hasn't returned a tracking ID yet —
+    // Shipment record exists but Delhivery hasn't returned a waybill yet —
     // nothing to poll for.
     return shipment;
   }
 
-  const tracking = await ekartClient.trackShipment(shipment.trackingId);
-  const status = mapEkartStatus(tracking?.status_code ?? tracking?.status);
+  if (TERMINAL_SHIPMENT_STATUSES.includes(shipment.status)) {
+    // Already final — see TERMINAL_SHIPMENT_STATUSES' own comment on why
+    // this must never poll and overwrite a terminal record.
+    return shipment;
+  }
+
+  const tracking = await delhiveryClient.trackShipment(shipment.trackingId);
+  // Delhivery nests the actual shipment status under
+  // ShipmentData[0].Shipment — see DelhiveryClient.trackShipment /
+  // mapDelhiveryStatus's own header note on confidence level.
+  const trackedShipment = tracking?.ShipmentData?.[0]?.Shipment;
+  const status = mapDelhiveryStatus(trackedShipment?.Status?.Status);
   // A later poll can carry a revised ETA (e.g. after a delay in transit) —
   // only overwrite the stored estimate when this poll actually gave us
   // something to update it with, so a tracking payload that's silent on
   // timing (most in-transit pings) doesn't wipe out the estimate that was
   // set at shipment-creation time.
-  const updatedEstimate = extractEstimatedDeliveryDate(tracking);
+  const updatedEstimate = extractEstimatedDeliveryDate(trackedShipment);
 
   const updated = await prisma.shipment.update({
     where: { orderId },
     data: {
       status,
-      lastLocation: tracking?.current_location ?? shipment.lastLocation,
+      lastLocation:
+        trackedShipment?.Status?.StatusLocation ?? shipment.lastLocation,
       estimatedDeliveryDate: updatedEstimate ?? shipment.estimatedDeliveryDate,
       lastSyncedAt: new Date(),
       raw: tracking,
@@ -596,17 +595,34 @@ exports.cancelOrderShipment = async (orderId, requestingUser, reason) => {
     throw new CustomError('No shipment found for this order', 404);
   }
 
-  if (['DELIVERED', 'RTO_DELIVERED', 'CANCELLED'].includes(shipment.status)) {
+  if (TERMINAL_SHIPMENT_STATUSES.includes(shipment.status)) {
     throw new CustomError(
       `Cannot cancel a shipment that is already '${shipment.status}'`,
       400
     );
   }
 
+  // reason isn't sent to Delhivery — its edit/cancel endpoint's payload
+  // has no cancellation-reason field, unlike the earlier, unverified
+  // Ekart assumption. Kept as a param (and still recorded nowhere yet —
+  // same as before) since it's part of this function's existing public
+  // contract, used only for the log line below.
   if (shipment.trackingId) {
-    await ekartClient.cancelShipment(
-      shipment.trackingId,
-      reason || 'Customer requested cancellation'
+    // { status: true/false, remark } — a false status (confirmed live:
+    // e.g. cancelling an already-cancelled shipment, or one Delhivery
+    // otherwise won't let go of) is Delhivery declining the cancellation,
+    // not a network/API error — must not be treated as success, or our
+    // own record would claim CANCELLED while the real shipment (and any
+    // physical pickup) is still active.
+    const result = await delhiveryClient.cancelShipment(shipment.trackingId);
+    if (!result?.status) {
+      throw new CustomError(
+        `Delhivery declined to cancel this shipment: ${result?.remark || 'unknown reason'}`,
+        422
+      );
+    }
+    logger.info(
+      `[shipping] Cancelled Delhivery shipment ${shipment.trackingId} for order ${orderId}: ${reason || 'Customer requested cancellation'}`
     );
   }
 
@@ -623,13 +639,23 @@ exports.cancelOrderShipment = async (orderId, requestingUser, reason) => {
 };
 
 /**
- * Apply a verified Ekart webhook event to our shipment + order records.
- * Same reconciliation role as payment.service.js's handleRazorpayWebhookEvent:
- * runs independently of whether/when the client polls /track, and is safe
- * to receive more than once for the same event.
+ * Apply a verified Delhivery webhook event to our shipment + order
+ * records. Same reconciliation role as payment.service.js's
+ * handleRazorpayWebhookEvent: runs independently of whether/when the
+ * client polls /track, and is safe to receive more than once for the
+ * same event.
+ *
+ * Delhivery doesn't publish one universal webhook payload spec the way
+ * Razorpay does (see DelhiveryClient.verifyWebhookSignature's note) — this
+ * assumes the payload carries the same nested Shipment/Status shape as the
+ * tracking API's response (a reasonable assumption for a status-push
+ * webhook from the same provider), falling back to a bare top-level shape
+ * if not. Confirm against the real payload once webhooks are configured
+ * for this account; shipment status stays accurate via polling either way.
  */
-exports.handleEkartWebhookEvent = async (payload) => {
-  const trackingId = payload?.tracking_id ?? payload?.awb_number;
+exports.handleDelhiveryWebhookEvent = async (payload) => {
+  const trackedShipment = payload?.Shipment ?? payload;
+  const trackingId = trackedShipment?.AWB;
   if (!trackingId) {
     // Nothing to reconcile against — ack and ignore.
     return;
@@ -638,19 +664,27 @@ exports.handleEkartWebhookEvent = async (payload) => {
   const shipment = await prisma.shipment.findUnique({ where: { trackingId } });
   if (!shipment) {
     logger.warn(
-      `[shipping] Webhook received for unknown tracking ID: ${trackingId}`
+      `[shipping] Webhook received for unknown waybill: ${trackingId}`
     );
     return;
   }
 
-  const status = mapEkartStatus(payload?.status_code ?? payload?.status);
-  const updatedEstimate = extractEstimatedDeliveryDate(payload);
+  if (TERMINAL_SHIPMENT_STATUSES.includes(shipment.status)) {
+    // Already final — see TERMINAL_SHIPMENT_STATUSES' own comment. A
+    // late-arriving or out-of-order webhook must not revive a terminal
+    // record either.
+    return;
+  }
+
+  const status = mapDelhiveryStatus(trackedShipment?.Status?.Status);
+  const updatedEstimate = extractEstimatedDeliveryDate(trackedShipment);
 
   await prisma.shipment.update({
     where: { trackingId },
     data: {
       status,
-      lastLocation: payload?.current_location ?? shipment.lastLocation,
+      lastLocation:
+        trackedShipment?.Status?.StatusLocation ?? shipment.lastLocation,
       estimatedDeliveryDate: updatedEstimate ?? shipment.estimatedDeliveryDate,
       lastSyncedAt: new Date(),
       raw: payload,

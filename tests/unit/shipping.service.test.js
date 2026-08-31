@@ -1,9 +1,9 @@
-// Ekart client: never hit the network. Mocked via the same relative path
-// shipping.service.js itself uses to require it — Jest matches mocks by
-// resolved absolute path, so this lines up regardless of the differing
+// Delhivery client: never hit the network. Mocked via the same relative
+// path shipping.service.js itself uses to require it — Jest matches mocks
+// by resolved absolute path, so this lines up regardless of the differing
 // relative path string from this test file. Same pattern as
 // payment.service.test.js mocking clearCartQueue.
-jest.mock('../../src/services/external/EkartClient', () => ({
+jest.mock('../../src/services/external/DelhiveryClient', () => ({
   checkServiceability: jest.fn(),
   createShipment: jest.fn(),
   trackShipment: jest.fn(),
@@ -24,7 +24,7 @@ jest.mock('@config/prisma', () => ({
   shipment: mockShipment,
 }));
 
-const ekartClient = require('../../src/services/external/EkartClient');
+const delhiveryClient = require('../../src/services/external/DelhiveryClient');
 const shippingService = require('@modules/shipping/shipping.service');
 const logger = require('@config/logger');
 
@@ -53,6 +53,11 @@ const baseOrder = {
   ],
 };
 
+const createdPackage = (overrides = {}) => ({
+  success: true,
+  packages: [{ waybill: 'AWB123', status: 'Success', ...overrides }],
+});
+
 beforeEach(() => {
   jest.clearAllMocks();
 });
@@ -72,72 +77,32 @@ describe('getDeliveryConfig', () => {
 });
 
 describe('checkServiceability', () => {
-  it('normalizes the Ekart response into a stable shape, including a computed delivery date', async () => {
-    ekartClient.checkServiceability.mockResolvedValue({
-      is_serviceable: true,
-      sla_days: 3,
-      cod_available: true,
-    });
-
-    const before = Date.now();
-    const result = await shippingService.checkServiceability({
-      destinationPincode: '400001',
-      paymentMode: 'COD',
-    });
-    const after = Date.now();
-
-    expect(result).toMatchObject({
+  it('normalizes a serviceable Delhivery response into a stable shape', async () => {
+    delhiveryClient.checkServiceability.mockResolvedValue({
       serviceable: true,
-      reason: null,
-      estimatedDays: 3,
+      recognized: true,
       codAvailable: true,
     });
-    expect(result.estimatedDeliveryDate).toBeInstanceOf(Date);
-    // Roughly "3 days from now" — bounded rather than asserting an exact
-    // timestamp, since addDays() reads the current time internally.
-    const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
-    expect(result.estimatedDeliveryDate.getTime()).toBeGreaterThanOrEqual(
-      before + THREE_DAYS_MS - 1000
-    );
-    expect(result.estimatedDeliveryDate.getTime()).toBeLessThanOrEqual(
-      after + THREE_DAYS_MS + 1000
-    );
-  });
-
-  it('defaults to not serviceable when the fields are missing, with no delivery date to show', async () => {
-    ekartClient.checkServiceability.mockResolvedValue({});
 
     const result = await shippingService.checkServiceability({
       destinationPincode: '400001',
     });
 
     expect(result).toEqual({
-      serviceable: false,
-      reason: 'AREA_NOT_COVERED',
+      serviceable: true,
+      reason: null,
       estimatedDays: null,
       estimatedDeliveryDate: null,
+      codAvailable: true,
+    });
+  });
+
+  it('reports INVALID_PINCODE (not a generic error) when Delhivery does not recognize the pincode', async () => {
+    delhiveryClient.checkServiceability.mockResolvedValue({
+      serviceable: false,
+      recognized: false,
       codAvailable: false,
     });
-  });
-
-  it('withholds a delivery date for a serviceable pincode with no day-count SLA', async () => {
-    ekartClient.checkServiceability.mockResolvedValue({
-      is_serviceable: true,
-      cod_available: false,
-    });
-
-    const result = await shippingService.checkServiceability({
-      destinationPincode: '400001',
-    });
-
-    expect(result.estimatedDays).toBeNull();
-    expect(result.estimatedDeliveryDate).toBeNull();
-  });
-
-  it('reports INVALID_PINCODE (not a generic error) when Ekart says the pincode is unrecognized', async () => {
-    const ekartError = new Error('Invalid pincode supplied');
-    ekartError.statusCode = 400;
-    ekartClient.checkServiceability.mockRejectedValue(ekartError);
 
     const result = await shippingService.checkServiceability({
       destinationPincode: '999999',
@@ -152,20 +117,22 @@ describe('checkServiceability', () => {
     });
   });
 
-  it('throws a 503 (not a generic 500) when Ekart times out rather than giving a real answer', async () => {
-    const timeoutError = new Error('Ekart API request timed out after 8000ms');
+  it('throws a 503 (not a generic 500) when Delhivery times out rather than giving a real answer', async () => {
+    const timeoutError = new Error(
+      'Delhivery API request timed out after 8000ms'
+    );
     timeoutError.isTimeout = true;
-    ekartClient.checkServiceability.mockRejectedValue(timeoutError);
+    delhiveryClient.checkServiceability.mockRejectedValue(timeoutError);
 
     await expect(
       shippingService.checkServiceability({ destinationPincode: '400001' })
     ).rejects.toMatchObject({ statusCode: 503 });
   });
 
-  it('throws a 503 when Ekart errors in a way that does not match the invalid-pincode heuristic', async () => {
+  it('throws a 503 when Delhivery errors for any other reason', async () => {
     const serverError = new Error('Internal Server Error');
     serverError.statusCode = 500;
-    ekartClient.checkServiceability.mockRejectedValue(serverError);
+    delhiveryClient.checkServiceability.mockRejectedValue(serverError);
 
     await expect(
       shippingService.checkServiceability({ destinationPincode: '400001' })
@@ -175,9 +142,10 @@ describe('checkServiceability', () => {
 
 describe('checkDeliveryEligibility', () => {
   it('passes through a definitive serviceable result', async () => {
-    ekartClient.checkServiceability.mockResolvedValue({
-      is_serviceable: true,
-      cod_available: true,
+    delhiveryClient.checkServiceability.mockResolvedValue({
+      serviceable: true,
+      recognized: true,
+      codAvailable: true,
     });
 
     const result = await shippingService.checkDeliveryEligibility({
@@ -191,8 +159,10 @@ describe('checkDeliveryEligibility', () => {
   });
 
   it('passes through a definitive not-serviceable result so callers can block on it', async () => {
-    ekartClient.checkServiceability.mockResolvedValue({
-      is_serviceable: false,
+    delhiveryClient.checkServiceability.mockResolvedValue({
+      serviceable: false,
+      recognized: false,
+      codAvailable: false,
     });
 
     const result = await shippingService.checkDeliveryEligibility({
@@ -200,13 +170,13 @@ describe('checkDeliveryEligibility', () => {
     });
 
     expect(result.serviceable).toBe(false);
-    expect(result.reason).toBe('AREA_NOT_COVERED');
+    expect(result.reason).toBe('INVALID_PINCODE');
   });
 
   it('fails open (does not block) when the check itself could not get an answer, under the default policy', async () => {
     const timeoutError = new Error('timed out');
     timeoutError.isTimeout = true;
-    ekartClient.checkServiceability.mockRejectedValue(timeoutError);
+    delhiveryClient.checkServiceability.mockRejectedValue(timeoutError);
     const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
 
     const result = await shippingService.checkDeliveryEligibility({
@@ -228,14 +198,14 @@ describe('checkDeliveryEligibility', () => {
 
 // SHIPPING_SERVICEABILITY_FALLBACK_POLICY=fail_closed — a separate describe
 // block that loads its own fresh copy of shipping.service.js (and its
-// EkartClient mock) under the overridden env var, rather than sharing the
-// module instance the rest of this file uses, since the policy is read
+// DelhiveryClient mock) under the overridden env var, rather than sharing
+// the module instance the rest of this file uses, since the policy is read
 // once at require time (see src/config/env.js / shipping.service.js's own
 // top-of-file require). Same isolated-reload pattern as
 // env.deliveryPricing.test.js.
 describe('checkDeliveryEligibility — SHIPPING_SERVICEABILITY_FALLBACK_POLICY=fail_closed', () => {
   const ORIGINAL_ENV = { ...process.env };
-  let ekartClientFailClosed;
+  let delhiveryClientFailClosed;
   let shippingServiceFailClosed;
   let loggerFailClosed;
 
@@ -243,7 +213,7 @@ describe('checkDeliveryEligibility — SHIPPING_SERVICEABILITY_FALLBACK_POLICY=f
     jest.resetModules();
     process.env.SHIPPING_SERVICEABILITY_FALLBACK_POLICY = 'fail_closed';
 
-    jest.doMock('../../src/services/external/EkartClient', () => ({
+    jest.doMock('../../src/services/external/DelhiveryClient', () => ({
       checkServiceability: jest.fn(),
       createShipment: jest.fn(),
       trackShipment: jest.fn(),
@@ -257,7 +227,7 @@ describe('checkDeliveryEligibility — SHIPPING_SERVICEABILITY_FALLBACK_POLICY=f
     }));
 
     // eslint-disable-next-line global-require
-    ekartClientFailClosed = require('../../src/services/external/EkartClient');
+    delhiveryClientFailClosed = require('../../src/services/external/DelhiveryClient');
     // eslint-disable-next-line global-require
     shippingServiceFailClosed = require('@modules/shipping/shipping.service');
     // jest.resetModules() above means shipping.service.js's own internal
@@ -277,7 +247,9 @@ describe('checkDeliveryEligibility — SHIPPING_SERVICEABILITY_FALLBACK_POLICY=f
   it('blocks (serviceable: false, reason CHECK_UNAVAILABLE) when the check could not get an answer', async () => {
     const timeoutError = new Error('timed out');
     timeoutError.isTimeout = true;
-    ekartClientFailClosed.checkServiceability.mockRejectedValue(timeoutError);
+    delhiveryClientFailClosed.checkServiceability.mockRejectedValue(
+      timeoutError
+    );
     const warnSpy = jest
       .spyOn(loggerFailClosed, 'warn')
       .mockImplementation(() => {});
@@ -299,9 +271,10 @@ describe('checkDeliveryEligibility — SHIPPING_SERVICEABILITY_FALLBACK_POLICY=f
   });
 
   it('still passes through a definitive answer unchanged (policy only governs the failure path)', async () => {
-    ekartClientFailClosed.checkServiceability.mockResolvedValue({
-      is_serviceable: true,
-      cod_available: true,
+    delhiveryClientFailClosed.checkServiceability.mockResolvedValue({
+      serviceable: true,
+      recognized: true,
+      codAvailable: true,
     });
 
     const result = await shippingServiceFailClosed.checkDeliveryEligibility({
@@ -326,7 +299,7 @@ describe('checkServiceability — pincode format', () => {
     [undefined, 'missing entirely'],
     [null, 'null'],
   ])(
-    'rejects %s (%s) as INVALID_FORMAT without calling Ekart',
+    'rejects %s (%s) as INVALID_FORMAT without calling Delhivery',
     async (badPincode) => {
       const result = await shippingService.checkServiceability({
         destinationPincode: badPincode,
@@ -339,22 +312,32 @@ describe('checkServiceability — pincode format', () => {
         estimatedDeliveryDate: null,
         codAvailable: false,
       });
-      expect(ekartClient.checkServiceability).not.toHaveBeenCalled();
+      expect(delhiveryClient.checkServiceability).not.toHaveBeenCalled();
     }
   );
 
-  it('proceeds to call Ekart for a well-formed pincode', async () => {
-    ekartClient.checkServiceability.mockResolvedValue({ is_serviceable: true });
+  it('proceeds to call Delhivery for a well-formed pincode', async () => {
+    delhiveryClient.checkServiceability.mockResolvedValue({
+      serviceable: true,
+      recognized: true,
+      codAvailable: false,
+    });
 
     await shippingService.checkServiceability({ destinationPincode: '400001' });
 
-    expect(ekartClient.checkServiceability).toHaveBeenCalled();
+    expect(delhiveryClient.checkServiceability).toHaveBeenCalledWith({
+      destinationPincode: '400001',
+    });
   });
 });
 
 describe('checkServiceability — normalized pricing contract (subtotal)', () => {
   it('omits deliveryCharge/freeDeliveryThreshold/freeDeliveryEligible when no subtotal is given', async () => {
-    ekartClient.checkServiceability.mockResolvedValue({ is_serviceable: true });
+    delhiveryClient.checkServiceability.mockResolvedValue({
+      serviceable: true,
+      recognized: true,
+      codAvailable: false,
+    });
 
     const result = await shippingService.checkServiceability({
       destinationPincode: '400001',
@@ -370,9 +353,10 @@ describe('checkServiceability — normalized pricing contract (subtotal)', () =>
       FREE_DELIVERY_THRESHOLD,
       DELIVERY_CHARGE,
     } = require('@constants/pricing');
-    ekartClient.checkServiceability.mockResolvedValue({
-      is_serviceable: true,
-      cod_available: true,
+    delhiveryClient.checkServiceability.mockResolvedValue({
+      serviceable: true,
+      recognized: true,
+      codAvailable: true,
     });
 
     const belowThreshold = await shippingService.checkServiceability({
@@ -422,7 +406,7 @@ describe('createShipmentForOrder', () => {
     ).rejects.toMatchObject({
       statusCode: 404,
     });
-    expect(ekartClient.createShipment).not.toHaveBeenCalled();
+    expect(delhiveryClient.createShipment).not.toHaveBeenCalled();
   });
 
   it("throws a 400 if the order isn't confirmed yet", async () => {
@@ -433,10 +417,10 @@ describe('createShipmentForOrder', () => {
     ).rejects.toMatchObject({
       statusCode: 400,
     });
-    expect(ekartClient.createShipment).not.toHaveBeenCalled();
+    expect(delhiveryClient.createShipment).not.toHaveBeenCalled();
   });
 
-  it('is idempotent — returns the existing shipment without calling Ekart again', async () => {
+  it('is idempotent — returns the existing shipment without calling Delhivery again', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue({
       id: 'shipment_1',
@@ -446,44 +430,44 @@ describe('createShipmentForOrder', () => {
     const result = await shippingService.createShipmentForOrder('order_1');
 
     expect(result.alreadyProcessed).toBe(true);
-    expect(ekartClient.createShipment).not.toHaveBeenCalled();
+    expect(delhiveryClient.createShipment).not.toHaveBeenCalled();
     expect(mockShipment.create).not.toHaveBeenCalled();
   });
 
-  it('creates a shipment with Ekart, persists it, and marks the order shipped', async () => {
+  it('creates a shipment with Delhivery, persists it, and marks the order shipped', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue(null);
-    ekartClient.createShipment.mockResolvedValue({
-      tracking_id: 'EKT123',
-      awb_number: 'AWB123',
-      estimated_delivery_days: 4,
-    });
+    delhiveryClient.createShipment.mockResolvedValue(createdPackage());
     mockShipment.create.mockResolvedValue({
       id: 'shipment_1',
       orderId: 'order_1',
-      trackingId: 'EKT123',
+      trackingId: 'AWB123',
     });
 
     const result = await shippingService.createShipmentForOrder('order_1');
 
     expect(result.alreadyProcessed).toBe(false);
-    expect(ekartClient.createShipment).toHaveBeenCalledWith(
+    expect(delhiveryClient.createShipment).toHaveBeenCalledWith(
       expect.objectContaining({
         order_id: 'order_1',
         payment_mode: 'PREPAID',
         cod_amount: 0,
         consignee: expect.objectContaining({ pincode: '400001' }),
-        weight: 0.6, // 0.3kg * quantity 2
+        weight_kg: 0.6, // 0.3kg * quantity 2
       })
     );
     expect(mockShipment.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           orderId: 'order_1',
-          trackingId: 'EKT123',
+          trackingId: 'AWB123',
           awbNumber: 'AWB123',
+          // Regression guard: confirmed live that the Prisma schema's
+          // @default("Delhivery") alone does NOT take effect without
+          // re-running `prisma generate` — must be set explicitly here.
+          courierPartner: 'Delhivery',
           status: 'CREATED',
-          estimatedDeliveryDate: expect.any(Date),
+          estimatedDeliveryDate: null,
         }),
       })
     );
@@ -499,22 +483,23 @@ describe('createShipmentForOrder', () => {
       paymentStatus: 'cod_pending',
     });
     mockShipment.findUnique.mockResolvedValue(null);
-    ekartClient.createShipment.mockResolvedValue({ tracking_id: 'EKT123' });
+    delhiveryClient.createShipment.mockResolvedValue(createdPackage());
     mockShipment.create.mockResolvedValue({ id: 'shipment_1' });
 
     await shippingService.createShipmentForOrder('order_1');
 
-    expect(ekartClient.createShipment).toHaveBeenCalledWith(
+    expect(delhiveryClient.createShipment).toHaveBeenCalledWith(
       expect.objectContaining({ payment_mode: 'COD', cod_amount: 999 })
     );
   });
 
-  it('surfaces a clean 422 (not a raw Ekart error) if the pincode has fallen out of coverage since the order was confirmed', async () => {
+  it('surfaces a clean 422 if Delhivery reports the package could not be created', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue(null);
-    const ekartError = new Error('Invalid pincode');
-    ekartError.statusCode = 400;
-    ekartClient.createShipment.mockRejectedValue(ekartError);
+    delhiveryClient.createShipment.mockResolvedValue({
+      success: true,
+      packages: [{ status: 'Fail', remarks: ['Pincode not serviceable'] }],
+    });
 
     await expect(
       shippingService.createShipmentForOrder('order_1')
@@ -524,12 +509,27 @@ describe('createShipmentForOrder', () => {
     expect(mockShipment.create).not.toHaveBeenCalled();
   });
 
-  it('surfaces a 503 if Ekart is unreachable while creating the shipment', async () => {
+  it('surfaces a clean 422 (not a raw Delhivery error) if the pincode has fallen out of coverage since the order was confirmed', async () => {
+    mockOrder.findUnique.mockResolvedValue(baseOrder);
+    mockShipment.findUnique.mockResolvedValue(null);
+    const delhiveryError = new Error('Invalid pincode');
+    delhiveryError.statusCode = 422;
+    delhiveryClient.createShipment.mockRejectedValue(delhiveryError);
+
+    await expect(
+      shippingService.createShipmentForOrder('order_1')
+    ).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockShipment.create).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a 503 if Delhivery is unreachable while creating the shipment', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue(null);
     const timeoutError = new Error('timed out');
     timeoutError.isTimeout = true;
-    ekartClient.createShipment.mockRejectedValue(timeoutError);
+    delhiveryClient.createShipment.mockRejectedValue(timeoutError);
 
     await expect(
       shippingService.createShipmentForOrder('order_1')
@@ -543,6 +543,10 @@ describe('trackOrderShipment', () => {
   const requestingOwner = { userId: 'user_1', role: 'customer' };
   const requestingOther = { userId: 'someone_else', role: 'customer' };
   const requestingAdmin = { userId: 'admin_1', role: 'admin' };
+
+  const trackingResponse = (status, extra = {}) => ({
+    ShipmentData: [{ Shipment: { Status: { Status: status }, ...extra } }],
+  });
 
   it('throws a 404 if the order does not exist', async () => {
     mockOrder.findUnique.mockResolvedValue(null);
@@ -565,10 +569,12 @@ describe('trackOrderShipment', () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue({
       orderId: 'order_1',
-      trackingId: 'EKT123',
+      trackingId: 'AWB123',
       status: 'CREATED',
     });
-    ekartClient.trackShipment.mockResolvedValue({ status: 'IN_TRANSIT' });
+    delhiveryClient.trackShipment.mockResolvedValue(
+      trackingResponse('In Transit')
+    );
     mockShipment.update.mockResolvedValue({
       orderId: 'order_1',
       status: 'IN_TRANSIT',
@@ -591,7 +597,7 @@ describe('trackOrderShipment', () => {
     ).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it('returns the shipment as-is if Ekart has not yet returned a tracking id', async () => {
+  it('returns the shipment as-is if Delhivery has not yet returned a waybill', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue({
       orderId: 'order_1',
@@ -609,20 +615,50 @@ describe('trackOrderShipment', () => {
       trackingId: null,
       status: 'CREATED',
     });
-    expect(ekartClient.trackShipment).not.toHaveBeenCalled();
+    expect(delhiveryClient.trackShipment).not.toHaveBeenCalled();
   });
 
-  it('polls Ekart, updates the shipment, and syncs the order to delivered', async () => {
+  it.each(['CANCELLED', 'DELIVERED', 'RTO_DELIVERED'])(
+    'never polls Delhivery (or overwrites the record) once the shipment is already %s',
+    async (terminalStatus) => {
+      // Regression guard: confirmed live that Delhivery's own tracking API
+      // reports a cancelled-before-pickup shipment as "Not Picked" (which
+      // maps to CREATED), which would otherwise silently revive a terminal
+      // record on the very next poll.
+      mockOrder.findUnique.mockResolvedValue(baseOrder);
+      mockShipment.findUnique.mockResolvedValue({
+        orderId: 'order_1',
+        trackingId: 'AWB123',
+        status: terminalStatus,
+      });
+
+      const result = await shippingService.trackOrderShipment(
+        'order_1',
+        requestingOwner
+      );
+
+      expect(result).toEqual({
+        orderId: 'order_1',
+        trackingId: 'AWB123',
+        status: terminalStatus,
+      });
+      expect(delhiveryClient.trackShipment).not.toHaveBeenCalled();
+      expect(mockShipment.update).not.toHaveBeenCalled();
+    }
+  );
+
+  it('polls Delhivery, updates the shipment, and syncs the order to delivered', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue({
       orderId: 'order_1',
-      trackingId: 'EKT123',
+      trackingId: 'AWB123',
       status: 'OUT_FOR_DELIVERY',
     });
-    ekartClient.trackShipment.mockResolvedValue({
-      status: 'DELIVERED',
-      current_location: 'Mumbai Hub',
-    });
+    delhiveryClient.trackShipment.mockResolvedValue(
+      trackingResponse('Delivered', {
+        Status: { Status: 'Delivered', StatusLocation: 'Mumbai Hub' },
+      })
+    );
     mockShipment.update.mockResolvedValue({
       orderId: 'order_1',
       status: 'DELIVERED',
@@ -643,13 +679,15 @@ describe('trackOrderShipment', () => {
     });
   });
 
-  it('does not touch the order for a non-terminal status like IN_TRANSIT', async () => {
+  it('does not touch the order for a non-terminal status like In Transit', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue({
       orderId: 'order_1',
-      trackingId: 'EKT123',
+      trackingId: 'AWB123',
     });
-    ekartClient.trackShipment.mockResolvedValue({ status: 'IN_TRANSIT' });
+    delhiveryClient.trackShipment.mockResolvedValue(
+      trackingResponse('In Transit')
+    );
     mockShipment.update.mockResolvedValue({
       orderId: 'order_1',
       status: 'IN_TRANSIT',
@@ -665,11 +703,13 @@ describe('trackOrderShipment', () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue({
       orderId: 'order_1',
-      trackingId: 'EKT123',
+      trackingId: 'AWB123',
       status: 'IN_TRANSIT',
       estimatedDeliveryDate: existingEstimate,
     });
-    ekartClient.trackShipment.mockResolvedValue({ status: 'IN_TRANSIT' });
+    delhiveryClient.trackShipment.mockResolvedValue(
+      trackingResponse('In Transit')
+    );
     mockShipment.update.mockResolvedValue({
       orderId: 'order_1',
       status: 'IN_TRANSIT',
@@ -689,14 +729,15 @@ describe('trackOrderShipment', () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue({
       orderId: 'order_1',
-      trackingId: 'EKT123',
+      trackingId: 'AWB123',
       status: 'IN_TRANSIT',
       estimatedDeliveryDate: new Date('2026-08-20T00:00:00.000Z'),
     });
-    ekartClient.trackShipment.mockResolvedValue({
-      status: 'IN_TRANSIT',
-      expected_delivery_date: '2026-08-25T00:00:00.000Z',
-    });
+    delhiveryClient.trackShipment.mockResolvedValue(
+      trackingResponse('In Transit', {
+        ExpectedDeliveryDate: '2026-08-25T00:00:00.000Z',
+      })
+    );
     mockShipment.update.mockResolvedValue({
       orderId: 'order_1',
       status: 'IN_TRANSIT',
@@ -743,15 +784,20 @@ describe('cancelOrderShipment', () => {
     await expect(
       shippingService.cancelOrderShipment('order_1', requestingOwner)
     ).rejects.toMatchObject({ statusCode: 400 });
-    expect(ekartClient.cancelShipment).not.toHaveBeenCalled();
+    expect(delhiveryClient.cancelShipment).not.toHaveBeenCalled();
   });
 
-  it('cancels with Ekart and updates both the shipment and the order', async () => {
+  it('cancels with Delhivery and updates both the shipment and the order', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue({
       orderId: 'order_1',
-      trackingId: 'EKT123',
+      trackingId: 'AWB123',
       status: 'CREATED',
+    });
+    delhiveryClient.cancelShipment.mockResolvedValue({
+      status: true,
+      waybill: 'AWB123',
+      remark: 'Shipment has been cancelled.',
     });
     mockShipment.update.mockResolvedValue({
       orderId: 'order_1',
@@ -764,10 +810,7 @@ describe('cancelOrderShipment', () => {
       'Changed my mind'
     );
 
-    expect(ekartClient.cancelShipment).toHaveBeenCalledWith(
-      'EKT123',
-      'Changed my mind'
-    );
+    expect(delhiveryClient.cancelShipment).toHaveBeenCalledWith('AWB123');
     expect(mockShipment.update).toHaveBeenCalledWith({
       where: { orderId: 'order_1' },
       data: { status: 'CANCELLED' },
@@ -779,7 +822,28 @@ describe('cancelOrderShipment', () => {
     expect(result.status).toBe('CANCELLED');
   });
 
-  it('skips the Ekart call if no tracking id was ever assigned', async () => {
+  it('throws a 422 (and never marks CANCELLED) when Delhivery declines the cancellation', async () => {
+    // Confirmed live: cancelling an already-cancelled shipment (or one
+    // Delhivery otherwise won't release) returns status:false, not an
+    // error — must not be silently treated as success.
+    mockOrder.findUnique.mockResolvedValue(baseOrder);
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      trackingId: 'AWB123',
+      status: 'CREATED',
+    });
+    delhiveryClient.cancelShipment.mockResolvedValue({
+      status: false,
+      waybill: 'AWB123',
+    });
+
+    await expect(
+      shippingService.cancelOrderShipment('order_1', requestingOwner)
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(mockShipment.update).not.toHaveBeenCalled();
+  });
+
+  it('skips the Delhivery call if no tracking id was ever assigned', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue({
       orderId: 'order_1',
@@ -793,24 +857,26 @@ describe('cancelOrderShipment', () => {
 
     await shippingService.cancelOrderShipment('order_1', requestingOwner);
 
-    expect(ekartClient.cancelShipment).not.toHaveBeenCalled();
+    expect(delhiveryClient.cancelShipment).not.toHaveBeenCalled();
   });
 });
 
-describe('handleEkartWebhookEvent', () => {
-  it('ignores events with no tracking id (nothing to reconcile)', async () => {
-    await shippingService.handleEkartWebhookEvent({ status: 'DELIVERED' });
+describe('handleDelhiveryWebhookEvent', () => {
+  it('ignores events with no AWB (nothing to reconcile)', async () => {
+    await shippingService.handleDelhiveryWebhookEvent({
+      Status: { Status: 'Delivered' },
+    });
 
     expect(mockShipment.findUnique).not.toHaveBeenCalled();
   });
 
-  it('warns and no-ops on a tracking id it does not recognize', async () => {
+  it('warns and no-ops on an AWB it does not recognize', async () => {
     mockShipment.findUnique.mockResolvedValue(null);
     const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
 
-    await shippingService.handleEkartWebhookEvent({
-      tracking_id: 'UNKNOWN',
-      status: 'DELIVERED',
+    await shippingService.handleDelhiveryWebhookEvent({
+      AWB: 'UNKNOWN',
+      Status: { Status: 'Delivered' },
     });
 
     expect(mockShipment.update).not.toHaveBeenCalled();
@@ -818,10 +884,26 @@ describe('handleEkartWebhookEvent', () => {
     warnSpy.mockRestore();
   });
 
+  it('ignores a webhook event for a shipment that is already terminal (CANCELLED)', async () => {
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      trackingId: 'AWB123',
+      status: 'CANCELLED',
+    });
+
+    await shippingService.handleDelhiveryWebhookEvent({
+      AWB: 'AWB123',
+      Status: { Status: 'Not Picked' },
+    });
+
+    expect(mockShipment.update).not.toHaveBeenCalled();
+    expect(mockOrder.update).not.toHaveBeenCalled();
+  });
+
   it('updates the shipment and syncs the order on a recognized delivery event', async () => {
     mockShipment.findUnique.mockResolvedValue({
       orderId: 'order_1',
-      trackingId: 'EKT123',
+      trackingId: 'AWB123',
       status: 'OUT_FOR_DELIVERY',
     });
     mockShipment.update.mockResolvedValue({
@@ -829,14 +911,13 @@ describe('handleEkartWebhookEvent', () => {
       status: 'DELIVERED',
     });
 
-    await shippingService.handleEkartWebhookEvent({
-      tracking_id: 'EKT123',
-      status: 'DELIVERED',
-      current_location: 'Mumbai Hub',
+    await shippingService.handleDelhiveryWebhookEvent({
+      AWB: 'AWB123',
+      Status: { Status: 'Delivered', StatusLocation: 'Mumbai Hub' },
     });
 
     expect(mockShipment.update).toHaveBeenCalledWith({
-      where: { trackingId: 'EKT123' },
+      where: { trackingId: 'AWB123' },
       data: expect.objectContaining({ status: 'DELIVERED' }),
     });
     expect(mockOrder.update).toHaveBeenCalledWith({
@@ -845,24 +926,45 @@ describe('handleEkartWebhookEvent', () => {
     });
   });
 
-  it('maps an RTO_DELIVERED event to a returned order', async () => {
+  it('maps an RTO Delivered event to a returned order', async () => {
     mockShipment.findUnique.mockResolvedValue({
       orderId: 'order_1',
-      trackingId: 'EKT123',
+      trackingId: 'AWB123',
     });
     mockShipment.update.mockResolvedValue({
       orderId: 'order_1',
       status: 'RTO_DELIVERED',
     });
 
-    await shippingService.handleEkartWebhookEvent({
-      tracking_id: 'EKT123',
-      status: 'RTO_DELIVERED',
+    await shippingService.handleDelhiveryWebhookEvent({
+      AWB: 'AWB123',
+      Status: { Status: 'RTO Delivered' },
     });
 
     expect(mockOrder.update).toHaveBeenCalledWith({
       where: { id: 'order_1' },
       data: { status: 'returned' },
+    });
+  });
+
+  it('also accepts a payload nested under Shipment (assumed webhook shape)', async () => {
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      trackingId: 'AWB123',
+      status: 'OUT_FOR_DELIVERY',
+    });
+    mockShipment.update.mockResolvedValue({
+      orderId: 'order_1',
+      status: 'DELIVERED',
+    });
+
+    await shippingService.handleDelhiveryWebhookEvent({
+      Shipment: { AWB: 'AWB123', Status: { Status: 'Delivered' } },
+    });
+
+    expect(mockShipment.update).toHaveBeenCalledWith({
+      where: { trackingId: 'AWB123' },
+      data: expect.objectContaining({ status: 'DELIVERED' }),
     });
   });
 });

@@ -12,7 +12,7 @@ exports.validateServiceabilityCheck = [
     // digit-count shape and would pass a leading-zero value ('012345')
     // that isn't a real Indian PIN code; this route now rejects that
     // exactly like the address form already does, rather than sending it
-    // on to Ekart to answer for us.
+    // on to Delhivery to answer for us.
     .matches(INDIAN_PINCODE_REGEX)
     .withMessage('Enter a valid 6-digit Indian pincode'),
 

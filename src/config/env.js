@@ -64,7 +64,7 @@ const deliveryCharge = parseNonNegativeNumber(
 );
 
 // --- Shipping-check fallback policy (optional) ------------------------------
-// What to do when the carrier (Ekart) serviceability check itself fails to
+// What to do when the carrier (Delhivery) serviceability check itself fails to
 // answer at all — times out, network error, 5xx — at the one call site
 // where that answer gates whether an order can actually be placed (see
 // shipping.service.js's checkDeliveryEligibility, called from

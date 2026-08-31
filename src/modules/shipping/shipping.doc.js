@@ -2,7 +2,7 @@
  * @swagger
  * tags:
  *   - name: Shipping
- *     description: Ekart Logistics shipping operations (serviceability, shipment creation, tracking, cancellation)
+ *     description: Delhivery shipping operations (serviceability, shipment creation, tracking, cancellation)
  */
 
 /**
@@ -47,7 +47,7 @@
  *     tags:
  *       - Shipping
  *     summary: Check pincode serviceability + delivery estimate
- *     description: Public endpoint used on product/checkout pages to check if Ekart delivers to a pincode before an order exists.
+ *     description: Public endpoint used on product/checkout pages to check if Delhivery delivers to a pincode before an order exists.
  *     requestBody:
  *       required: true
  *       content:
@@ -98,27 +98,33 @@
  *                         Why `serviceable` is false — null when it's true.
  *                         INVALID_FORMAT means the pincode is empty or not
  *                         even shaped like a 6-digit Indian pincode (checked
- *                         locally, without calling Ekart — this normally
+ *                         locally, without calling Delhivery — this normally
  *                         can't happen via this route since the request body
  *                         is already validated to 422 first, but the same
  *                         check runs server-side wherever serviceability is
  *                         checked, including internal callers that skip this
- *                         route). INVALID_PINCODE means the pincode is
- *                         well-formed but Ekart doesn't recognize it at all.
- *                         AREA_NOT_COVERED means it's a real pincode Ekart
- *                         just doesn't deliver to (yet).
+ *                         route). INVALID_PINCODE means Delhivery's pincode
+ *                         lookup returns no entry for it at all.
+ *                         AREA_NOT_COVERED is currently unreachable for
+ *                         Delhivery (see shipping.service.js's own comment
+ *                         on this reason).
  *                     estimatedDays:
  *                       type: integer
  *                       nullable: true
+ *                       description: >
+ *                         Always null — Delhivery's pincode-lookup API
+ *                         doesn't return an SLA day-count. A real estimate
+ *                         only becomes available once a shipment exists and
+ *                         has been tracked at least once.
  *                     estimatedDeliveryDate:
  *                       type: string
  *                       format: date-time
  *                       nullable: true
  *                       description: >
- *                         Concrete delivery-by date derived from estimatedDays
- *                         (or an explicit date from Ekart, once confirmed) —
- *                         null when the pincode isn't serviceable.
- *                       example: "2026-08-15T00:00:00.000Z"
+ *                         Always null from this endpoint for the same
+ *                         reason as estimatedDays — see above. Populated
+ *                         later on the Shipment record itself once
+ *                         GET /{orderId}/track has polled Delhivery.
  *                     codAvailable:
  *                       type: boolean
  *                     deliveryCharge:
@@ -135,7 +141,7 @@
  *       422:
  *         description: Validation failed (malformed pincode — not 6 digits)
  *       503:
- *         description: Could not reach Ekart to check serviceability right now — try again shortly
+ *         description: Could not reach Delhivery to check serviceability right now — try again shortly
  */
 
 /**
@@ -145,7 +151,7 @@
  *     tags:
  *       - Shipping
  *     summary: Create a shipment for a confirmed order
- *     description: Manually triggers shipment creation with Ekart for an order that's already confirmed. Idempotent — calling it again for an order that already has a shipment returns the existing one.
+ *     description: Manually triggers shipment creation with Delhivery for an order that's already confirmed. Idempotent — calling it again for an order that already has a shipment returns the existing one.
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -173,11 +179,10 @@
  *       - Shipping
  *     summary: Get the latest tracking status for an order's shipment
  *     description: >
- *       Polls Ekart for the latest status and refreshes our own record.
- *       Accessible to the order's owner or an admin. The returned Shipment
- *       includes `estimatedDeliveryDate` (set when the shipment was created,
- *       and refreshed here if Ekart returns a revised one) whenever the
- *       backend has one to show.
+ *       Polls Delhivery for the latest status and refreshes our own
+ *       record. Accessible to the order's owner or an admin. The returned
+ *       Shipment includes `estimatedDeliveryDate` once Delhivery's
+ *       tracking response has reported one — null until then.
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -237,20 +242,22 @@
  *   post:
  *     tags:
  *       - Shipping
- *     summary: Ekart shipment status webhook (server-to-server)
+ *     summary: Delhivery shipment status webhook (server-to-server)
  *     description: >
- *       Called by Ekart, not the frontend. Verified via an HMAC signature
- *       header (scheme TBD — confirm against Ekart's webhook docs) rather
- *       than a user JWT. Reconciles shipment + order status independently
- *       of whether the client ever calls GET /track. Configure this URL in
- *       your Ekart dashboard's webhook settings.
+ *       Called by Delhivery, not the frontend. Verified via an HMAC
+ *       signature header (name/scheme TBD — confirm with Delhivery's
+ *       integration team once webhook delivery is configured for this
+ *       account) rather than a user JWT. Reconciles shipment + order
+ *       status independently of whether the client ever calls GET /track
+ *       (which already polls Delhivery live and is this app's actual
+ *       source of truth either way).
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
- *             description: Ekart status event payload (tracking_id/awb_number, status_code, current_location, ...)
+ *             description: Delhivery status event payload (assumed to mirror the tracking API's nested Shipment/Status shape — see shipping.service.js's handleDelhiveryWebhookEvent)
  *     responses:
  *       200:
  *         description: Event received and applied

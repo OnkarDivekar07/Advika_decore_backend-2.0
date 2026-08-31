@@ -39,7 +39,7 @@ const SENSITIVE_HEADER_NAMES = new Set([
   'proxy-authorization',
   'x-api-key',
   'x-razorpay-signature',
-  'x-ekart-signature',
+  'x-delhivery-signature',
 ]);
 
 // Matches by substring so this also catches variants like `otpCode`,

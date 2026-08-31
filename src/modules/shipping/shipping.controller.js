@@ -1,15 +1,15 @@
 const shippingService = require('./shipping.service');
-const ekartClient = require('../../services/external/EkartClient');
+const delhiveryClient = require('../../services/external/DelhiveryClient');
 const CustomError = require('@utils/customError');
 
-// Carrier isolation boundary: `raw` on a Shipment record is Ekart's last
-// unprocessed API/webhook payload, kept on our own row purely for internal
-// debugging (see prisma/schema.prisma's comment on Shipment.raw) — every
-// field the frontend actually needs (status, trackingId, lastLocation,
-// estimatedDeliveryDate, ...) is already normalized onto the record
-// itself. Stripped here, at the response boundary, so Ekart's raw
-// field names/shapes never reach the client even if EkartClient.js's own
-// response shape changes later.
+// Carrier isolation boundary: `raw` on a Shipment record is Delhivery's
+// last unprocessed API/webhook payload, kept on our own row purely for
+// internal debugging (see prisma/schema.prisma's comment on Shipment.raw)
+// — every field the frontend actually needs (status, trackingId,
+// lastLocation, estimatedDeliveryDate, ...) is already normalized onto the
+// record itself. Stripped here, at the response boundary, so Delhivery's
+// raw field names/shapes never reach the client even if
+// DelhiveryClient.js's own response shape changes later.
 function toPublicShipment(shipment) {
   if (!shipment) return shipment;
   const { raw, ...publicShipment } = shipment;
@@ -101,27 +101,35 @@ exports.cancelShipment = async (req, res, next) => {
   }
 };
 
-// 🔔 Ekart webhook — the source of truth for shipment status, mirroring how
-// payment.controller.js's razorpayWebhook works. Fires from Ekart's servers
-// whenever a shipment's status actually changes, independent of whether the
-// frontend ever calls GET /track.
-exports.ekartWebhook = async (req, res, next) => {
+// 🔔 Delhivery webhook — the source of truth for shipment status, mirroring
+// how payment.controller.js's razorpayWebhook works. Fires from Delhivery's
+// servers whenever a shipment's status actually changes, independent of
+// whether the frontend ever calls GET /track.
+exports.delhiveryWebhook = async (req, res, next) => {
   try {
-    const signature = req.headers['x-ekart-signature']; // TODO: confirm actual header name from Ekart's webhook docs
+    // Delhivery doesn't publish one universal webhook signature header the
+    // way Razorpay does — this name is a placeholder pending confirmation
+    // with Delhivery's integration team once webhook delivery is actually
+    // configured for this account (see DelhiveryClient.verifyWebhookSignature's
+    // note; shipment status stays accurate via polling either way).
+    const signature = req.headers['x-delhivery-signature'];
 
     if (!req.rawBody) {
       throw new CustomError('Missing request body', 400);
     }
 
-    const isValid = ekartClient.verifyWebhookSignature(req.rawBody, signature);
+    const isValid = delhiveryClient.verifyWebhookSignature(
+      req.rawBody,
+      signature
+    );
     if (!isValid) {
       throw new CustomError('Invalid webhook signature', 400);
     }
 
-    await shippingService.handleEkartWebhookEvent(req.body);
+    await shippingService.handleDelhiveryWebhookEvent(req.body);
 
-    // Ack fast with a 2xx so Ekart doesn't keep retrying — we've already
-    // applied the update.
+    // Ack fast with a 2xx so Delhivery doesn't keep retrying — we've
+    // already applied the update.
     res.status(200).json({ received: true });
   } catch (error) {
     next(error);
