@@ -1,5 +1,6 @@
 const prisma = require('@config/prisma');
 const redis = require('@config/redis');
+const logger = require('@config/logger');
 const CustomError = require('@utils/customError');
 const {
   calculateDeliveryCharge,
@@ -10,6 +11,7 @@ const {
   isPendingPaymentOrderId,
 } = require('@constants/payment');
 const shippingService = require('@modules/shipping/shipping.service');
+const inventoryService = require('@modules/inventory/inventory.service');
 
 // See src/constants/payment.js's own comment for the full story: every
 // order is given a per-order-unique payment_order_id placeholder at
@@ -908,4 +910,77 @@ exports.fetchOrderById = async (id) => {
     ...sanitizeOrder(order),
     shipment: shipment || null,
   };
+};
+
+// Order statuses a customer can still self-cancel from — before anything
+// has physically shipped. 'shipped'/'delivered'/'returned' all require
+// the admin's existing shipment-cancellation flow (POST
+// /api/shipping/:orderId/cancel) instead, since a courier may already be
+// involved. 'pending' is included for forward-compatibility (no code path
+// actually sets it today — every real order moves draft -> confirmed
+// directly, see updateOrderAfterPayment/handleCODOrder) but is a harmless
+// inclusion if that ever changes.
+const CUSTOMER_CANCELLABLE_ORDER_STATUSES = ['pending', 'confirmed'];
+
+/**
+ * Lets a customer cancel their own order themselves — restricted to COD
+ * orders that haven't shipped yet. There is no refund flow anywhere in
+ * this app (see prisma/schema.prisma's PaymentStatus.refunded comment),
+ * so an order that was actually paid for online is deliberately NOT
+ * self-cancellable here — the customer is told to contact support, rather
+ * than the app accepting a cancellation it has no way to honor with
+ * money back. Admins already have a separate, working cancellation path
+ * (shipping.service.js's cancelOrderShipment) for orders that need it
+ * after a shipment exists.
+ */
+exports.cancelOrderByCustomer = async (orderId, userId, reason) => {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: {
+      id: true,
+      userId: true,
+      status: true,
+      paymentStatus: true,
+      orderItems: { select: { productId: true, quantity: true } },
+    },
+  });
+
+  if (!order) {
+    throw new CustomError('Order not found', 404);
+  }
+  if (order.userId !== userId) {
+    throw new CustomError('Not authorized to cancel this order', 403);
+  }
+  if (order.status === 'cancelled') {
+    throw new CustomError('This order is already cancelled', 400);
+  }
+  if (!CUSTOMER_CANCELLABLE_ORDER_STATUSES.includes(order.status)) {
+    throw new CustomError(
+      `This order can no longer be cancelled here (status: '${order.status}') — please contact support.`,
+      400
+    );
+  }
+  if (order.paymentStatus !== 'cod_pending') {
+    throw new CustomError(
+      'This order was already paid online — please contact support to cancel it and arrange a refund.',
+      400
+    );
+  }
+
+  // Best-effort: an order that reached 'confirmed' always had its stock
+  // decremented at that same step (see updateOrderAfterPayment/
+  // handleCODOrder), so restoring it here is always the correct action
+  // for every status this function allows past the checks above.
+  await inventoryService.restoreStockForOrder(order.orderItems);
+
+  const updated = await prisma.order.update({
+    where: { id: orderId },
+    data: { status: 'cancelled' },
+  });
+
+  logger.info(
+    `[order] Order ${orderId} cancelled by customer ${userId}${reason ? `: ${reason}` : ''}`
+  );
+
+  return updated;
 };

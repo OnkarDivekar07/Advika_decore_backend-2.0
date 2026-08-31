@@ -21,6 +21,7 @@ jest.mock('@modules/order/order.service', () => ({
   getUserOrderHistory: jest.fn(),
   getAllOrders: jest.fn(),
   fetchOrderById: jest.fn(),
+  cancelOrderByCustomer: jest.fn(),
 }));
 
 const mockAddress = { findUnique: jest.fn() };
@@ -569,5 +570,98 @@ describe('GET /api/order/:id', () => {
 
     expect(res.status).toBe(200);
     expect(orderService.fetchOrderById).toHaveBeenCalledWith(VALID_ORDER_ID);
+  });
+});
+
+describe('POST /api/order/:id/cancel', () => {
+  it('422s when the id is not a valid ObjectId', async () => {
+    const res = await request(app)
+      .post('/api/order/not-an-object-id/cancel')
+      .set('x-role', 'customer');
+
+    expect(res.status).toBe(422);
+    expect(orderService.cancelOrderByCustomer).not.toHaveBeenCalled();
+  });
+
+  it('422s when reason exceeds the length cap', async () => {
+    const res = await request(app)
+      .post(`/api/order/${VALID_ORDER_ID}/cancel`)
+      .set('x-role', 'customer')
+      .send({ reason: 'x'.repeat(501) });
+
+    expect(res.status).toBe(422);
+    expect(orderService.cancelOrderByCustomer).not.toHaveBeenCalled();
+  });
+
+  it('200s and calls the service with the requesting user id and reason', async () => {
+    orderService.cancelOrderByCustomer.mockResolvedValue({
+      id: VALID_ORDER_ID,
+      status: 'cancelled',
+    });
+
+    const res = await request(app)
+      .post(`/api/order/${VALID_ORDER_ID}/cancel`)
+      .set('x-user-id', 'user_1')
+      .set('x-role', 'customer')
+      .send({ reason: 'Changed my mind' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.message).toBe('Order cancelled successfully');
+    expect(res.body.data.status).toBe('cancelled');
+    expect(orderService.cancelOrderByCustomer).toHaveBeenCalledWith(
+      VALID_ORDER_ID,
+      'user_1',
+      'Changed my mind'
+    );
+  });
+
+  it('works with no reason provided at all', async () => {
+    orderService.cancelOrderByCustomer.mockResolvedValue({
+      id: VALID_ORDER_ID,
+      status: 'cancelled',
+    });
+
+    const res = await request(app)
+      .post(`/api/order/${VALID_ORDER_ID}/cancel`)
+      .set('x-user-id', 'user_1')
+      .set('x-role', 'customer')
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(orderService.cancelOrderByCustomer).toHaveBeenCalledWith(
+      VALID_ORDER_ID,
+      'user_1',
+      undefined
+    );
+  });
+
+  it('propagates a 403 from the service when the requester does not own the order', async () => {
+    orderService.cancelOrderByCustomer.mockRejectedValue(
+      new CustomError('Not authorized to cancel this order', 403)
+    );
+
+    const res = await request(app)
+      .post(`/api/order/${VALID_ORDER_ID}/cancel`)
+      .set('x-role', 'customer')
+      .send({});
+
+    expect(res.status).toBe(403);
+  });
+
+  it('propagates a 400 (contact support) from the service for a paid-online order', async () => {
+    orderService.cancelOrderByCustomer.mockRejectedValue(
+      new CustomError(
+        'This order was already paid online — please contact support to cancel it and arrange a refund.',
+        400
+      )
+    );
+
+    const res = await request(app)
+      .post(`/api/order/${VALID_ORDER_ID}/cancel`)
+      .set('x-role', 'customer')
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/contact support/i);
   });
 });

@@ -9,7 +9,7 @@ const mockOrder = {
 };
 const mockOrderItem = { deleteMany: jest.fn(), create: jest.fn() };
 const mockAddress = { findUnique: jest.fn() };
-const mockProduct = { findUnique: jest.fn() };
+const mockProduct = { findUnique: jest.fn(), updateMany: jest.fn() };
 const mockShipment = { findMany: jest.fn(), findUnique: jest.fn() };
 const mockPrisma = {
   cart: mockCart,
@@ -81,6 +81,8 @@ beforeEach(() => {
   mockOrderItem.create.mockReset();
   mockAddress.findUnique.mockReset();
   mockProduct.findUnique.mockReset();
+  mockProduct.updateMany.mockReset();
+  mockProduct.updateMany.mockResolvedValue({ count: 1 });
   mockShipment.findMany.mockReset();
   mockShipment.findUnique.mockReset();
   mockPrisma.$transaction.mockClear();
@@ -1392,5 +1394,103 @@ describe('fetchOrderById', () => {
     expect(result.total).toBe(order.total);
     expect(result.payment_id).toBe(order.payment_id);
     expect(result.payment_order_id).toBe(order.payment_order_id);
+  });
+});
+
+describe('cancelOrderByCustomer', () => {
+  const codOrder = (overrides = {}) => ({
+    id: 'order_1',
+    userId: 'user_1',
+    status: 'confirmed',
+    paymentStatus: 'cod_pending',
+    orderItems: [
+      { productId: 'prod_1', quantity: 2 },
+      { productId: 'prod_2', quantity: 1 },
+    ],
+    ...overrides,
+  });
+
+  it('throws a 404 if the order does not exist', async () => {
+    mockOrder.findUnique.mockResolvedValue(null);
+
+    await expect(
+      orderService.cancelOrderByCustomer('order_1', 'user_1')
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("throws a 403 if the requester doesn't own the order", async () => {
+    mockOrder.findUnique.mockResolvedValue(codOrder());
+
+    await expect(
+      orderService.cancelOrderByCustomer('order_1', 'someone_else')
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(mockProduct.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('throws a 400 if the order is already cancelled', async () => {
+    mockOrder.findUnique.mockResolvedValue(codOrder({ status: 'cancelled' }));
+
+    await expect(
+      orderService.cancelOrderByCustomer('order_1', 'user_1')
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(mockProduct.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each(['shipped', 'delivered', 'returned'])(
+    'throws a 400 (contact support) once the order is already %s',
+    async (status) => {
+      mockOrder.findUnique.mockResolvedValue(codOrder({ status }));
+
+      await expect(
+        orderService.cancelOrderByCustomer('order_1', 'user_1')
+      ).rejects.toMatchObject({ statusCode: 400 });
+      expect(mockProduct.updateMany).not.toHaveBeenCalled();
+    }
+  );
+
+  it('throws a 400 (contact support) for an order that was paid online, even if not yet shipped', async () => {
+    mockOrder.findUnique.mockResolvedValue(codOrder({ paymentStatus: 'paid' }));
+
+    await expect(
+      orderService.cancelOrderByCustomer('order_1', 'user_1')
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(mockProduct.updateMany).not.toHaveBeenCalled();
+    expect(mockOrder.update).not.toHaveBeenCalled();
+  });
+
+  it('cancels a confirmed COD order, restores stock for every line item, and marks it cancelled', async () => {
+    const order = codOrder();
+    mockOrder.findUnique.mockResolvedValue(order);
+    mockOrder.update.mockResolvedValue({ ...order, status: 'cancelled' });
+
+    const result = await orderService.cancelOrderByCustomer(
+      'order_1',
+      'user_1',
+      'Changed my mind'
+    );
+
+    expect(mockProduct.updateMany).toHaveBeenCalledWith({
+      where: { id: 'prod_1' },
+      data: { stock: { increment: 2 } },
+    });
+    expect(mockProduct.updateMany).toHaveBeenCalledWith({
+      where: { id: 'prod_2' },
+      data: { stock: { increment: 1 } },
+    });
+    expect(mockOrder.update).toHaveBeenCalledWith({
+      where: { id: 'order_1' },
+      data: { status: 'cancelled' },
+    });
+    expect(result.status).toBe('cancelled');
+  });
+
+  it('also allows cancelling from status "pending" (forward-compat, even though nothing sets it today)', async () => {
+    mockOrder.findUnique.mockResolvedValue(codOrder({ status: 'pending' }));
+    mockOrder.update.mockResolvedValue(codOrder({ status: 'cancelled' }));
+
+    await expect(
+      orderService.cancelOrderByCustomer('order_1', 'user_1')
+    ).resolves.toMatchObject({ status: expect.any(String) });
+    expect(mockOrder.update).toHaveBeenCalled();
   });
 });

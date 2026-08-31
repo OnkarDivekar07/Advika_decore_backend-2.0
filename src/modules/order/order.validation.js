@@ -85,6 +85,24 @@ const validateOrderIdParam = [
     .withMessage('Invalid MongoDB ObjectId format'),
 ];
 
+// POST /api/orders/:id/cancel — the id param is validated the same way as
+// every other :id route (validateOrderIdParam); `reason` is optional and
+// only ever used for the log line in order.service.js's
+// cancelOrderByCustomer, never shown back to the customer or any other
+// user, so it's length-capped purely as input hygiene, not sanitized for
+// display.
+const validateCancelOrder = [
+  ...validateOrderIdParam,
+  body('reason')
+    .optional({ nullable: true, checkFalsy: true })
+    .isString()
+    .withMessage('reason must be a string')
+    .bail()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage('reason is too long'),
+];
+
 // GET /api/orders/all (Admin) — the order workbench's list query. Every
 // filter here is optional; an admin with no filters selected still gets a
 // paginated (never unbounded) list — see order.service.js's
@@ -170,6 +188,7 @@ module.exports = {
   validateOrderHistoryQuery,
   validateOrderIdParam,
   validateOrderListQuery,
+  validateCancelOrder,
   ADMIN_ORDER_STATUSES,
   ADMIN_PAYMENT_STATUSES,
   MAX_BUY_NOW_QUANTITY,

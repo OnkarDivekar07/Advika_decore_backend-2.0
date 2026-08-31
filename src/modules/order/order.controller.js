@@ -126,6 +126,27 @@ exports.getOrders = async (req, res, next) => {
   }
 };
 
+// POST /api/orders/:id/cancel
+// Customer self-service cancellation — see order.service.js's
+// cancelOrderByCustomer for exactly which orders qualify (COD, not yet
+// shipped) and why (no refund flow exists for paid orders).
+exports.cancelOrder = async (req, res, next) => {
+  const { id } = req.params;
+  const { userId } = req.user;
+  const { reason } = req.body;
+
+  try {
+    const order = await orderService.cancelOrderByCustomer(id, userId, reason);
+
+    res.sendResponse({
+      message: 'Order cancelled successfully',
+      data: order,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // GET /api/order/:id
 // Owner-or-admin: any authenticated customer can fetch their own order by id
 // (needed for the order-confirmation/success page — see

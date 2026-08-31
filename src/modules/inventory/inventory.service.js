@@ -56,6 +56,26 @@ exports.decrementStockForOrder = async (
 };
 
 /**
+ * Reverses decrementStockForOrder — used when a confirmed order is
+ * cancelled (see order.service.js's cancelOrderByCustomer) so the stock it
+ * reserved isn't permanently lost. Unlike the decrement, there's no
+ * "insufficient" case to guard against — incrementing stock back up can
+ * never fail the way subtracting from it can, so this is a plain
+ * best-effort increment per item, no conditional WHERE needed.
+ *
+ * @param {Array<{ productId: string, quantity: number }>} orderItems
+ * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} [client]
+ */
+exports.restoreStockForOrder = async (orderItems, client = prisma) => {
+  for (const item of orderItems) {
+    await client.product.updateMany({
+      where: { id: item.productId },
+      data: { stock: { increment: item.quantity } },
+    });
+  }
+};
+
+/**
  * Fetches the current stock for a single product — used by the admin
  * inventory endpoints (not the order/payment flow, which reads stock as
  * part of the atomic decrement above instead of a separate lookup).
