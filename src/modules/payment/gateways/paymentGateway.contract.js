@@ -20,7 +20,8 @@
  *     - `order_id` is deliberately snake_case — it mirrors this app's own
  *       Order.payment_order_id and every existing call site in
  *       payment.service.js/payment.controller.js that reads it.
- *   Webhook (from parseWebhookEvent): { eventType, payment: Payment|null }
+ *   Refund:  { id, payment_id, status, amount, raw }
+ *   Webhook (from parseWebhookEvent): { eventType, payment: Payment|null, refund: Refund|null }
  *
  * `raw` is always the untouched provider response, kept only for
  * logging/debugging — callers should never need to read fields off it;
@@ -51,9 +52,36 @@
  *   order/payment id pair was actually signed by the gateway.
  * @property {(rawBody: Buffer, signature: string) => boolean} verifyWebhookSignature
  *   Same constant-time expectation, over the exact raw request bytes.
- * @property {(body: Object) => { eventType: string|null, payment: Object|null }} parseWebhookEvent
+ * @property {(body: Object) => { eventType: string|null, payment: Object|null, refund: Object|null }} parseWebhookEvent
  *   Turns a provider's raw (already signature-verified) webhook body into
- *   the normalized { eventType, payment } shape above.
+ *   the normalized { eventType, payment, refund } shape above. `refund` is
+ *   only ever non-null for the provider's refund-lifecycle events (e.g.
+ *   Razorpay's `refund.processed`/`refund.failed`) — every other event
+ *   type leaves it null, same as `payment` does for non-payment events.
+ * @property {(args: { paymentId: string, amount?: number, notes?: Object }) => Promise<Object>} refundPayment
+ *   Initiates a refund against a captured payment — omit `amount` for a
+ *   full refund (the common case; this app only ever refunds a whole
+ *   order, never a partial line-item amount). Throws on failure — callers
+ *   are expected to wrap this themselves (see payment.service.js's
+ *   refundOrderPayment). Resolving successfully only means the refund was
+ *   *initiated*; refunds are asynchronous on Razorpay's side, so the
+ *   authoritative "did it actually complete" answer is the
+ *   `refund.processed`/`refund.failed` webhook, not this call's response
+ *   — see prisma/schema.prisma's PaymentStatus.refund_pending comment.
+ * @property {(paymentId: string, refundId: string) => Promise<Object|null>} fetchRefund
+ *   Never throws; resolves null on any failure (unrecognized id, network
+ *   error), same reasoning as fetchOrder/fetchPayment. Used only by
+ *   reconcileUnresolvedRefunds (payment.service.js) — the direct-poll
+ *   backstop for a refund whose outcome the webhook never got to record
+ *   locally (see prisma/schema.prisma's RefundAttempt model for why that
+ *   gap exists and what this closes).
+ * @property {(paymentId: string) => Promise<Array<Object>>} fetchRefundsForPayment
+ *   Never throws; resolves [] on any failure. Only used by
+ *   reconcileUnresolvedRefunds for the rarer case where even the real
+ *   Razorpay refundId never made it into a RefundAttempt row (a second,
+ *   independent write failure right after the first) — this app never
+ *   issues a second real refund against an order still sitting at 'paid',
+ *   so there is at most one real result to find this way.
  */
 
 const REQUIRED_METHODS = [
@@ -64,6 +92,9 @@ const REQUIRED_METHODS = [
   'verifyPaymentSignature',
   'verifyWebhookSignature',
   'parseWebhookEvent',
+  'refundPayment',
+  'fetchRefund',
+  'fetchRefundsForPayment',
 ];
 
 /**

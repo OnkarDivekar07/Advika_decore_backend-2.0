@@ -299,3 +299,55 @@ describe('errorHandler — stack trace exposure by environment', () => {
     expect(res.body.stack).toBeUndefined();
   });
 });
+
+describe('errorHandler — raw (non-CustomError) message exposure by environment', () => {
+  // Fixes a real leak found via the real E2E concurrency spec: a raw
+  // Prisma P2034 error's own message includes the exact server file path
+  // and line number that threw. A CustomError's message is deliberately
+  // authored for an end user (see the describe block above — it always
+  // shows, in every environment); a raw, unexpected error's message never
+  // was, and should only ever reach a client during local development.
+  const buildRawThrowingApp = () => {
+    const app = express();
+    app.use(responseMiddleware);
+    app.get('/boom', (req, res, next) => {
+      next(new Error('Invalid `tx.order.create()` invocation in C:\\app\\order.service.js:462:37'));
+    });
+    app.use(errorHandler);
+    return app;
+  };
+
+  const originalEnv = process.env.NODE_ENV;
+  afterEach(() => {
+    process.env.NODE_ENV = originalEnv;
+  });
+
+  it('never leaks a raw error message in production — only the generic fallback', async () => {
+    process.env.NODE_ENV = 'production';
+    const app = buildRawThrowingApp();
+
+    const res = await request(app).get('/boom');
+
+    expect(res.status).toBe(500);
+    expect(res.body.message).toBe('Something went wrong');
+    expect(res.body.message).not.toContain('order.service.js');
+  });
+
+  it('never leaks a raw error message in test env either (defaults to prod-safe)', async () => {
+    process.env.NODE_ENV = 'test';
+    const app = buildRawThrowingApp();
+
+    const res = await request(app).get('/boom');
+
+    expect(res.body.message).toBe('Something went wrong');
+  });
+
+  it('shows the real raw error message only in development, for debugging', async () => {
+    process.env.NODE_ENV = 'development';
+    const app = buildRawThrowingApp();
+
+    const res = await request(app).get('/boom');
+
+    expect(res.body.message).toContain('order.service.js');
+  });
+});

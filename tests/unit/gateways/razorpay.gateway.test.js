@@ -248,6 +248,7 @@ describe('razorpay.gateway', () => {
           amount: 50000,
           raw: expect.objectContaining({ id: 'pay_1' }),
         },
+        refund: null,
       });
     });
 
@@ -257,7 +258,142 @@ describe('razorpay.gateway', () => {
         payload: {},
       });
 
-      expect(result).toEqual({ eventType: 'order.paid', payment: null });
+      expect(result).toEqual({ eventType: 'order.paid', payment: null, refund: null });
+    });
+
+    it('extracts the normalized refund entity for a refund-lifecycle event', () => {
+      const result = razorpayGateway.parseWebhookEvent({
+        event: 'refund.processed',
+        payload: {
+          refund: {
+            entity: {
+              id: 'rfnd_1',
+              payment_id: 'pay_1',
+              status: 'processed',
+              amount: 50000,
+            },
+          },
+        },
+      });
+
+      expect(result).toEqual({
+        eventType: 'refund.processed',
+        payment: null,
+        refund: {
+          id: 'rfnd_1',
+          payment_id: 'pay_1',
+          status: 'processed',
+          amount: 50000,
+          raw: expect.objectContaining({ id: 'rfnd_1' }),
+        },
+      });
+    });
+  });
+
+  describe('refundPayment', () => {
+    it('initiates a full refund (no amount field) when none is given', async () => {
+      razorpayInstance.payments.refund = jest.fn().mockResolvedValue({
+        id: 'rfnd_1',
+        payment_id: 'pay_1',
+        status: 'processed',
+        amount: 50000,
+      });
+
+      const result = await razorpayGateway.refundPayment({ paymentId: 'pay_1' });
+
+      expect(razorpayInstance.payments.refund).toHaveBeenCalledWith('pay_1', {});
+      expect(result).toEqual({
+        id: 'rfnd_1',
+        payment_id: 'pay_1',
+        status: 'processed',
+        amount: 50000,
+        raw: expect.objectContaining({ id: 'rfnd_1' }),
+      });
+    });
+
+    it('passes notes through when a reason is given', async () => {
+      razorpayInstance.payments.refund = jest.fn().mockResolvedValue({
+        id: 'rfnd_2',
+        payment_id: 'pay_2',
+        status: 'processed',
+        amount: 1000,
+      });
+
+      await razorpayGateway.refundPayment({
+        paymentId: 'pay_2',
+        notes: { reason: 'Customer requested cancellation' },
+      });
+
+      expect(razorpayInstance.payments.refund).toHaveBeenCalledWith('pay_2', {
+        notes: { reason: 'Customer requested cancellation' },
+      });
+    });
+
+    it('propagates a rejection from the gateway rather than swallowing it', async () => {
+      razorpayInstance.payments.refund = jest
+        .fn()
+        .mockRejectedValue(new Error('refund amount exceeds payment amount'));
+
+      await expect(
+        razorpayGateway.refundPayment({ paymentId: 'pay_3' })
+      ).rejects.toThrow('refund amount exceeds payment amount');
+    });
+  });
+
+  describe('fetchRefund', () => {
+    it('normalizes a found refund', async () => {
+      razorpayInstance.payments.fetchRefund = jest.fn().mockResolvedValue({
+        id: 'rfnd_1',
+        payment_id: 'pay_1',
+        status: 'processed',
+        amount: 50000,
+      });
+
+      const result = await razorpayGateway.fetchRefund('pay_1', 'rfnd_1');
+
+      expect(razorpayInstance.payments.fetchRefund).toHaveBeenCalledWith('pay_1', 'rfnd_1');
+      expect(result).toEqual({
+        id: 'rfnd_1',
+        payment_id: 'pay_1',
+        status: 'processed',
+        amount: 50000,
+        raw: expect.objectContaining({ id: 'rfnd_1' }),
+      });
+    });
+
+    it('resolves null instead of throwing on failure', async () => {
+      razorpayInstance.payments.fetchRefund = jest.fn().mockRejectedValue(new Error('not found'));
+
+      await expect(razorpayGateway.fetchRefund('pay_1', 'missing')).resolves.toBeNull();
+    });
+  });
+
+  describe('fetchRefundsForPayment', () => {
+    it('normalizes each refund in the list', async () => {
+      razorpayInstance.payments.fetchMultipleRefund = jest.fn().mockResolvedValue({
+        items: [{ id: 'rfnd_1', payment_id: 'pay_1', status: 'processed', amount: 50000 }],
+      });
+
+      const result = await razorpayGateway.fetchRefundsForPayment('pay_1');
+
+      expect(razorpayInstance.payments.fetchMultipleRefund).toHaveBeenCalledWith('pay_1');
+      expect(result).toEqual([
+        {
+          id: 'rfnd_1',
+          payment_id: 'pay_1',
+          status: 'processed',
+          amount: 50000,
+          raw: expect.objectContaining({ id: 'rfnd_1' }),
+        },
+      ]);
+    });
+
+    it('resolves [] instead of throwing on failure', async () => {
+      razorpayInstance.payments.fetchMultipleRefund = jest
+        .fn()
+        .mockRejectedValue(new Error('network down'));
+
+      await expect(razorpayGateway.fetchRefundsForPayment('pay_1')).resolves.toEqual([]);
     });
   });
 });

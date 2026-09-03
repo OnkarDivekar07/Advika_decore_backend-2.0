@@ -2,6 +2,7 @@ const prisma = require('@config/prisma');
 const redis = require('@config/redis');
 const logger = require('@config/logger');
 const CustomError = require('@utils/customError');
+const withTransactionRetry = require('@utils/withTransactionRetry');
 const {
   calculateDeliveryCharge,
   calculateDiscount,
@@ -313,7 +314,7 @@ exports.createDraftOrderService = async (
   }
 
   try {
-    return await prisma.$transaction(async (tx) => {
+    return await withTransactionRetry(async (tx) => {
       let cartItems;
 
       if (buyNowItem) {
@@ -912,26 +913,31 @@ exports.fetchOrderById = async (id) => {
   };
 };
 
-// Order statuses a customer can still self-cancel from — before anything
+// Order statuses an order can still be cancelled from — before anything
 // has physically shipped. 'shipped'/'delivered'/'returned' all require
 // the admin's existing shipment-cancellation flow (POST
 // /api/shipping/:orderId/cancel) instead, since a courier may already be
 // involved. 'pending' is included for forward-compatibility (no code path
 // actually sets it today — every real order moves draft -> confirmed
 // directly, see updateOrderAfterPayment/handleCODOrder) but is a harmless
-// inclusion if that ever changes.
-const CUSTOMER_CANCELLABLE_ORDER_STATUSES = ['pending', 'confirmed'];
+// inclusion if that ever changes. Shared with payment.service.js's
+// refundOrderPayment (the admin cancel-and-refund flow for a paid order) —
+// exported below rather than duplicated, since that's the same boundary
+// for the same reason.
+const CANCELLABLE_ORDER_STATUSES = ['pending', 'confirmed'];
+exports.CANCELLABLE_ORDER_STATUSES = CANCELLABLE_ORDER_STATUSES;
 
 /**
  * Lets a customer cancel their own order themselves — restricted to COD
- * orders that haven't shipped yet. There is no refund flow anywhere in
- * this app (see prisma/schema.prisma's PaymentStatus.refunded comment),
- * so an order that was actually paid for online is deliberately NOT
- * self-cancellable here — the customer is told to contact support, rather
- * than the app accepting a cancellation it has no way to honor with
- * money back. Admins already have a separate, working cancellation path
- * (shipping.service.js's cancelOrderShipment) for orders that need it
- * after a shipment exists.
+ * orders that haven't shipped yet. A paid-online order is deliberately
+ * NOT self-cancellable here: refunding one is a real, working capability
+ * now (see payment.service.js's refundOrderPayment), but it's
+ * admin-triggered, not something this endpoint exposes directly to a
+ * customer — the customer is told to contact support, so a human decides
+ * whether/when to actually issue the refund rather than any customer
+ * being able to trigger one unilaterally. Admins already have a separate,
+ * working cancellation path (shipping.service.js's cancelOrderShipment)
+ * for orders that need it after a shipment exists.
  */
 exports.cancelOrderByCustomer = async (orderId, userId, reason) => {
   const order = await prisma.order.findUnique({
@@ -954,7 +960,7 @@ exports.cancelOrderByCustomer = async (orderId, userId, reason) => {
   if (order.status === 'cancelled') {
     throw new CustomError('This order is already cancelled', 400);
   }
-  if (!CUSTOMER_CANCELLABLE_ORDER_STATUSES.includes(order.status)) {
+  if (!CANCELLABLE_ORDER_STATUSES.includes(order.status)) {
     throw new CustomError(
       `This order can no longer be cancelled here (status: '${order.status}') — please contact support.`,
       400

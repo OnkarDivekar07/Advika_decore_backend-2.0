@@ -59,7 +59,12 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 const initJobs = require('./jobs');
-initJobs(); // 🔥 Start all workers
+// Each individual sweep registration already catches its own failure (see
+// jobs/index.js) — this call itself should never actually reject, but
+// `.catch()` here is the difference between "impossible" and "definitely
+// can't produce an unhandled rejection that takes the whole process down"
+// (server.js's own unhandledRejection handler treats one as fatal).
+initJobs().catch((err) => logger.error(`initJobs() failed: ${err?.message}`, { stack: err?.stack })); // 🔥 Start all workers
 
 // Health check — kept outside /api so hosting platforms / uptime monitors
 // can hit it directly at /health.

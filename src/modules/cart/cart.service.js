@@ -8,6 +8,7 @@
 const prisma = require('@config/prisma');
 const CustomError = require('@utils/customError');
 const logger = require('@config/logger');
+const withTransactionRetry = require('@utils/withTransactionRetry');
 const {
   calculateDeliveryCharge,
   calculateDiscount,
@@ -149,7 +150,7 @@ const saveUserCart = async (userId, cartItems) => {
   // Interactive transaction (matches the pattern order.service.js already
   // uses elsewhere) so the delete+recreate is atomic — a mid-way failure
   // can't leave the user with an emptied cart.
-  const rows = await prisma.$transaction(async (tx) => {
+  const rows = await withTransactionRetry(async (tx) => {
     await tx.cart.deleteMany({ where: { userId } });
     await tx.cart.createMany({
       data: items.map((item) => ({

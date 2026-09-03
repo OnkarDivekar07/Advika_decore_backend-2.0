@@ -41,6 +41,17 @@ function normalizePayment(payment) {
   };
 }
 
+function normalizeRefund(refund) {
+  if (!refund) return null;
+  return {
+    id: refund.id,
+    payment_id: refund.payment_id,
+    status: refund.status,
+    amount: refund.amount,
+    raw: refund,
+  };
+}
+
 /**
  * Razorpay implementation of the payment gateway contract — see
  * ./paymentGateway.contract.js for what every adapter must provide and why.
@@ -122,6 +133,45 @@ module.exports = {
   parseWebhookEvent(body) {
     const eventType = body?.event ?? null;
     const payment = normalizePayment(body?.payload?.payment?.entity);
-    return { eventType, payment };
+    // Refund-lifecycle events (refund.created/processed/failed) carry the
+    // refund entity under payload.refund, not payload.payment — a
+    // completely separate branch of Razorpay's webhook payload shape, not
+    // a field on the payment entity.
+    const refund = normalizeRefund(body?.payload?.refund?.entity);
+    return { eventType, payment, refund };
+  },
+
+  /**
+   * Initiates a refund against a captured payment. Omitting `amount`
+   * refunds the payment's full captured amount — this app never does a
+   * partial refund (see the contract's own doc comment on refundPayment).
+   * Deliberately does NOT catch here, same pattern as createOrder above —
+   * payment.service.js's refundOrderPayment wraps this together with the
+   * order-status write that has to follow it.
+   */
+  async refundPayment({ paymentId, amount, notes }) {
+    const refund = await razorpay.payments.refund(paymentId, {
+      ...(amount != null ? { amount } : {}),
+      ...(notes ? { notes } : {}),
+    });
+    return normalizeRefund(refund);
+  },
+
+  async fetchRefund(paymentId, refundId) {
+    try {
+      const refund = await razorpay.payments.fetchRefund(paymentId, refundId);
+      return normalizeRefund(refund);
+    } catch (err) {
+      return null;
+    }
+  },
+
+  async fetchRefundsForPayment(paymentId) {
+    try {
+      const result = await razorpay.payments.fetchMultipleRefund(paymentId);
+      return (result?.items ?? []).map(normalizeRefund);
+    } catch (err) {
+      return [];
+    }
   },
 };

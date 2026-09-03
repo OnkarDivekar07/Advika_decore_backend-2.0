@@ -44,8 +44,18 @@ enum OrderStatus {
 //
 // `pending` is also the terminal state for a draft order that never even
 // started a payment attempt. `cod_pending` is COD's own separate terminal
-// state (no online attempt is ever made for it). `refunded` is set outside
-// this app today (no refund flow exists yet) but is reserved for one.
+// state (no online attempt is ever made for it).
+//
+//   paid -> refund_pending -> refunded
+//                          \-> refund_failed
+//
+// A refund is asynchronous on Razorpay's side — initiating one (see
+// payment.service.js's refundOrderPayment, used by the admin
+// cancel-and-refund flow) moves paymentStatus to `refund_pending`
+// immediately, and only the `refund.processed`/`refund.failed` webhook
+// (handleRazorpayWebhookEvent) ever moves it on to `refunded`/
+// `refund_failed` — the same "initiating isn't the same as confirmed"
+// shape `attempted`/`paid` already have for the original payment.
 enum PaymentStatus {
   pending
   attempted
@@ -56,7 +66,25 @@ enum PaymentStatus {
   timeout
   unknown
   refunded
+  refund_pending
+  refund_failed
   cod_pending
+}
+
+// Whether the *side effects* of a paid+confirmed order (stock decrement,
+// cart clear, order-confirmation notification — see payment.service.js's
+// runFulfillment) actually completed. Deliberately separate from
+// OrderStatus/PaymentStatus: a captured Razorpay payment or a committed COD
+// order can never be rolled back once either reaches 'confirmed', but the
+// side effects that are supposed to follow it can still fail independently
+// (a Redis outage, a genuinely oversold item) — this is what makes that
+// failure durable and queryable instead of only ever existing as a log
+// line, so reconcileFailedFulfillments (the fulfillment-reconciliation
+// sweep, see jobs/index.js) can retry it and admin.service.js's
+// getOperationalAlerts can surface it.
+enum FulfillmentStatus {
+  completed
+  failed
 }
 
 model User {
@@ -176,19 +204,19 @@ model Product {
 }
 
 model Order {
-  id               String        @id @default(auto()) @map("_id") @db.ObjectId
-  userId           String
-  user             User          @relation(fields: [userId], references: [id])
+  id                  String             @id @default(auto()) @map("_id") @db.ObjectId
+  userId              String
+  user                User               @relation(fields: [userId], references: [id])
   // `total` remains the grand total (subtotal + deliveryCharge) and is
   // what payment.controller.js/shipping.service.js actually charge —
   // unchanged in meaning, just no longer equal to the item sum alone.
-  total            Float
+  total               Float
   // Breakdown fields, added alongside `total` rather than replacing it so
   // existing orders (which predate this rule) keep working: both are
   // optional and simply absent on old records. See
   // src/constants/pricing.js for how they're derived.
-  subtotal         Float?
-  deliveryCharge   Float?
+  subtotal            Float?
+  deliveryCharge      Float?
   // Discount/coupon placeholder architecture: both fields are optional so
   // existing orders (predating this) keep working unchanged. `discount` is
   // always 0 today (see calculateDiscount in src/constants/pricing.js — no
@@ -197,21 +225,56 @@ model Order {
   // real coupon system can be dropped in later by making calculateDiscount
   // do real work, without touching how `total` itself is derived or spent
   // (payment.controller.js, shipping.service.js, etc. only ever read `total`).
-  discount         Float?        @default(0)
-  couponCode       String?
-  addressId        String
-  address          Address       @relation(fields: [addressId], references: [id])
-  payment_order_id String?       @unique
-  payment_id       String? // Razorpay payment id (pay_xxx) that actually paid this order, set by the webhook
-  status           OrderStatus // e.g. 'pending', 'shipped', 'delivered', 'cancelled'
-  paymentStatus    PaymentStatus @default(pending) // 'pending', 'paid', etc.
-  orderItems       OrderItem[]
-  createdAt        DateTime      @default(now())
+  discount            Float?             @default(0)
+  couponCode          String?
+  addressId           String
+  address             Address            @relation(fields: [addressId], references: [id])
+  payment_order_id    String?            @unique
+  payment_id          String? // Razorpay payment id (pay_xxx) that actually paid this order, set by the webhook
+  status              OrderStatus // e.g. 'pending', 'shipped', 'delivered', 'cancelled'
+  paymentStatus       PaymentStatus      @default(pending) // 'pending', 'paid', etc.
+  // Left null for every order that hasn't reached paid+confirmed (or COD's
+  // equivalent) yet — only ever set by payment.service.js's
+  // runFulfillment/reconcileFailedFulfillments, once there's actually a
+  // fulfillment attempt to report on. See FulfillmentStatus's own comment.
+  // Never 'completed' while `oversold` is true — see that field.
+  fulfillmentStatus   FulfillmentStatus?
+  // Human-readable reason runFulfillment most recently landed on 'failed'
+  // (an oversold item, or a caught error's message). Never shown to the
+  // customer; admin-only, via getOperationalAlerts.
+  fulfillmentError    String?
+  // decrementStockForOrder is NOT safe to call twice for the same order —
+  // it applies a real per-item decrement every time, so retrying it after
+  // e.g. a later step (the cart-clear/notification enqueue) failed would
+  // double-decrement whatever already succeeded. This records that the
+  // decrement step has already run (successfully or not — an "insufficient
+  // stock" item isn't decremented either way, so it doesn't need
+  // re-running) so a retry only ever re-attempts the steps that genuinely
+  // are safe to run more than once. Always false for a COD order — its own
+  // stock reservation already happened transactionally in handleCODOrder,
+  // with a real throw-on-shortfall guard, before runFulfillment ever runs.
+  stockDecremented    Boolean            @default(false)
+  // Set once (never cleared back to false) the moment decrementStockForOrder
+  // reports any item it couldn't fully decrement for this order. Tracked
+  // separately from fulfillmentStatus/fulfillmentError because retrying
+  // can never resolve it (there's no more stock to decrement into
+  // existence) — an oversold order must keep surfacing to
+  // getOperationalAlerts for a human to resolve even once every other
+  // fulfillment step (cart-clear, notification) eventually succeeds.
+  oversold            Boolean            @default(false)
+  // Bounds reconcileFailedFulfillments' retries (see
+  // MAX_FULFILLMENT_ATTEMPTS in payment.service.js) — once exhausted, a
+  // 'failed' order is left alone for an admin to resolve by hand rather
+  // than retried forever (retrying a genuinely oversold item's stock
+  // decrement can never succeed on its own).
+  fulfillmentAttempts Int                @default(0)
+  orderItems          OrderItem[]
+  createdAt           DateTime           @default(now())
   // Optional (rather than a plain required @updatedAt) so existing orders
   // predating this field keep working unchanged — same convention as
   // subtotal/deliveryCharge above. Used by reconcileStalePaymentAttempts
   // (payment.service.js) to find payment attempts that have gone stale.
-  updatedAt        DateTime?     @updatedAt
+  updatedAt           DateTime?          @updatedAt
 
   // order.service.js's getUserOrderHistory filters `{ userId, status: {
   // not: 'draft' } }`; getUserDraftOrder filters `{ userId, status:
@@ -222,6 +285,7 @@ model Order {
   @@index([userId, status])
   @@index([status, createdAt])
   @@index([paymentStatus])
+  @@index([fulfillmentStatus])
 }
 
 model Cart {
@@ -386,6 +450,54 @@ model WebhookEvent {
   // delivery detectable at all; see handleRazorpayWebhookEvent.
   @@unique([source, eventId])
   @@index([orderId])
+}
+
+// Durable record of every refund an admin ever initiated — created BEFORE
+// the real Razorpay refund call in payment.service.js's refundOrderPayment,
+// specifically to close the "refund has a failure window" gap: Razorpay
+// can genuinely process a refund, and then the local write that follows
+// (Order.paymentStatus -> 'refund_pending') can independently fail (a DB
+// blip, a crash) — leaving the order looking untouched ('paid') even
+// though the customer's money is already back with them. The webhook's
+// own reconciliation only ever matches an order still sitting at
+// 'refund_pending', so it can't repair that case on its own. This table is
+// what CAN: reconcileUnresolvedRefunds (payment.service.js, the sweep —
+// see jobs/index.js) queries it directly for anything left 'initiated'/
+// 'pending' past a grace period and asks Razorpay directly what actually
+// happened, using `orderId`/`paymentId` here rather than depending on
+// Order's own (possibly-never-updated) fields at all.
+enum RefundAttemptStatus {
+  initiated // Razorpay call about to be/being made; refundId not yet known
+  pending // Razorpay accepted the refund (refundId known); not yet confirmed complete
+  completed
+  failed
+  // Razorpay couldn't be reached to confirm one way or the other — needs
+  // a human look, same reasoning as PaymentStatus's own 'unknown'.
+  unknown
+}
+
+model RefundAttempt {
+  id          String              @id @default(auto()) @map("_id") @db.ObjectId
+  orderId     String
+  paymentId   String
+  // Only known once Razorpay's refund call itself returns — @unique once
+  // set (Razorpay's own id is globally unique), but left nullable so the
+  // very first write (before that call even happens) can still exist as a
+  // durable "we tried" record even if nothing after it ever lands.
+  refundId    String?             @unique
+  amount      Float
+  status      RefundAttemptStatus @default(initiated)
+  reason      String?
+  requestedBy String
+  requestedAt DateTime            @default(now())
+  processedAt DateTime?
+  // Set on a real gateway failure (mirrors the message refundOrderPayment
+  // already surfaces to the admin) or a reconciliation-sweep error —
+  // never shown to the customer.
+  lastError   String?
+
+  @@index([orderId])
+  @@index([status])
 }
 
 // --- Shipping module (Delhivery) ---

@@ -6,6 +6,7 @@ const crypto = require('crypto');
 jest.mock('razorpay', () =>
   jest.fn().mockImplementation(() => ({
     orders: { create: jest.fn() },
+    payments: { refund: jest.fn(), fetchRefund: jest.fn(), fetchMultipleRefund: jest.fn() },
   }))
 );
 
@@ -17,6 +18,7 @@ const mockOrder = {
   update: jest.fn(),
   updateMany: jest.fn(),
   findUnique: jest.fn(),
+  findFirst: jest.fn(),
   findMany: jest.fn(),
 };
 // Backs the WebhookEvent ledger's `create` call — handleRazorpayWebhookEvent
@@ -26,6 +28,17 @@ const mockOrder = {
 const mockWebhookEvent = {
   create: jest.fn().mockResolvedValue({}),
 };
+// Backs the RefundAttempt ledger refundOrderPayment/reconcileUnresolvedRefunds
+// use — see prisma/schema.prisma's RefundAttempt model. `findUnique`
+// defaults to resolving null (no matching attempt) so the webhook's refund
+// branch falls back to its pre-existing payment_id-only match path unless
+// a test explicitly sets one up.
+const mockRefundAttempt = {
+  create: jest.fn().mockResolvedValue({ id: 'attempt_1' }),
+  update: jest.fn().mockResolvedValue({}),
+  findUnique: jest.fn().mockResolvedValue(null),
+  findMany: jest.fn(),
+};
 
 // handleRazorpayWebhookEvent now writes the ledger row and applies the
 // order mutation inside one `prisma.$transaction` (both via `tx`, not the
@@ -34,22 +47,25 @@ const mockWebhookEvent = {
 // mock instances as the top-level client so assertions against
 // `mockOrder`/`mockWebhookEvent` pass regardless of which one a given call
 // path happens to go through.
-const mockTx = { order: mockOrder, webhookEvent: mockWebhookEvent };
+const mockTx = { order: mockOrder, webhookEvent: mockWebhookEvent, refundAttempt: mockRefundAttempt };
 
 jest.mock('@config/prisma', () => ({
   order: mockOrder,
   webhookEvent: mockWebhookEvent,
+  refundAttempt: mockRefundAttempt,
   $transaction: jest.fn(async (cb) => cb(mockTx)),
 }));
 
 jest.mock('@modules/inventory/inventory.service', () => ({
   decrementStockForOrder: jest.fn(),
+  restoreStockForOrder: jest.fn(),
 }));
 
 jest.mock('@modules/order/order.service', () => ({
   detectOrderConflicts: jest.fn(),
   detectAddressConflict: jest.fn(),
   detectPricingConflict: jest.fn(),
+  CANCELLABLE_ORDER_STATUSES: ['pending', 'confirmed'],
 }));
 
 jest.mock('../../src/jobs/queues/clearCartQueue', () => ({
@@ -253,13 +269,29 @@ describe('payment.service', () => {
       );
 
       expect(result.alreadyProcessed).toBe(false);
+      // Wrapped in its own prisma.$transaction now (see runFulfillment's
+      // own comment on why) — the mock's $transaction hands the callback
+      // mockTx, not the top-level prisma client, same as every other
+      // transactional call in this file.
       expect(inventoryService.decrementStockForOrder).toHaveBeenCalledWith(
         [{ productId: 'p1', quantity: 2 }],
-        prisma,
+        mockTx,
         { throwOnInsufficientStock: false }
       );
       expect(cartQueue.add).toHaveBeenCalledWith('clear-cart', {
         userId: 'user_1',
+      });
+      expect(mockOrder.update).toHaveBeenCalledWith({
+        where: { id: 'order_1' },
+        data: { stockDecremented: true },
+      });
+      expect(mockOrder.update).toHaveBeenCalledWith({
+        where: { id: 'order_1' },
+        data: {
+          fulfillmentAttempts: { increment: 1 },
+          fulfillmentStatus: 'completed',
+          fulfillmentError: null,
+        },
       });
     });
 
@@ -290,6 +322,80 @@ describe('payment.service', () => {
       ).rejects.toMatchObject({
         message: 'Order not found for this payment',
         statusCode: 404,
+      });
+    });
+
+    // Previously an oversold order was only ever logged (see the
+    // "paid-order fulfillment can fail permanently" review finding) — now
+    // it's durably recorded so reconcileFailedFulfillments/
+    // getOperationalAlerts can actually do something with it. Never resolves
+    // to 'completed', even though cart-clear/notification still succeed —
+    // the underlying inventory problem needs a human, not a retry.
+    it('marks a paid-but-oversold order failed/oversold instead of only logging it', async () => {
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
+      mockOrder.findUnique.mockResolvedValue({
+        id: 'order_1',
+        userId: 'user_1',
+        orderItems: [{ productId: 'p1', quantity: 5 }],
+      });
+      inventoryService.decrementStockForOrder.mockResolvedValue([
+        { productId: 'p1', quantity: 5 },
+      ]);
+
+      await paymentService.updateOrderAfterPayment('rzp_order_1', 'pay_1');
+
+      // Still runs the retryable steps — the order really is confirmed and
+      // paid regardless of the inventory problem.
+      expect(cartQueue.add).toHaveBeenCalledWith('clear-cart', {
+        userId: 'user_1',
+      });
+      expect(notificationQueue.add).toHaveBeenCalledWith(
+        'order-confirmation',
+        { orderId: 'order_1' }
+      );
+      expect(mockOrder.update).toHaveBeenCalledWith({
+        where: { id: 'order_1' },
+        data: { stockDecremented: true, oversold: true },
+      });
+      expect(mockOrder.update).toHaveBeenCalledWith({
+        where: { id: 'order_1' },
+        data: {
+          fulfillmentAttempts: { increment: 1 },
+          fulfillmentStatus: 'failed',
+          fulfillmentError:
+            'Paid but oversold — insufficient stock for one or more items in this order.',
+        },
+      });
+    });
+
+    // The original design flaw this whole area fixes: a queue outage after
+    // a real payment must never surface as a payment failure, and must
+    // leave a durable, retryable trace rather than only a log line.
+    it('records a fulfillment failure (and never throws) when the cart-clear/notification enqueue fails', async () => {
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
+      mockOrder.findUnique.mockResolvedValue({
+        id: 'order_1',
+        userId: 'user_1',
+        orderItems: [{ productId: 'p1', quantity: 1 }],
+      });
+      inventoryService.decrementStockForOrder.mockResolvedValue([]);
+      cartQueue.add.mockRejectedValueOnce(new Error('Redis unreachable'));
+
+      const result = await paymentService.updateOrderAfterPayment(
+        'rzp_order_1',
+        'pay_1'
+      );
+
+      // The payment/order write already happened — a fulfillment-side
+      // failure must never read back as "the payment didn't go through."
+      expect(result.alreadyProcessed).toBe(false);
+      expect(mockOrder.update).toHaveBeenCalledWith({
+        where: { id: 'order_1' },
+        data: {
+          fulfillmentStatus: 'failed',
+          fulfillmentError: 'Redis unreachable',
+          fulfillmentAttempts: { increment: 1 },
+        },
       });
     });
   });
@@ -501,6 +607,397 @@ describe('payment.service', () => {
       expect(mockWebhookEvent.create).not.toHaveBeenCalled();
       expect(mockOrder.updateMany).toHaveBeenCalled();
     });
+
+    describe('refund.processed / refund.failed', () => {
+      it('ignores a refund event with no payment id (nothing to reconcile)', async () => {
+        await paymentService.handleRazorpayWebhookEvent({
+          event: 'refund.processed',
+          payload: {},
+        });
+
+        expect(mockOrder.updateMany).not.toHaveBeenCalled();
+      });
+
+      // Fixes the "refund failure can create an incorrect business state"
+      // review finding: `status` only ever moves to 'cancelled' — and
+      // stock is only ever restored — once refund.processed genuinely
+      // confirms the refund completed, never at initiation.
+      it('moves a refund_pending order to refunded/cancelled and restores its stock on refund.processed', async () => {
+        mockOrder.updateMany.mockResolvedValue({ count: 1 });
+        mockOrder.findFirst.mockResolvedValue({
+          id: 'order_1',
+          orderItems: [{ productId: 'p1', quantity: 2 }],
+        });
+
+        await paymentService.handleRazorpayWebhookEvent({
+          event: 'refund.processed',
+          payload: {
+            refund: { entity: { id: 'rfnd_1', payment_id: 'pay_1' } },
+          },
+        });
+
+        expect(mockOrder.updateMany).toHaveBeenCalledWith({
+          where: { payment_id: 'pay_1', paymentStatus: 'refund_pending' },
+          data: { paymentStatus: 'refunded', status: 'cancelled' },
+        });
+        expect(inventoryService.restoreStockForOrder).toHaveBeenCalledWith(
+          [{ productId: 'p1', quantity: 2 }],
+          mockTx
+        );
+      });
+
+      // The exact scenario the review finding describes: a refund
+      // Razorpay ultimately rejects must never leave the order looking
+      // cancelled or its stock already given back — both stay exactly as
+      // they were, so an admin (via getOperationalAlerts' payment
+      // exceptions, which now includes 'refund_failed') can resolve it
+      // without a customer having lost both their money and their order.
+      it('moves a refund_pending order to refund_failed on refund.failed, without touching status or stock', async () => {
+        mockOrder.updateMany.mockResolvedValue({ count: 1 });
+
+        await paymentService.handleRazorpayWebhookEvent({
+          event: 'refund.failed',
+          payload: {
+            refund: { entity: { id: 'rfnd_1', payment_id: 'pay_1' } },
+          },
+        });
+
+        expect(mockOrder.updateMany).toHaveBeenCalledWith({
+          where: { payment_id: 'pay_1', paymentStatus: 'refund_pending' },
+          data: { paymentStatus: 'refund_failed' },
+        });
+        expect(mockOrder.findFirst).not.toHaveBeenCalled();
+        expect(inventoryService.restoreStockForOrder).not.toHaveBeenCalled();
+      });
+
+      it('is a no-op for a duplicate refund event delivery (same eventId)', async () => {
+        mockWebhookEvent.create.mockRejectedValueOnce({ code: 'P2002' });
+
+        await paymentService.handleRazorpayWebhookEvent(
+          {
+            event: 'refund.processed',
+            payload: { refund: { entity: { id: 'rfnd_1', payment_id: 'pay_1' } } },
+          },
+          'evt_refund_1'
+        );
+
+        expect(mockOrder.updateMany).not.toHaveBeenCalled();
+      });
+
+      it('never applies a payment.captured-shaped update for a refund event (no payment entity, order-keyed write)', async () => {
+        mockOrder.updateMany.mockResolvedValue({ count: 1 });
+
+        await paymentService.handleRazorpayWebhookEvent({
+          event: 'refund.processed',
+          payload: {
+            refund: { entity: { id: 'rfnd_1', payment_id: 'pay_1' } },
+          },
+        });
+
+        // Only ever the payment_id-keyed refund write, never the
+        // payment_order_id-keyed payment.captured shape.
+        expect(mockOrder.updateMany).toHaveBeenCalledTimes(1);
+        expect(mockOrder.updateMany).not.toHaveBeenCalledWith(
+          expect.objectContaining({ where: expect.objectContaining({ payment_order_id: expect.anything() }) })
+        );
+      });
+
+      // Fixes the "refund has a failure window" review finding directly:
+      // an order stuck at 'paid' (refundOrderPayment's own
+      // paymentStatus:'refund_pending' write never landed) is still
+      // reconciled here, because the match now goes through the
+      // RefundAttempt ledger's own `orderId` rather than requiring Order's
+      // own fields to have already been updated.
+      it('reconciles an order still stuck at paid — not just refund_pending — when a matching RefundAttempt exists', async () => {
+        mockRefundAttempt.findUnique.mockResolvedValueOnce({ id: 'attempt_1', orderId: 'order_1' });
+        mockOrder.updateMany.mockResolvedValue({ count: 1 });
+        mockOrder.findUnique.mockResolvedValue({
+          id: 'order_1',
+          orderItems: [{ productId: 'p1', quantity: 2 }],
+        });
+
+        await paymentService.handleRazorpayWebhookEvent({
+          event: 'refund.processed',
+          payload: { refund: { entity: { id: 'rfnd_1', payment_id: 'pay_1' } } },
+        });
+
+        expect(mockRefundAttempt.findUnique).toHaveBeenCalledWith({ where: { refundId: 'rfnd_1' } });
+        expect(mockOrder.updateMany).toHaveBeenCalledWith({
+          where: { id: 'order_1', paymentStatus: { in: ['paid', 'refund_pending'] } },
+          data: { paymentStatus: 'refunded', status: 'cancelled' },
+        });
+        expect(mockRefundAttempt.update).toHaveBeenCalledWith({
+          where: { id: 'attempt_1' },
+          data: { status: 'completed', processedAt: expect.any(Date) },
+        });
+        expect(inventoryService.restoreStockForOrder).toHaveBeenCalledWith(
+          [{ productId: 'p1', quantity: 2 }],
+          mockTx
+        );
+      });
+
+      it('marks the matching RefundAttempt failed too on refund.failed, alongside the order', async () => {
+        mockRefundAttempt.findUnique.mockResolvedValueOnce({ id: 'attempt_1', orderId: 'order_1' });
+        mockOrder.updateMany.mockResolvedValue({ count: 1 });
+
+        await paymentService.handleRazorpayWebhookEvent({
+          event: 'refund.failed',
+          payload: { refund: { entity: { id: 'rfnd_1', payment_id: 'pay_1' } } },
+        });
+
+        expect(mockOrder.updateMany).toHaveBeenCalledWith({
+          where: { id: 'order_1', paymentStatus: { in: ['paid', 'refund_pending'] } },
+          data: { paymentStatus: 'refund_failed' },
+        });
+        expect(mockRefundAttempt.update).toHaveBeenCalledWith({
+          where: { id: 'attempt_1' },
+          data: { status: 'failed', processedAt: expect.any(Date) },
+        });
+      });
+    });
+  });
+
+  describe('refundOrderPayment', () => {
+    const paidOrder = (overrides = {}) => ({
+      id: 'order_1',
+      status: 'confirmed',
+      paymentStatus: 'paid',
+      payment_id: 'pay_1',
+      total: 2499,
+      orderItems: [{ productId: 'p1', quantity: 2 }],
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      mockOrder.findUnique.mockReset();
+      mockOrder.update.mockReset();
+      inventoryService.restoreStockForOrder.mockReset();
+      razorpayInstance.payments.refund.mockReset();
+    });
+
+    it('throws a 404 if the order does not exist', async () => {
+      mockOrder.findUnique.mockResolvedValue(null);
+
+      await expect(
+        paymentService.refundOrderPayment('order_1', 'admin_1')
+      ).rejects.toMatchObject({ statusCode: 404 });
+      expect(razorpayInstance.payments.refund).not.toHaveBeenCalled();
+    });
+
+    it('throws a 400 if the order is not fully paid', async () => {
+      mockOrder.findUnique.mockResolvedValue(paidOrder({ paymentStatus: 'cod_pending' }));
+
+      await expect(
+        paymentService.refundOrderPayment('order_1', 'admin_1')
+      ).rejects.toMatchObject({ statusCode: 400 });
+      expect(razorpayInstance.payments.refund).not.toHaveBeenCalled();
+    });
+
+    it('throws a 400 if the order has no recorded payment id', async () => {
+      mockOrder.findUnique.mockResolvedValue(paidOrder({ payment_id: null }));
+
+      await expect(
+        paymentService.refundOrderPayment('order_1', 'admin_1')
+      ).rejects.toMatchObject({ statusCode: 400 });
+    });
+
+    it('throws a 400 once the order is already shipped', async () => {
+      mockOrder.findUnique.mockResolvedValue(paidOrder({ status: 'shipped' }));
+
+      await expect(
+        paymentService.refundOrderPayment('order_1', 'admin_1')
+      ).rejects.toMatchObject({ statusCode: 400 });
+      expect(razorpayInstance.payments.refund).not.toHaveBeenCalled();
+    });
+
+    // Fixes the "refund failure can create an incorrect business state"
+    // review finding: initiating a refund must never itself cancel the
+    // order or restore its stock — Razorpay accepting the request only
+    // means it started, not that it will succeed. Both only happen once
+    // handleRazorpayWebhookEvent's refund.processed branch confirms it did
+    // (see that describe block's own tests).
+    it('initiates the refund and marks the order refund_pending, without touching status or stock yet', async () => {
+      mockOrder.findUnique.mockResolvedValue(paidOrder());
+      razorpayInstance.payments.refund.mockResolvedValue({
+        id: 'rfnd_1',
+        payment_id: 'pay_1',
+        status: 'processed',
+        amount: 249900,
+      });
+      mockOrder.update.mockResolvedValue({ id: 'order_1', status: 'confirmed', paymentStatus: 'refund_pending' });
+
+      const result = await paymentService.refundOrderPayment(
+        'order_1',
+        'admin_1',
+        'Customer requested cancellation'
+      );
+
+      expect(razorpayInstance.payments.refund).toHaveBeenCalledWith('pay_1', {
+        notes: { reason: 'Customer requested cancellation' },
+      });
+      expect(inventoryService.restoreStockForOrder).not.toHaveBeenCalled();
+      expect(mockOrder.update).toHaveBeenCalledWith({
+        where: { id: 'order_1' },
+        data: { paymentStatus: 'refund_pending' },
+      });
+      expect(result.order.status).toBe('confirmed');
+      expect(result.refund.id).toBe('rfnd_1');
+    });
+
+    // Fixes the "refund has a failure window" review finding: a durable
+    // RefundAttempt row must exist BEFORE Razorpay is ever called, so a
+    // crash/DB blip at any point afterward still leaves something
+    // reconcileUnresolvedRefunds can find its way back to this order with.
+    it('creates a durable RefundAttempt row before calling Razorpay, and records the refundId/status once it responds', async () => {
+      mockOrder.findUnique.mockResolvedValue(paidOrder());
+      razorpayInstance.payments.refund.mockResolvedValue({
+        id: 'rfnd_1',
+        payment_id: 'pay_1',
+        status: 'processed',
+        amount: 249900,
+      });
+      mockOrder.update.mockResolvedValue({ id: 'order_1', paymentStatus: 'refund_pending' });
+
+      await paymentService.refundOrderPayment('order_1', 'admin_1', 'Changed my mind');
+
+      expect(mockRefundAttempt.create).toHaveBeenCalledWith({
+        data: {
+          orderId: 'order_1',
+          paymentId: 'pay_1',
+          amount: 2499,
+          reason: 'Changed my mind',
+          requestedBy: 'admin_1',
+        },
+      });
+      // The RefundAttempt create must happen before the real gateway call —
+      // otherwise a crash during/after that call leaves nothing durable.
+      expect(mockRefundAttempt.create.mock.invocationCallOrder[0]).toBeLessThan(
+        razorpayInstance.payments.refund.mock.invocationCallOrder[0]
+      );
+      expect(mockRefundAttempt.update).toHaveBeenCalledWith({
+        where: { id: 'attempt_1' },
+        data: { refundId: 'rfnd_1', status: 'completed', processedAt: expect.any(Date) },
+      });
+    });
+
+    it("records the attempt as merely 'pending' (not 'completed') when Razorpay's own refund status isn't immediately 'processed'", async () => {
+      mockOrder.findUnique.mockResolvedValue(paidOrder());
+      razorpayInstance.payments.refund.mockResolvedValue({
+        id: 'rfnd_1',
+        payment_id: 'pay_1',
+        status: 'created',
+        amount: 249900,
+      });
+      mockOrder.update.mockResolvedValue({ id: 'order_1', paymentStatus: 'refund_pending' });
+
+      await paymentService.refundOrderPayment('order_1', 'admin_1');
+
+      expect(mockRefundAttempt.update).toHaveBeenCalledWith({
+        where: { id: 'attempt_1' },
+        data: { refundId: 'rfnd_1', status: 'pending', processedAt: null },
+      });
+    });
+
+    it('marks the RefundAttempt failed (with the real reason) when the gateway rejects the refund', async () => {
+      mockOrder.findUnique.mockResolvedValue(paidOrder());
+      razorpayInstance.payments.refund.mockRejectedValue({
+        statusCode: 400,
+        error: { description: 'The id provided does not exist' },
+      });
+
+      await expect(paymentService.refundOrderPayment('order_1', 'admin_1')).rejects.toThrow();
+
+      expect(mockRefundAttempt.update).toHaveBeenCalledWith({
+        where: { id: 'attempt_1' },
+        data: { status: 'failed', lastError: 'The id provided does not exist' },
+      });
+    });
+
+    // The actual scenario the "refund has a failure window" finding
+    // describes: Razorpay genuinely accepts the refund, and then the local
+    // write meant to record that fails. Must never surface as a failure to
+    // the admin (that would risk a well-meaning duplicate real refund
+    // attempt against a payment already refunded) — the RefundAttempt's
+    // own fallback write (and, beyond that, reconcileUnresolvedRefunds) is
+    // what's actually relied on to repair this, not this call's own return.
+    it('never throws when the local DB write fails after Razorpay already accepted the refund', async () => {
+      mockOrder.findUnique.mockResolvedValue(paidOrder());
+      razorpayInstance.payments.refund.mockResolvedValue({
+        id: 'rfnd_1',
+        payment_id: 'pay_1',
+        status: 'processed',
+        amount: 249900,
+      });
+      // The combined transaction (RefundAttempt + Order update) fails —
+      // a plain Error (no `.code`), so withTransactionRetry rethrows
+      // immediately rather than retrying (only P2034 is ever retried).
+      prisma.$transaction.mockRejectedValueOnce(new Error('DB unreachable'));
+      mockOrder.findUnique.mockResolvedValueOnce(paidOrder()).mockResolvedValueOnce({
+        id: 'order_1',
+        paymentStatus: 'paid', // still stuck — the local write never landed
+      });
+
+      const result = await paymentService.refundOrderPayment('order_1', 'admin_1');
+
+      expect(result.refund.id).toBe('rfnd_1');
+      expect(result.order.paymentStatus).toBe('paid');
+      // The fallback write still records the real refundId even though the
+      // order-side update inside the same failed transaction did not land —
+      // this is what gives reconcileUnresolvedRefunds something to work
+      // from later.
+      expect(mockRefundAttempt.update).toHaveBeenCalledWith({
+        where: { id: 'attempt_1' },
+        data: { refundId: 'rfnd_1', status: 'completed', processedAt: expect.any(Date) },
+      });
+    });
+
+    it('does not touch stock or order status when the gateway refund call fails', async () => {
+      mockOrder.findUnique.mockResolvedValue(paidOrder());
+      razorpayInstance.payments.refund.mockRejectedValue(new Error('gateway down'));
+
+      await expect(
+        paymentService.refundOrderPayment('order_1', 'admin_1')
+      ).rejects.toMatchObject({ statusCode: 400 });
+
+      expect(inventoryService.restoreStockForOrder).not.toHaveBeenCalled();
+      expect(mockOrder.update).not.toHaveBeenCalled();
+    });
+
+    // Confirmed live against Razorpay's real test-mode API: the SDK throws
+    // a plain `{ statusCode, error }` object (not an Error instance), so it
+    // has no `.message` of its own — surfacing Razorpay's actual reason to
+    // the admin depends entirely on refundOrderPayment pulling
+    // `error.description` out and putting it on a real Error.
+    it("surfaces Razorpay's own error description when the gateway rejects the refund", async () => {
+      mockOrder.findUnique.mockResolvedValue(paidOrder());
+      razorpayInstance.payments.refund.mockRejectedValue({
+        statusCode: 400,
+        error: { description: 'The id provided does not exist' },
+      });
+
+      await expect(
+        paymentService.refundOrderPayment('order_1', 'admin_1')
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: 'The id provided does not exist',
+      });
+    });
+
+    // Razorpay's API gateway 404s (a differently-shaped body with no
+    // `error.description`) for some malformed ids rather than the usual
+    // 400 "does not exist" — confirmed live. Falls back to a generic but
+    // still real message rather than "Something went wrong".
+    it('falls back to a generic message when the gateway error has no description', async () => {
+      mockOrder.findUnique.mockResolvedValue(paidOrder());
+      razorpayInstance.payments.refund.mockRejectedValue({ statusCode: 404 });
+
+      await expect(
+        paymentService.refundOrderPayment('order_1', 'admin_1')
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: 'Razorpay was unable to process this refund.',
+      });
+    });
   });
 
   describe('handleCODOrder', () => {
@@ -600,6 +1097,17 @@ describe('payment.service', () => {
       });
       expect(cartQueue.add).toHaveBeenCalledWith('clear-cart', {
         userId: 'user_1',
+      });
+      // COD's own stock reservation already happened transactionally above
+      // (decrementStock: false for runFulfillment) — this is just the
+      // fulfillment-tracking write for the cart-clear/notification step.
+      expect(mockOrder.update).toHaveBeenCalledWith({
+        where: { id: 'order_1' },
+        data: {
+          fulfillmentAttempts: { increment: 1 },
+          fulfillmentStatus: 'completed',
+          fulfillmentError: null,
+        },
       });
     });
 
@@ -923,6 +1431,276 @@ describe('payment.service', () => {
 
       expect(mockOrder.updateMany).not.toHaveBeenCalled();
       expect(results).toEqual({ timedOut: 0, reconciledPaid: 0, unknown: 0 });
+    });
+  });
+
+  // The actual retry mechanism behind runFulfillment's 'failed' orders —
+  // see the "paid-order fulfillment can fail permanently" review finding.
+  describe('reconcileFailedFulfillments', () => {
+    beforeEach(() => {
+      mockOrder.findMany.mockReset();
+      mockOrder.update.mockReset();
+      mockOrder.findUnique.mockReset();
+      inventoryService.decrementStockForOrder.mockReset();
+      cartQueue.add.mockReset();
+      notificationQueue.add.mockReset();
+    });
+
+    it('queries only orders below MAX_FULFILLMENT_ATTEMPTS, and retries each one', async () => {
+      mockOrder.findMany.mockResolvedValue([
+        {
+          id: 'order_1',
+          userId: 'user_1',
+          paymentStatus: 'paid',
+          orderItems: [{ productId: 'p1', quantity: 1 }],
+          stockDecremented: false,
+          oversold: false,
+        },
+      ]);
+      inventoryService.decrementStockForOrder.mockResolvedValue([]);
+      mockOrder.findUnique.mockResolvedValue({ fulfillmentStatus: 'completed' });
+
+      const results = await paymentService.reconcileFailedFulfillments();
+
+      expect(mockOrder.findMany).toHaveBeenCalledWith({
+        where: { fulfillmentStatus: 'failed', fulfillmentAttempts: { lt: 5 } },
+        include: { orderItems: true },
+      });
+      expect(inventoryService.decrementStockForOrder).toHaveBeenCalledWith(
+        [{ productId: 'p1', quantity: 1 }],
+        mockTx,
+        { throwOnInsufficientStock: false }
+      );
+      expect(cartQueue.add).toHaveBeenCalledWith('clear-cart', {
+        userId: 'user_1',
+      });
+      expect(results).toEqual({ retried: 1, recovered: 1, stillFailing: 0 });
+    });
+
+    it('does not re-decrement stock for an order whose decrement already ran once', async () => {
+      mockOrder.findMany.mockResolvedValue([
+        {
+          id: 'order_1',
+          userId: 'user_1',
+          paymentStatus: 'paid',
+          orderItems: [{ productId: 'p1', quantity: 1 }],
+          stockDecremented: true,
+          oversold: false,
+        },
+      ]);
+      mockOrder.findUnique.mockResolvedValue({ fulfillmentStatus: 'completed' });
+
+      await paymentService.reconcileFailedFulfillments();
+
+      expect(inventoryService.decrementStockForOrder).not.toHaveBeenCalled();
+      expect(cartQueue.add).toHaveBeenCalledWith('clear-cart', {
+        userId: 'user_1',
+      });
+    });
+
+    it('never retries stock decrement for a COD order — it already reserved stock transactionally', async () => {
+      mockOrder.findMany.mockResolvedValue([
+        {
+          id: 'order_1',
+          userId: 'user_1',
+          paymentStatus: 'cod_pending',
+          orderItems: [{ productId: 'p1', quantity: 1 }],
+          stockDecremented: false,
+          oversold: false,
+        },
+      ]);
+      mockOrder.findUnique.mockResolvedValue({ fulfillmentStatus: 'completed' });
+
+      await paymentService.reconcileFailedFulfillments();
+
+      expect(inventoryService.decrementStockForOrder).not.toHaveBeenCalled();
+    });
+
+    it('keeps a genuinely oversold order as stillFailing even once cart/notification succeed', async () => {
+      mockOrder.findMany.mockResolvedValue([
+        {
+          id: 'order_1',
+          userId: 'user_1',
+          paymentStatus: 'paid',
+          orderItems: [{ productId: 'p1', quantity: 1 }],
+          stockDecremented: true,
+          oversold: true,
+        },
+      ]);
+      mockOrder.findUnique.mockResolvedValue({ fulfillmentStatus: 'failed' });
+
+      const results = await paymentService.reconcileFailedFulfillments();
+
+      expect(mockOrder.update).toHaveBeenCalledWith({
+        where: { id: 'order_1' },
+        data: {
+          fulfillmentAttempts: { increment: 1 },
+          fulfillmentStatus: 'failed',
+          fulfillmentError:
+            'Paid but oversold — insufficient stock for one or more items in this order.',
+        },
+      });
+      expect(results).toEqual({ retried: 1, recovered: 0, stillFailing: 1 });
+    });
+
+    it('is a no-op when nothing is failing', async () => {
+      mockOrder.findMany.mockResolvedValue([]);
+
+      const results = await paymentService.reconcileFailedFulfillments();
+
+      expect(cartQueue.add).not.toHaveBeenCalled();
+      expect(results).toEqual({ retried: 0, recovered: 0, stillFailing: 0 });
+    });
+  });
+
+  // The actual repair mechanism behind the "refund has a failure window"
+  // review finding: a RefundAttempt left 'initiated'/'pending' past a
+  // grace period gets asked about directly, using its own durable
+  // orderId/paymentId rather than trusting Order's own fields to have
+  // been successfully updated.
+  describe('reconcileUnresolvedRefunds', () => {
+    beforeEach(() => {
+      mockRefundAttempt.findMany.mockReset();
+      mockRefundAttempt.update.mockReset().mockResolvedValue({});
+      mockOrder.updateMany.mockReset();
+      mockOrder.findUnique.mockReset();
+      inventoryService.restoreStockForOrder.mockReset();
+      razorpayInstance.payments.fetchRefund.mockReset();
+      razorpayInstance.payments.fetchMultipleRefund.mockReset();
+    });
+
+    it('reconciles a genuinely completed refund: cancels the order and restores stock', async () => {
+      mockRefundAttempt.findMany.mockResolvedValue([
+        { id: 'attempt_1', orderId: 'order_1', paymentId: 'pay_1', refundId: 'rfnd_1' },
+      ]);
+      razorpayInstance.payments.fetchRefund.mockResolvedValue({
+        id: 'rfnd_1',
+        payment_id: 'pay_1',
+        status: 'processed',
+        amount: 249900,
+      });
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
+      mockOrder.findUnique.mockResolvedValue({
+        id: 'order_1',
+        orderItems: [{ productId: 'p1', quantity: 2 }],
+      });
+
+      const results = await paymentService.reconcileUnresolvedRefunds();
+
+      expect(razorpayInstance.payments.fetchRefund).toHaveBeenCalledWith('pay_1', 'rfnd_1');
+      expect(mockOrder.updateMany).toHaveBeenCalledWith({
+        where: { id: 'order_1', paymentStatus: { in: ['paid', 'refund_pending'] } },
+        data: { paymentStatus: 'refunded', status: 'cancelled' },
+      });
+      expect(inventoryService.restoreStockForOrder).toHaveBeenCalledWith(
+        [{ productId: 'p1', quantity: 2 }],
+        mockTx
+      );
+      expect(mockRefundAttempt.update).toHaveBeenCalledWith({
+        where: { id: 'attempt_1' },
+        data: { refundId: 'rfnd_1', status: 'completed', processedAt: expect.any(Date) },
+      });
+      expect(results).toEqual({ checked: 1, completed: 1, failed: 0, stillPending: 0, unknown: 0 });
+    });
+
+    it('reconciles a genuinely failed refund: marks the order refund_failed, never touches stock', async () => {
+      mockRefundAttempt.findMany.mockResolvedValue([
+        { id: 'attempt_1', orderId: 'order_1', paymentId: 'pay_1', refundId: 'rfnd_1' },
+      ]);
+      razorpayInstance.payments.fetchRefund.mockResolvedValue({
+        id: 'rfnd_1',
+        payment_id: 'pay_1',
+        status: 'failed',
+        amount: 249900,
+      });
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
+
+      const results = await paymentService.reconcileUnresolvedRefunds();
+
+      expect(mockOrder.updateMany).toHaveBeenCalledWith({
+        where: { id: 'order_1', paymentStatus: { in: ['paid', 'refund_pending'] } },
+        data: { paymentStatus: 'refund_failed' },
+      });
+      expect(inventoryService.restoreStockForOrder).not.toHaveBeenCalled();
+      expect(mockRefundAttempt.update).toHaveBeenCalledWith({
+        where: { id: 'attempt_1' },
+        data: { refundId: 'rfnd_1', status: 'failed', processedAt: expect.any(Date) },
+      });
+      expect(results.failed).toBe(1);
+    });
+
+    it('leaves a still-genuinely-pending refund alone', async () => {
+      mockRefundAttempt.findMany.mockResolvedValue([
+        { id: 'attempt_1', orderId: 'order_1', paymentId: 'pay_1', refundId: 'rfnd_1' },
+      ]);
+      razorpayInstance.payments.fetchRefund.mockResolvedValue({
+        id: 'rfnd_1',
+        payment_id: 'pay_1',
+        status: 'created',
+        amount: 249900,
+      });
+
+      const results = await paymentService.reconcileUnresolvedRefunds();
+
+      expect(mockOrder.updateMany).not.toHaveBeenCalled();
+      expect(results.stillPending).toBe(1);
+    });
+
+    // The rarer double-failure case: refundOrderPayment's own follow-up
+    // write never even recorded the refundId Razorpay assigned.
+    it('falls back to listing refunds for the payment when the attempt never recorded a refundId', async () => {
+      mockRefundAttempt.findMany.mockResolvedValue([
+        { id: 'attempt_1', orderId: 'order_1', paymentId: 'pay_1', refundId: null },
+      ]);
+      razorpayInstance.payments.fetchMultipleRefund.mockResolvedValue({
+        items: [{ id: 'rfnd_1', payment_id: 'pay_1', status: 'processed', amount: 249900 }],
+      });
+      mockOrder.updateMany.mockResolvedValue({ count: 1 });
+      mockOrder.findUnique.mockResolvedValue({ id: 'order_1', orderItems: [] });
+
+      const results = await paymentService.reconcileUnresolvedRefunds();
+
+      expect(razorpayInstance.payments.fetchRefund).not.toHaveBeenCalled();
+      expect(razorpayInstance.payments.fetchMultipleRefund).toHaveBeenCalledWith('pay_1');
+      expect(results.completed).toBe(1);
+    });
+
+    it('marks the attempt unknown when Razorpay cannot confirm anything either way', async () => {
+      mockRefundAttempt.findMany.mockResolvedValue([
+        { id: 'attempt_1', orderId: 'order_1', paymentId: 'pay_1', refundId: 'rfnd_1' },
+      ]);
+      razorpayInstance.payments.fetchRefund.mockRejectedValue(new Error('network down'));
+
+      const results = await paymentService.reconcileUnresolvedRefunds();
+
+      expect(mockRefundAttempt.update).toHaveBeenCalledWith({
+        where: { id: 'attempt_1' },
+        data: { status: 'unknown' },
+      });
+      expect(mockOrder.updateMany).not.toHaveBeenCalled();
+      expect(results.unknown).toBe(1);
+    });
+
+    it('only queries attempts still initiated/pending past the staleness window', async () => {
+      mockRefundAttempt.findMany.mockResolvedValue([]);
+
+      await paymentService.reconcileUnresolvedRefunds();
+
+      expect(mockRefundAttempt.findMany).toHaveBeenCalledWith({
+        where: {
+          status: { in: ['initiated', 'pending'] },
+          requestedAt: { lt: expect.any(Date) },
+        },
+      });
+    });
+
+    it('is a no-op when nothing is unresolved', async () => {
+      mockRefundAttempt.findMany.mockResolvedValue([]);
+
+      const results = await paymentService.reconcileUnresolvedRefunds();
+
+      expect(razorpayInstance.payments.fetchRefund).not.toHaveBeenCalled();
+      expect(results).toEqual({ checked: 0, completed: 0, failed: 0, stillPending: 0, unknown: 0 });
     });
   });
 });

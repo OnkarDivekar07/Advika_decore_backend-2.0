@@ -2,6 +2,7 @@ const prisma = require('@config/prisma');
 const customError = require('@utils/customError');
 const otpService = require('@modules/otp/otp.service');
 const formatNumber = require('@utils/formatNumber');
+const withTransactionRetry = require('@utils/withTransactionRetry');
 
 // Address ordering used everywhere the list is returned: default address
 // first (so it's always what checkout/the address book defaults to
@@ -23,7 +24,7 @@ const clearOtherDefaults = async (tx, userId, keepId) => {
 exports.createAddress = async (data) => {
   const userId = data?.user?.connect?.id;
 
-  return prisma.$transaction(async (tx) => {
+  return withTransactionRetry(async (tx) => {
     // The very first address a user saves is always their default — there
     // is never a valid state where a user has addresses but none of them
     // is default (see prisma/schema.prisma's comment on Address.isDefault).
@@ -73,7 +74,7 @@ exports.updateAddressById = async (id, userId, data) => {
   const { isDefault, ...rest } = data;
   const updateData = makingDefault ? { ...rest, isDefault: true } : rest;
 
-  return prisma.$transaction(async (tx) => {
+  return withTransactionRetry(async (tx) => {
     const updated = await tx.address.update({
       where: { id },
       data: updateData,
@@ -113,7 +114,7 @@ exports.deleteAddressById = async (id, userId) => {
     );
   }
 
-  return prisma.$transaction(async (tx) => {
+  return withTransactionRetry(async (tx) => {
     const deleted = await tx.address.delete({ where: { id } });
 
     if (deleted.isDefault) {
@@ -149,7 +150,7 @@ exports.setDefaultAddressById = async (id, userId) => {
 
   if (address.isDefault) return address; // already the default — no-op
 
-  return prisma.$transaction(async (tx) => {
+  return withTransactionRetry(async (tx) => {
     const updated = await tx.address.update({
       where: { id },
       data: { isDefault: true },
