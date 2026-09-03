@@ -1,6 +1,10 @@
 const orderService = require('./order.service');
 const CustomError = require('@utils/customError');
 const prisma = require('@config/prisma');
+// Only required for refundOrder below — payment.service.js owns the actual
+// gateway/ledger logic (refundOrderPayment); no cycle (order.service.js
+// itself never requires payment.service.js back).
+const paymentService = require('@modules/payment/payment.service');
 
 exports.createDraftOrder = async (req, res, next) => {
   try {
@@ -141,6 +145,35 @@ exports.cancelOrder = async (req, res, next) => {
     res.sendResponse({
       message: 'Order cancelled successfully',
       data: order,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// POST /api/orders/:id/refund (Admin)
+// The capability behind cancelOrderByCustomer's "contact support" message
+// for a paid-online order that can't self-service cancel — see
+// payment.service.js's refundOrderPayment for the full eligibility rules
+// (must be 'paid', not yet shipped) and why this only moves paymentStatus
+// to 'refund_pending' immediately rather than 'refunded' (a refund is
+// asynchronous on Razorpay's side; only the refund.processed webhook, or
+// the reconciliation sweep, ever confirms it actually completed).
+exports.refundOrder = async (req, res, next) => {
+  const { id } = req.params;
+  const { userId: adminUserId } = req.user;
+  const { reason } = req.body;
+
+  try {
+    const result = await paymentService.refundOrderPayment(
+      id,
+      adminUserId,
+      reason
+    );
+
+    res.sendResponse({
+      message: 'Refund initiated successfully',
+      data: result,
     });
   } catch (error) {
     next(error);

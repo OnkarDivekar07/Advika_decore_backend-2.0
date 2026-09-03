@@ -24,10 +24,18 @@ jest.mock('@modules/order/order.service', () => ({
   cancelOrderByCustomer: jest.fn(),
 }));
 
+// order.controller.js's refundOrder handler pulls in payment.service.js —
+// mocked here for the same reason payment.routes.test.js mocks it: requiring
+// the real module would construct real Razorpay/Redis/BullMQ clients.
+jest.mock('@modules/payment/payment.service', () => ({
+  refundOrderPayment: jest.fn(),
+}));
+
 const mockAddress = { findUnique: jest.fn() };
 jest.mock('@config/prisma', () => ({ address: mockAddress }));
 
 const orderService = require('@modules/order/order.service');
+const paymentService = require('@modules/payment/payment.service');
 const orderRoutes = require('@modules/order/order.routes');
 const responseMiddleware = require('@middlewares/responseMiddleware');
 const errorHandler = require('@middlewares/errorHandler');
@@ -49,6 +57,7 @@ const VALID_ORDER_ID = '507f1f77bcf86cd799439099';
 
 beforeEach(() => {
   Object.values(orderService).forEach((fn) => fn.mockReset());
+  Object.values(paymentService).forEach((fn) => fn.mockReset());
   mockAddress.findUnique.mockReset();
 });
 
@@ -663,5 +672,108 @@ describe('POST /api/order/:id/cancel', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/contact support/i);
+  });
+});
+
+describe('POST /api/order/:id/refund', () => {
+  it('403s for a non-admin user', async () => {
+    const res = await request(app)
+      .post(`/api/order/${VALID_ORDER_ID}/refund`)
+      .set('x-role', 'customer')
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(paymentService.refundOrderPayment).not.toHaveBeenCalled();
+  });
+
+  it('422s when the id is not a valid ObjectId', async () => {
+    const res = await request(app)
+      .post('/api/order/not-an-object-id/refund')
+      .set('x-role', 'admin')
+      .send({});
+
+    expect(res.status).toBe(422);
+    expect(paymentService.refundOrderPayment).not.toHaveBeenCalled();
+  });
+
+  it('422s when reason exceeds the length cap', async () => {
+    const res = await request(app)
+      .post(`/api/order/${VALID_ORDER_ID}/refund`)
+      .set('x-role', 'admin')
+      .send({ reason: 'x'.repeat(501) });
+
+    expect(res.status).toBe(422);
+    expect(paymentService.refundOrderPayment).not.toHaveBeenCalled();
+  });
+
+  it('200s and calls refundOrderPayment with the order id, admin user id and reason', async () => {
+    paymentService.refundOrderPayment.mockResolvedValue({
+      order: { id: VALID_ORDER_ID, paymentStatus: 'refund_pending' },
+      refund: { id: 'rfnd_1' },
+    });
+
+    const res = await request(app)
+      .post(`/api/order/${VALID_ORDER_ID}/refund`)
+      .set('x-user-id', 'admin_1')
+      .set('x-role', 'admin')
+      .send({ reason: 'Customer requested cancellation' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.message).toBe('Refund initiated successfully');
+    expect(res.body.data.order.paymentStatus).toBe('refund_pending');
+    expect(paymentService.refundOrderPayment).toHaveBeenCalledWith(
+      VALID_ORDER_ID,
+      'admin_1',
+      'Customer requested cancellation'
+    );
+  });
+
+  it('works with no reason provided at all', async () => {
+    paymentService.refundOrderPayment.mockResolvedValue({
+      order: { id: VALID_ORDER_ID, paymentStatus: 'refund_pending' },
+      refund: { id: 'rfnd_1' },
+    });
+
+    const res = await request(app)
+      .post(`/api/order/${VALID_ORDER_ID}/refund`)
+      .set('x-user-id', 'admin_1')
+      .set('x-role', 'admin')
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(paymentService.refundOrderPayment).toHaveBeenCalledWith(
+      VALID_ORDER_ID,
+      'admin_1',
+      undefined
+    );
+  });
+
+  it('propagates a 400 from the service for an order that is not paid', async () => {
+    paymentService.refundOrderPayment.mockRejectedValue(
+      new CustomError(
+        "Cannot refund an order with payment status 'pending' — only a fully paid order can be refunded this way.",
+        400
+      )
+    );
+
+    const res = await request(app)
+      .post(`/api/order/${VALID_ORDER_ID}/refund`)
+      .set('x-role', 'admin')
+      .send({});
+
+    expect(res.status).toBe(400);
+  });
+
+  it('propagates a 404 from the service for an order that does not exist', async () => {
+    paymentService.refundOrderPayment.mockRejectedValue(
+      new CustomError('Order not found', 404)
+    );
+
+    const res = await request(app)
+      .post(`/api/order/${VALID_ORDER_ID}/refund`)
+      .set('x-role', 'admin')
+      .send({});
+
+    expect(res.status).toBe(404);
   });
 });

@@ -13,9 +13,21 @@ const requiredEnv = [
   'RAZORPAY_WEBHOOK_SECRET',
   'MSG91_AUTH_KEY',
   'MSG91_TEMPLATE_ID',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'BUCKET_NAME',
+  // Cloudflare R2 — the actual active image-upload backend (see
+  // src/services/external/AWSUploads.js). The legacy AWS_ACCESS_KEY_ID /
+  // AWS_SECRET_ACCESS_KEY / BUCKET_NAME vars used to be required here, but
+  // nothing in the app reads them any more (uploads moved to R2; the old S3
+  // bucket is only ever referenced by URLs already saved in the database,
+  // which need no credentials to resolve) — requiring them gave a deploy
+  // zero real protection while failing to catch the one thing that actually
+  // breaks uploads: R2 itself being unconfigured. That previously only
+  // surfaced at the first real upload attempt, well after boot.
+  'R2_ACCOUNT_ID',
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
+  'R2_ENDPOINT',
+  'R2_BUCKET_NAME',
+  'R2_PUBLIC_URL',
 ];
 
 const missing = requiredEnv.filter((name) => !process.env[name]);
@@ -133,9 +145,6 @@ module.exports = {
   razorpayWebhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET,
   msg91AuthKey: process.env.MSG91_AUTH_KEY,
   msg91TemplateId: process.env.MSG91_TEMPLATE_ID,
-  awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  bucketName: process.env.BUCKET_NAME,
   nodeEnv: process.env.NODE_ENV || 'development',
   freeDeliveryThreshold,
   deliveryCharge,

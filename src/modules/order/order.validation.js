@@ -103,6 +103,21 @@ const validateCancelOrder = [
     .withMessage('reason is too long'),
 ];
 
+// POST /api/orders/:id/refund (Admin) — same shape as validateCancelOrder
+// (id param + optional bounded `reason`); kept separate rather than reused
+// so the two can diverge later without one silently affecting the other.
+const validateRefundOrder = [
+  ...validateOrderIdParam,
+  body('reason')
+    .optional({ nullable: true, checkFalsy: true })
+    .isString()
+    .withMessage('reason must be a string')
+    .bail()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage('reason is too long'),
+];
+
 // GET /api/orders/all (Admin) — the order workbench's list query. Every
 // filter here is optional; an admin with no filters selected still gets a
 // paginated (never unbounded) list — see order.service.js's
@@ -189,6 +204,7 @@ module.exports = {
   validateOrderIdParam,
   validateOrderListQuery,
   validateCancelOrder,
+  validateRefundOrder,
   ADMIN_ORDER_STATUSES,
   ADMIN_PAYMENT_STATUSES,
   MAX_BUY_NOW_QUANTITY,

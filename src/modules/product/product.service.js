@@ -118,7 +118,15 @@ const getProductById = async (id) => {
     where: { id },
   });
 
-  if (!product) {
+  // Every other public product query in this file (getAllProducts,
+  // getProductsByIds, getRelatedProducts) already excludes soft-deleted
+  // products — this was the one gap: a delisted/recalled product's detail
+  // page kept rendering in full (price, images, "Add to Cart") for anyone
+  // with a direct link, even though it was never purchasable (cart.service's
+  // assertProductAvailable already 404s it there). Treated identically to
+  // a genuinely-missing product — the customer has no reason to be able to
+  // tell the two apart.
+  if (!product || product.isDeleted) {
     throw new CustomError('Product not found', 404);
   }
 

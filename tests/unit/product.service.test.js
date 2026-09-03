@@ -176,6 +176,21 @@ describe('product.service', () => {
       const result = await productService.getProductById('p1');
       expect(result).toEqual({ id: 'p1', name: 'Shirt' });
     });
+
+    it('404s a soft-deleted product the same as a missing one', async () => {
+      mockPrisma.product.findUnique.mockResolvedValue({
+        id: 'p1',
+        name: 'Shirt',
+        isDeleted: true,
+      });
+
+      await expect(
+        productService.getProductById('p1')
+      ).rejects.toMatchObject({
+        message: 'Product not found',
+        statusCode: 404,
+      });
+    });
   });
 
   describe('getProductsByIds', () => {

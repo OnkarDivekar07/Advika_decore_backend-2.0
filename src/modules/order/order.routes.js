@@ -8,6 +8,7 @@ const {
   getOrders,
   getOrderById,
   cancelOrder,
+  refundOrder,
 } = require('./order.controller');
 
 const authenticate = require('@middlewares/authenticate');
@@ -19,6 +20,7 @@ const {
   validateOrderIdParam,
   validateOrderListQuery,
   validateCancelOrder,
+  validateRefundOrder,
 } = require('./order.validation'); // renamed from admin.validation to avoid confusion
 
 // -----------------------------------------------------------------------------
@@ -102,6 +104,26 @@ router.post(
   validateCancelOrder,
   validateRequest,
   cancelOrder
+);
+
+// -----------------------------------------------------------------------------
+// @route   POST /api/orders/:id/refund
+// @desc    Admin-triggered refund of a fully-paid order's payment, via the
+//          payment gateway. See payment.service.js's refundOrderPayment for
+//          the full eligibility rules (must be 'paid', not yet shipped) and
+//          why this only initiates a refund (paymentStatus -> 'refund_pending')
+//          rather than confirming it complete — that only happens once
+//          Razorpay's refund.processed webhook (or the reconciliation sweep)
+//          confirms the money actually moved.
+// @access  Admin
+// -----------------------------------------------------------------------------
+router.post(
+  '/:id/refund',
+  authenticate,
+  authorizeAdminOnly,
+  validateRefundOrder,
+  validateRequest,
+  refundOrder
 );
 
 module.exports = router;

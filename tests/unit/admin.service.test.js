@@ -57,7 +57,7 @@ describe('admin.service', () => {
       await expect(
         adminService.login({ email: 'nobody@advika.com', password: 'x' })
       ).rejects.toMatchObject({
-        message: 'Invalid email or not an admin',
+        message: 'Invalid email or password',
         statusCode: 401,
       });
     });
@@ -92,7 +92,7 @@ describe('admin.service', () => {
           password: 'wrong-password',
         })
       ).rejects.toMatchObject({
-        message: 'Incorrect password',
+        message: 'Invalid email or password',
         statusCode: 401,
       });
     });

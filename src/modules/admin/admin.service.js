@@ -202,13 +202,19 @@ exports.login = async ({ email, password }) => {
     where: { email },
   });
 
+  // Both failure branches below throw the exact same message/status. A
+  // distinct "no such admin" vs "wrong password" message lets anyone
+  // enumerate valid admin emails for free by just watching which text
+  // comes back — a real, low-cost account-enumeration vector against a
+  // login endpoint that only guards a handful of admin accounts. Neither
+  // branch tells the caller anything about *why* it failed.
   if (!admin || admin.role !== 'admin') {
-    throw new CustomError('Invalid email or not an admin', 401);
+    throw new CustomError('Invalid email or password', 401);
   }
 
   const isMatch = await bcrypt.compare(password, admin.password);
   if (!isMatch) {
-    throw new CustomError('Incorrect password', 401);
+    throw new CustomError('Invalid email or password', 401);
   }
 
   const token = generateToken(admin.id, admin.role);
