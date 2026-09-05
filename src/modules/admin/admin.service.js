@@ -1,4 +1,7 @@
 const prisma = require('@config/prisma');
+const redis = require('@config/redis');
+const withTimeout = require('@utils/withTimeout');
+const logger = require('@config/logger');
 const {
   formatUser,
   formatUserDetail,
@@ -14,10 +17,39 @@ const paginateWithCache = require('@utils/paginateWithCache');
 // folds its result into the wider alerts payload instead of duplicating
 // the threshold/selection logic here.
 const inventoryService = require('@modules/inventory/inventory.service');
+
+// Same fail-open convention as paginateWithCache.js's REDIS_CACHE_TIMEOUT_MS
+// (see that file's comment) — a slow/unreachable Redis must never make the
+// dashboard hang; it should just fall through to the live query below.
+const REDIS_CACHE_TIMEOUT_MS = 1500;
+const ADMIN_STATS_CACHE_KEY = 'adminStats';
+// Pattern 22 (performance): DashboardCards.jsx fetches this once per
+// mount with no polling and no manual-refresh control (see
+// admin_panel_fixed/src/component/Adminlogin/DashboardOverview.jsx), so a
+// short TTL costs an admin nothing in practice while sparing every
+// dashboard visit 6 count/aggregate queries. This is a read-only reporting
+// tile, not a value anything else in the app reads back or acts on — unlike
+// stock/order/payment state, a few seconds of staleness here has no
+// downstream effect.
+const ADMIN_STATS_CACHE_TTL_SECONDS = 60;
+
 /**
  * Fetch platform-wide admin statistics
  */
 exports.getAdminStats = async () => {
+  try {
+    const cached = await withTimeout(
+      redis.get(ADMIN_STATS_CACHE_KEY),
+      REDIS_CACHE_TIMEOUT_MS,
+      'admin stats cache read'
+    );
+    if (cached) return JSON.parse(cached);
+  } catch (err) {
+    logger.warn(
+      `Admin stats cache read failed, falling back to a live query: ${err.message}`
+    );
+  }
+
   const [
     totalUsers,
     totalOrders,
@@ -37,7 +69,7 @@ exports.getAdminStats = async () => {
     }),
   ]);
 
-  return {
+  const stats = {
     totalUsers,
     totalOrders,
     totalProducts,
@@ -45,6 +77,24 @@ exports.getAdminStats = async () => {
     pendingOrders,
     totalRevenue: totalRevenueResult._sum.total || 0,
   };
+
+  // Deliberately not awaited — same reasoning as paginateWithCache.js: the
+  // response is already correct, so a slow/broken cache write should never
+  // add latency to it.
+  withTimeout(
+    redis.set(
+      ADMIN_STATS_CACHE_KEY,
+      JSON.stringify(stats),
+      'EX',
+      ADMIN_STATS_CACHE_TTL_SECONDS
+    ),
+    REDIS_CACHE_TIMEOUT_MS,
+    'admin stats cache write'
+  ).catch((err) => {
+    logger.warn(`Admin stats cache write failed: ${err.message}`);
+  });
+
+  return stats;
 };
 
 exports.getAllUsersWithStats = (req) => {

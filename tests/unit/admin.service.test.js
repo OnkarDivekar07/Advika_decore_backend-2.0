@@ -14,6 +14,12 @@ const adminService = require('@modules/admin/admin.service');
 
 describe('admin.service', () => {
   describe('getAdminStats', () => {
+    beforeEach(() => {
+      mockRedis.get.mockReset();
+      mockRedis.set.mockReset();
+      mockRedis.get.mockResolvedValue(null);
+    });
+
     it('aggregates user/order/product counts and paid-order revenue', async () => {
       mockPrisma.user.count.mockResolvedValue(120);
       mockPrisma.order.count
@@ -47,6 +53,71 @@ describe('admin.service', () => {
 
       const stats = await adminService.getAdminStats();
       expect(stats.totalRevenue).toBe(0);
+    });
+
+    // Pattern 22 (performance/caching): the dashboard's stats tile ran 6
+    // uncached count/aggregate queries — 5 full-collection-style counts
+    // plus an aggregate — on every single dashboard load, with no caching
+    // layer despite every other hot read path in this codebase (product
+    // listing, homepage, banners) already using one. These prove the same
+    // Redis-backed, short-TTL, fail-open pattern now applies here too.
+    it('serves a cache hit without querying the database at all', async () => {
+      const cachedStats = {
+        totalUsers: 7,
+        totalOrders: 3,
+        totalProducts: 9,
+        deliveredOrders: 1,
+        pendingOrders: 2,
+        totalRevenue: 4321,
+      };
+      mockRedis.get.mockResolvedValue(JSON.stringify(cachedStats));
+
+      const stats = await adminService.getAdminStats();
+
+      expect(stats).toEqual(cachedStats);
+      expect(mockPrisma.user.count).not.toHaveBeenCalled();
+      expect(mockPrisma.order.count).not.toHaveBeenCalled();
+      expect(mockPrisma.product.count).not.toHaveBeenCalled();
+      expect(mockPrisma.order.aggregate).not.toHaveBeenCalled();
+    });
+
+    it('writes freshly computed stats to the cache with a short TTL on a cache miss', async () => {
+      mockPrisma.user.count.mockResolvedValue(1);
+      mockPrisma.order.count.mockResolvedValue(0);
+      mockPrisma.product.count.mockResolvedValue(1);
+      mockPrisma.order.aggregate.mockResolvedValue({ _sum: { total: 500 } });
+
+      await adminService.getAdminStats();
+      // The cache write is deliberately fire-and-forget (same convention
+      // as paginateWithCache.js) — give its microtask a tick to run before
+      // asserting on it.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(mockRedis.set).toHaveBeenCalledTimes(1);
+      const [key, value, mode, ttl] = mockRedis.set.mock.calls[0];
+      expect(typeof key).toBe('string');
+      expect(JSON.parse(value)).toEqual({
+        totalUsers: 1,
+        totalOrders: 0,
+        totalProducts: 1,
+        deliveredOrders: 0,
+        pendingOrders: 0,
+        totalRevenue: 500,
+      });
+      expect(mode).toBe('EX');
+      expect(ttl).toBeGreaterThan(0);
+    });
+
+    it('falls back to a live query when the cache read fails (e.g. Redis unreachable)', async () => {
+      mockRedis.get.mockRejectedValue(new Error('ECONNREFUSED'));
+      mockPrisma.user.count.mockResolvedValue(2);
+      mockPrisma.order.count.mockResolvedValue(1);
+      mockPrisma.product.count.mockResolvedValue(3);
+      mockPrisma.order.aggregate.mockResolvedValue({ _sum: { total: 10 } });
+
+      const stats = await adminService.getAdminStats();
+
+      expect(stats.totalUsers).toBe(2);
     });
   });
 
