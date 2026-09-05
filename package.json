@@ -4,6 +4,7 @@
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
+    "postinstall": "prisma generate",
     "start": "pm2-runtime start ecosystem.config.js --env production",
     "dev": "nodemon server.js",
     "seed": "node prisma/seed.js",
@@ -21,7 +22,10 @@
     "e2e:server": "node scripts/run-with-e2e-env.js node server.js",
     "e2e:load-test": "node scripts/run-with-e2e-env.js node tests/e2e-helpers/loadTestConcurrency.js",
     "e2e:load-test:peak": "node scripts/run-with-e2e-env.js node tests/e2e-helpers/loadTestPeakHour.js",
-    "e2e:test:fulfillment-sweep": "node scripts/run-with-e2e-env.js node tests/e2e-helpers/fulfillmentSweepRecovery.js"
+    "e2e:test:fulfillment-sweep": "node scripts/run-with-e2e-env.js node tests/e2e-helpers/fulfillmentSweepRecovery.js",
+    "e2e:load-test:prepare": "node scripts/run-with-e2e-env.js node tests/e2e-helpers/prepareLoadTestCatalog.js",
+    "e2e:load-test:cleanup": "node scripts/run-with-e2e-env.js node tests/e2e-helpers/cleanupLoadTestCatalog.js",
+    "e2e:load-test:realistic": "node scripts/run-with-e2e-env.js k6 run tests/load/k6-realistic-mix.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.839.0",
