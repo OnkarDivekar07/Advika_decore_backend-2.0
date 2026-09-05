@@ -1,0 +1,394 @@
+{
+    "root_group": {
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {
+                "catalog read OK": {
+                    "name": "catalog read OK",
+                    "path": "::catalog read OK",
+                    "id": "9a65dd6970b570f49c83a27177761bac",
+                    "passes": 832,
+                    "fails": 0
+                },
+                "cart add OK": {
+                    "name": "cart add OK",
+                    "path": "::cart add OK",
+                    "id": "15e006c51ceb660efebb96c0b2a093a8",
+                    "passes": 339,
+                    "fails": 0
+                },
+                "product detail OK": {
+                    "name": "product detail OK",
+                    "path": "::product detail OK",
+                    "id": "c5f94678e96ac8ac8b527c477a3c1da3",
+                    "passes": 395,
+                    "fails": 0
+                },
+                "draft order OK": {
+                    "name": "draft order OK",
+                    "path": "::draft order OK",
+                    "id": "2222d3e113e1a532f7795d15bbe951f8",
+                    "passes": 21,
+                    "fails": 197
+                },
+                "COD placement OK": {
+                    "path": "::COD placement OK",
+                    "id": "5a44c331f92b3399d61c4a6c6d5417a9",
+                    "passes": 10,
+                    "fails": 0,
+                    "name": "COD placement OK"
+                }
+            },
+        "name": "",
+        "path": ""
+    },
+    "metrics": {
+        "http_req_connecting": {
+            "max": 6.2353,
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0.022188776796973515,
+            "min": 0,
+            "med": 0
+        },
+        "http_req_sending": {
+            "p(95)": 0.50486,
+            "avg": 0.037901084489281194,
+            "min": 0,
+            "med": 0,
+            "max": 3.9978,
+            "p(90)": 0
+        },
+        "transactional_checkout_duration": {
+            "avg": 20357.2,
+            "min": 2200,
+            "med": 19726,
+            "max": 40692,
+            "p(90)": 39002.7,
+            "p(95)": 39847.35
+        },
+        "checkout_critical_failures": {
+            "count": 109,
+            "rate": 0.3034328616800398,
+            "thresholds": {
+                "count==0": true
+            }
+        },
+        "http_req_duration": {
+            "avg": 3118.547112963435,
+            "min": 0,
+            "med": 555.2968,
+            "max": 60015.9604,
+            "p(90)": 3601.74264,
+            "p(95)": 25154.588119999997
+        },
+        "http_req_blocked": {
+            "p(95)": 0,
+            "avg": 0.037669962168978555,
+            "min": 0,
+            "med": 0,
+            "max": 14.5139,
+            "p(90)": 0
+        },
+        "http_req_failed": {
+            "fails": 3659,
+            "passes": 306,
+            "thresholds": {
+                "rate<0.005": true
+            },
+            "value": 0.07717528373266078
+        },
+        "http_req_duration{endpoint_class:normal}": {
+            "avg": 3354.995358577758,
+            "min": 0,
+            "med": 611.83395,
+            "max": 60015.9604,
+            "p(90)": 3699.402210000001,
+            "p(95)": 25738.041849999998,
+            "thresholds": {
+                "p(95)<500": true
+            }
+        },
+        "iteration_duration": {
+            "p(90)": 31629.151700000002,
+            "p(95)": 34270.948225,
+            "avg": 7930.140481351869,
+            "min": 1009.1455,
+            "med": 2822.1691,
+            "max": 66146.0532
+        },
+        "http_reqs": {
+            "count": 3965,
+            "rate": 11.037718317076678
+        },
+        "http_req_duration{expected_response:true}": {
+            "med": 342.0994,
+            "max": 46230.4633,
+            "p(90)": 3000.1150800000005,
+            "p(95)": 3273.74024,
+            "avg": 978.1549548510499,
+            "min": 0
+        },
+        "data_received": {
+            "count": 9418978,
+            "rate": 26220.43530863613
+        },
+        "order_history_duration": {
+            "avg": 890.78125,
+            "min": 89,
+            "med": 873.5,
+            "max": 2826,
+            "p(90)": 1616,
+            "p(95)": 1877.5
+        },
+        "checks": {
+            "fails": 197,
+            "passes": 1597,
+            "value": 0.8901895206243032
+        },
+        "http_req_waiting": {
+            "med": 549.7262,
+            "max": 60015.9604,
+            "p(90)": 3599.7428,
+            "p(95)": 25153.925259999996,
+            "avg": 3116.188677301389,
+            "min": 0
+        },
+        "data_sent": {
+            "rate": 2956.917047831604,
+            "count": 1062192
+        },
+        "vus_max": {
+            "value": 50,
+            "min": 50,
+            "max": 50
+        },
+        "catalog_read_duration": {
+            "avg": 14.03125,
+            "min": 0,
+            "med": 5,
+            "max": 797,
+            "p(90)": 11,
+            "p(95)": 19
+        },
+        "product_detail_duration": {
+            "p(90)": 1552.6000000000001,
+            "p(95)": 1653.4999999999998,
+            "avg": 767.6101265822784,
+            "min": 41,
+            "med": 702,
+            "max": 3245
+        },
+        "http_req_receiving": {
+            "avg": 2.3205345775535937,
+            "min": 0,
+            "med": 0.7172,
+            "max": 16.6347,
+            "p(90)": 7.69598,
+            "p(95)": 10.926699999999995
+        },
+        "vus": {
+            "value": 1,
+            "min": 0,
+            "max": 50
+        },
+        "cart_ops_duration": {
+            "max": 6052,
+            "p(90)": 4464.6,
+            "p(95)": 4683.9,
+            "avg": 3550.958702064897,
+            "min": 435,
+            "med": 3717
+        },
+        "http_req_duration{endpoint_class:transactional}": {
+            "avg": 3070.92078,
+            "min": 609.3364,
+            "med": 2518.1788500000002,
+            "max": 5880.8473,
+            "p(90)": 5764.87906,
+            "p(95)": 5822.86318,
+            "thresholds": {
+                "p(95)<1000": true
+            }
+        },
+        "http_req_tls_handshaking": {
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "iterations": {
+            "count": 2086,
+            "rate": 5.806981187748285
+        },
+        "bucket_iterations": {
+            "count": 2086,
+            "rate": 5.806981187748285
+        },
+        "admin_read_duration": {
+            "min": 254,
+            "med": 2104,
+            "max": 3022,
+            "p(90)": 2567.4,
+            "p(95)": 2721.7000000000003,
+            "avg": 2086.0689655172414
+        },
+        "checkout_prep_duration": {
+            "min": 1280,
+            "med": 29711.5,
+            "max": 63795,
+            "p(90)": 62273.9,
+            "p(95)": 63055.1,
+            "avg": 31621.26605504587
+        }
+    },
+    "setup_data": {
+        "adminToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2YTlhZWU3NTYzZWJjMzE5ZGE0MDJiMmIiLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE3ODg1ODY3NDcsImV4cCI6MTc4ODU5MDM0N30.m42yRKw-CaEgarIPBvPBrdadXHjyVcHIYjK7Ez4CHy4",
+        "catalogIds": [
+            "6a9baadc7049498b5791dee4",
+            "6a9baadb7049498b5791dee3",
+            "6a9baadb7049498b5791dee2",
+            "6a9baadb7049498b5791dee1",
+            "6a9baadb7049498b5791dee0",
+            "6a9baadb7049498b5791dedf",
+            "6a9baadb7049498b5791dede",
+            "6a9baadb7049498b5791dedd",
+            "6a9baadb7049498b5791dedc",
+            "6a9baada7049498b5791dedb",
+            "6a9baada7049498b5791deda",
+            "6a9baada7049498b5791ded9",
+            "6a9baada7049498b5791ded8",
+            "6a9baada7049498b5791ded7",
+            "6a9baada7049498b5791ded6",
+            "6a9baada7049498b5791ded5",
+            "6a9baad97049498b5791ded4",
+            "6a9baad97049498b5791ded3",
+            "6a9baad97049498b5791ded2",
+            "6a9baad97049498b5791ded1",
+            "6a9baad97049498b5791ded0",
+            "6a9baad97049498b5791decf",
+            "6a9baad97049498b5791dece",
+            "6a9baad87049498b5791decd",
+            "6a9baad87049498b5791decc",
+            "6a9baad87049498b5791decb",
+            "6a9baad87049498b5791deca",
+            "6a9baad87049498b5791dec9",
+            "6a9baad87049498b5791dec8",
+            "6a9baad87049498b5791dec7",
+            "6a9baad87049498b5791dec6",
+            "6a9baad87049498b5791dec5",
+            "6a9baad77049498b5791dec4",
+            "6a9baad77049498b5791dec3",
+            "6a9baad77049498b5791dec2",
+            "6a9baad77049498b5791dec1",
+            "6a9baad77049498b5791dec0",
+            "6a9baad77049498b5791debf",
+            "6a9baad77049498b5791debe",
+            "6a9baad67049498b5791debd",
+            "6a9baad67049498b5791debc",
+            "6a9baad67049498b5791debb",
+            "6a9baad67049498b5791deba",
+            "6a9baad67049498b5791deb9",
+            "6a9baad67049498b5791deb8",
+            "6a9baad67049498b5791deb7",
+            "6a9baad67049498b5791deb6",
+            "6a9baad67049498b5791deb5",
+            "6a9baad57049498b5791deb4",
+            "6a9baad57049498b5791deb3",
+            "6a9baad57049498b5791deb2",
+            "6a9baad57049498b5791deb1",
+            "6a9baad57049498b5791deb0",
+            "6a9baad57049498b5791deaf",
+            "6a9baad57049498b5791deae",
+            "6a9baad47049498b5791dead",
+            "6a9baad47049498b5791deac",
+            "6a9baad47049498b5791deab",
+            "6a9baad47049498b5791deaa",
+            "6a9baad47049498b5791dea9",
+            "6a9baad47049498b5791dea8",
+            "6a9baad47049498b5791dea7",
+            "6a9baad47049498b5791dea6",
+            "6a9baad37049498b5791dea5",
+            "6a9baad37049498b5791dea4",
+            "6a9baad37049498b5791dea3",
+            "6a9baad37049498b5791dea2",
+            "6a9baad37049498b5791dea1",
+            "6a9baad37049498b5791dea0",
+            "6a9baad37049498b5791de9f",
+            "6a9baad37049498b5791de9e",
+            "6a9baad27049498b5791de9d",
+            "6a9baad27049498b5791de9c",
+            "6a9baad27049498b5791de9b",
+            "6a9baad27049498b5791de9a",
+            "6a9baad27049498b5791de99",
+            "6a9baad27049498b5791de98",
+            "6a9baad27049498b5791de97",
+            "6a9baad17049498b5791de96",
+            "6a9baad17049498b5791de95",
+            "6a9baad17049498b5791de94",
+            "6a9baad17049498b5791de93",
+            "6a9baad17049498b5791de92",
+            "6a9baad17049498b5791de91",
+            "6a9baad17049498b5791de90",
+            "6a9baad17049498b5791de8f",
+            "6a9baad07049498b5791de8e",
+            "6a9baad07049498b5791de8d",
+            "6a9baad07049498b5791de8c",
+            "6a9baad07049498b5791de8b",
+            "6a9baad07049498b5791de8a",
+            "6a9baad07049498b5791de89",
+            "6a9baad07049498b5791de88",
+            "6a9baad07049498b5791de87",
+            "6a9baacf7049498b5791de86",
+            "6a9baacf7049498b5791de85",
+            "6a9baacf7049498b5791de84",
+            "6a9baacf7049498b5791de83",
+            "6a9baacf7049498b5791de82",
+            "6a9baacf7049498b5791de81"
+        ],
+        "txnPoolIds": [
+            "6a9baae07049498b5791df02",
+            "6a9baae07049498b5791df01",
+            "6a9baadf7049498b5791df00",
+            "6a9baadf7049498b5791deff",
+            "6a9baadf7049498b5791defe",
+            "6a9baadf7049498b5791defd",
+            "6a9baadf7049498b5791defc",
+            "6a9baadf7049498b5791defb",
+            "6a9baadf7049498b5791defa",
+            "6a9baade7049498b5791def9",
+            "6a9baade7049498b5791def8",
+            "6a9baade7049498b5791def7",
+            "6a9baade7049498b5791def6",
+            "6a9baade7049498b5791def5",
+            "6a9baade7049498b5791def4",
+            "6a9baade7049498b5791def3",
+            "6a9baade7049498b5791def2",
+            "6a9baadd7049498b5791def1",
+            "6a9baadd7049498b5791def0",
+            "6a9baadd7049498b5791deef",
+            "6a9baadd7049498b5791deee",
+            "6a9baadd7049498b5791deed",
+            "6a9baadd7049498b5791deec",
+            "6a9baadd7049498b5791deeb",
+            "6a9baadc7049498b5791deea",
+            "6a9baadc7049498b5791dee9",
+            "6a9baadc7049498b5791dee8",
+            "6a9baadc7049498b5791dee7",
+            "6a9baadc7049498b5791dee6",
+            "6a9baadc7049498b5791dee5",
+            "6a9ba66680cc2302908a1426",
+            "6a9ba66580cc2302908a1425",
+            "6a9ba66580cc2302908a1424",
+            "6a9ba66580cc2302908a1423",
+            "6a9ba66580cc2302908a1422",
+            "6a9ba66580cc2302908a1421",
+            "6a9ba66580cc2302908a1420",
+            "6a9ba66580cc2302908a141f",
+            "6a9ba66480cc2302908a141e",
+            "6a9ba66480cc2302908a141d"
+        ]
+    }
+}
