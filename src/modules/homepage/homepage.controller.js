@@ -2,6 +2,7 @@
 const homepageService = require('./homepage.service');
 const awsService = require('../../services/external/AWSUploads');
 const CustomError = require('@utils/customError');
+const logger = require('@config/logger');
 const {
   generateUniqueBannerFilename,
   validateImage,
@@ -59,8 +60,23 @@ const deleteBanner = async (req, res, next) => {
       throw new CustomError('Banner not found', 404);
     }
 
+    // keyFromPublicUrl returns null when imageUrl matches neither the R2
+    // nor the legacy S3 pattern (e.g. R2_PUBLIC_URL was changed after this
+    // banner was saved, or the row was imported). deleteFromS3(null)
+    // throws a client-side "No value provided for input HTTP label: Key"
+    // error (confirmed against the real R2 SDK) — every attempt to remove
+    // that banner would fail before ever reaching deleteBannerById below,
+    // permanently stuck. Skip the storage delete rather than block the
+    // admin's explicit request to remove the DB row over an object we
+    // can't identify anyway.
     const key = awsService.keyFromPublicUrl(banner.imageUrl);
-    await awsService.deleteFromS3(key);
+    if (key) {
+      await awsService.deleteFromS3(key);
+    } else {
+      logger.warn(
+        `Could not resolve an R2/S3 key from banner ${id}'s imageUrl (${banner.imageUrl}) — skipping storage delete.`
+      );
+    }
     await homepageService.deleteBannerById(id);
 
     res.sendResponse({

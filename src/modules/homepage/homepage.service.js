@@ -44,9 +44,18 @@ const softDeleteNewArrivalService = async (id) => {
     where: { id },
     data: { isNewArrival: false },
   });
-  // Same staleness bug as createNewBanner/deleteBannerById below, for the
-  // 'newArrivalProducts' cachePrefix this flip actually affects.
-  await invalidateCacheByPrefix('newArrivalProducts');
+  // Same staleness bug as createNewBanner/deleteBannerById below. Busts
+  // BOTH prefixes this flip actually affects — 'newArrivalProducts'
+  // (GET /api/homepage/new-arrivals) and 'allProducts', since
+  // product.service.js's getAllProducts also caches listings filtered by
+  // isNewArrival (GET /api/products?isNewArrival=true) under that same
+  // prefix — leaving that one out meant a cached filtered listing page
+  // could keep showing a product for up to its own TTL after this flip
+  // turned it off.
+  await Promise.all([
+    invalidateCacheByPrefix('newArrivalProducts'),
+    invalidateCacheByPrefix('allProducts'),
+  ]);
   return updatedProduct;
 };
 

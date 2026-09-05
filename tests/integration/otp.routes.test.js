@@ -119,4 +119,20 @@ describe('POST /api/otp/verify-otp', () => {
     expect(res.status).toBe(404);
     expect(res.body.message).toBe('OTP not found or expired');
   });
+
+  it('429s once the per-phone verify rate limit is exceeded, so wrong-guess spam is capped', async () => {
+    mockRedis.incr.mockResolvedValue(6); // otpVerifyRateLimiter maxAttempts is 5
+    otpService.verifyOtpService.mockResolvedValue({
+      token: 'jwt-token',
+      user: { id: 'user_1', phone: '+919876543210' },
+      success: true,
+    });
+
+    const res = await request(app)
+      .post('/api/otp/verify-otp')
+      .send({ phone: '+919876543210', otp: '123456' });
+
+    expect(res.status).toBe(429);
+    expect(otpService.verifyOtpService).not.toHaveBeenCalled();
+  });
 });

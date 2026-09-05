@@ -272,6 +272,22 @@ const PAYMENT_EXCEPTION_STATUSES = ['failed', 'timeout', 'unknown'];
 // intentional cancellation, not a failure).
 const SHIPMENT_EXCEPTION_STATUSES = ['DELIVERY_FAILED', 'RTO_INITIATED'];
 
+// Pattern 16 (Redis/BullMQ/background-job resilience audit): closes a
+// documented-but-never-implemented gap — payment.service.js's runFulfillment
+// docstring and the Order.fulfillmentError schema comment both already
+// claimed a 'failed' order (paid but oversold, or a stock-decrement/
+// cart-clear/notification step that errored — see runFulfillment) surfaces
+// here for a human once reconcileFailedFulfillments's retry sweep can't
+// self-heal it. It never actually did: no `fulfillment` reference existed
+// anywhere in this file before this fix, so such an order was only
+// discoverable by directly querying the Order collection. Every currently
+// 'failed' order is included here, not just ones past the retry cap — the
+// sweep will clear a transient one on its own next pass, but showing it
+// early (like paymentExceptions already does for 'timeout'/'unknown', which
+// are equally often self-healing) is strictly more honest than staying
+// silent until the cap is hit.
+const FULFILLMENT_EXCEPTION_STATUS = 'failed';
+
 /**
  * Aggregates real, currently-true operational conditions into a single
  * "needs attention" feed for the admin panel: low-stock products, orders
@@ -294,6 +310,8 @@ exports.getOperationalAlerts = async ({
     paymentExceptionsList,
     shipmentExceptionsCount,
     shipmentExceptionsList,
+    fulfillmentExceptionsCount,
+    fulfillmentExceptionsList,
   ] = await Promise.all([
     // Already capped internally (LOW_STOCK_LIST_CAP) — not re-capped to
     // ALERT_LIST_CAP, since an admin adjusting the threshold on this panel
@@ -345,6 +363,24 @@ exports.getOperationalAlerts = async ({
         courierPartner: true,
         lastLocation: true,
         updatedAt: true,
+      },
+    }),
+
+    prisma.order.count({
+      where: { fulfillmentStatus: FULFILLMENT_EXCEPTION_STATUS },
+    }),
+    prisma.order.findMany({
+      where: { fulfillmentStatus: FULFILLMENT_EXCEPTION_STATUS },
+      orderBy: { updatedAt: 'desc' },
+      take: ALERT_LIST_CAP,
+      select: {
+        id: true,
+        total: true,
+        fulfillmentError: true,
+        fulfillmentAttempts: true,
+        oversold: true,
+        updatedAt: true,
+        user: { select: { name: true, email: true } },
       },
     }),
   ]);
@@ -418,6 +454,21 @@ exports.getOperationalAlerts = async ({
             : null,
         };
       }),
+    },
+    fulfillmentExceptions: {
+      count: fulfillmentExceptionsCount,
+      items: fulfillmentExceptionsList.map((order) => ({
+        id: order.id,
+        total: order.total,
+        fulfillmentError: order.fulfillmentError,
+        fulfillmentAttempts: order.fulfillmentAttempts,
+        oversold: order.oversold,
+        updatedAt: order.updatedAt,
+        user: {
+          name: order.user?.name || 'N/A',
+          email: order.user?.email || null,
+        },
+      })),
     },
     generatedAt: new Date().toISOString(),
   };

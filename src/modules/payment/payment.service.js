@@ -47,11 +47,15 @@ const MAX_FULFILLMENT_ATTEMPTS = 5;
  * persisted onto the order itself (fulfillmentStatus/fulfillmentError/
  * fulfillmentAttempts) so reconcileFailedFulfillments (the
  * fulfillment-reconciliation sweep — see jobs/index.js) can retry a
- * 'failed' order automatically, and admin.service.js's getOperationalAlerts
- * can surface one still failing after MAX_FULFILLMENT_ATTEMPTS for a human
- * to look at — a "paid but oversold" order in particular can never fix
- * itself by retrying, so it needs exactly this kind of visibility, not
- * just a log line.
+ * 'failed' order automatically — a "paid but oversold" order in particular
+ * can never fix itself by retrying, so it needs a durable record and a
+ * retry mechanism, not just a log line. NOTE (Pattern 8 audit): despite an
+ * earlier version of this comment's claim, admin.service.js's
+ * getOperationalAlerts does NOT currently surface an order still failing
+ * after MAX_FULFILLMENT_ATTEMPTS — verified by reading that function in
+ * full, no `fulfillment` reference exists there. An order stuck at
+ * fulfillmentStatus:'failed' past the retry cap is only discoverable today
+ * by directly querying the Order collection, not from any admin UI.
  *
  * This matters even more for the webhook path specifically: Razorpay only
  * retries a delivery on a non-2xx response, but handleRazorpayWebhookEvent

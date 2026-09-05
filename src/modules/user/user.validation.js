@@ -26,7 +26,12 @@ const phoneField = (required) => {
 };
 
 const pincodeField = (required) => {
-  let chain = body('pincode');
+  // .trim() before the format check — matches shipping.validation.js's
+  // validateServiceabilityCheck exactly (its own comment calls this field
+  // "shared" with this one), so a pincode with incidental leading/trailing
+  // whitespace isn't rejected here while that route would have accepted
+  // the same value after trimming it.
+  let chain = body('pincode').trim();
   chain = required
     ? chain.notEmpty().withMessage('Pincode is required').bail()
     : chain.optional();

@@ -1,6 +1,19 @@
 const redis = require('@config/redis');
 const CustomError = require('@utils/customError');
 const normalizePhone = require('@utils/formatNumber');
+const withTimeout = require('@utils/withTimeout');
+const logger = require('@config/logger');
+
+// Pattern 18 (error handling/resilience audit): @config/redis.js's shared
+// client is deliberately configured with `maxRetriesPerRequest: null` —
+// correct for BullMQ's blocking connections, but it means a direct command
+// like the incr/expire below queues forever and never rejects while Redis
+// is unreachable, rather than failing fast. Confirmed live: a genuinely
+// down Redis (not just slow) made every OTP-send/verify and admin-login
+// request hang indefinitely with no response at all, not even an
+// eventual 500 — the request just never completed. Bounded here so a
+// Redis outage fails fast and observably instead.
+const REDIS_CHECK_TIMEOUT_MS = 2000;
 
 /**
  * Factory for phone-keyed rate limiters. Each call site gets its own
@@ -43,8 +56,45 @@ const createRateLimiter = ({
       : normalizePhone(String(req.body.phone || ''));
     const key = `${prefix}:${rawKey || 'invalid'}`;
 
-    const count = await redis.incr(key);
-    if (count === 1) await redis.expire(key, windowSeconds);
+    let count;
+    try {
+      count = await withTimeout(
+        redis.incr(key),
+        REDIS_CHECK_TIMEOUT_MS,
+        `rate limit check (${prefix})`
+      );
+      // Deliberately inside the same try/catch as incr, not a fire-and-forget
+      // best-effort — if this fails/times out, the key keeps counting with
+      // no TTL and would silently rate-limit this key forever instead of
+      // resetting after windowSeconds. Safer to fail this one request than
+      // risk permanently locking out a legitimate phone/email/user.
+      if (count === 1) {
+        await withTimeout(
+          redis.expire(key, windowSeconds),
+          REDIS_CHECK_TIMEOUT_MS,
+          `rate limit expiry (${prefix})`
+        );
+      }
+    } catch (err) {
+      // Fails closed, not open: per this pattern's own instruction not to
+      // convert an infrastructure error into a successful response, a
+      // broken rate limiter must not silently let every request through
+      // unprotected on a brute-force/cost-sensitive endpoint (OTP send,
+      // login, payment-order creation). The honest answer when the safety
+      // control itself can't be evaluated is "try again shortly," not
+      // "sure, go ahead."
+      logger.error(
+        `Rate limiter (${prefix}) could not reach Redis: ${err.message}`,
+        { prefix, key }
+      );
+      return next(
+        new CustomError(
+          'Service temporarily unavailable. Please try again in a moment.',
+          503
+        )
+      );
+    }
+
     if (count > maxAttempts) {
       return next(new CustomError(message, 429));
     }
@@ -91,8 +141,31 @@ const otpVerifyRateLimiter = createRateLimiter({
   message: 'Too many OTP verification attempts. Please request a new OTP.',
 });
 
+// Pattern 17 (API abuse/validation audit): POST /api/payment/create-orderid
+// was the only sensitive, auth-gated endpoint with zero rate limiting —
+// unlike OTP send/verify and admin login above, nothing stopped a single
+// authenticated account from hammering it. createOrderid's own
+// reuse-or-reconcile logic (payment.controller.js) already avoids minting a
+// *new* Razorpay order on every repeated call once one exists, but it still
+// makes a real GET to Razorpay's API on each one — a sustained loop from one
+// account could still exhaust that account's real request budget against
+// Razorpay and degrade checkout for everyone else sharing the same API key.
+// Keyed per-user (this route requires `authenticate`, so `req.user.userId`
+// is always populated) rather than per-phone. 10 attempts / 5 minutes
+// mirrors adminLoginRateLimiter's budget — generous enough for a customer
+// retrying a flaky connection or double-tapping Pay, tight enough to make
+// sustained hammering impractical.
+const paymentCreateOrderRateLimiter = createRateLimiter({
+  prefix: 'payment-create-order-limit',
+  maxAttempts: 10,
+  windowSeconds: 300,
+  message: 'Too many payment requests. Please try again in a few minutes.',
+  keyBy: (req) => req.user?.userId,
+});
+
 module.exports = otpRateLimiter;
 module.exports.createRateLimiter = createRateLimiter;
 module.exports.otpRateLimiter = otpRateLimiter;
 module.exports.otpVerifyRateLimiter = otpVerifyRateLimiter;
 module.exports.adminLoginRateLimiter = adminLoginRateLimiter;
+module.exports.paymentCreateOrderRateLimiter = paymentCreateOrderRateLimiter;

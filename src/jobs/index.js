@@ -43,9 +43,10 @@ const PAYMENT_RECONCILIATION_INTERVAL_MS = 5 * 60 * 1000;
 // decrement/cart-clear/confirmation, so it's worth retrying sooner than a
 // still-in-flight payment attempt is worth timing out. Env-overridable
 // (unlike PAYMENT_RECONCILIATION_INTERVAL_MS above) so the real E2E
-// failure-injection suite can wait seconds instead of minutes for a real
-// sweep cycle to fire — see .env.e2e's own value and
-// e2e-real/fulfillment-sweep-recovery.spec.js.
+// recovery test can wait seconds instead of minutes for a real sweep cycle
+// to fire — see .env.e2e's own value and
+// tests/e2e-helpers/fulfillmentSweepRecovery.js (`npm run
+// e2e:test:fulfillment-sweep`).
 const FULFILLMENT_RECONCILIATION_INTERVAL_MS =
   Number(process.env.FULFILLMENT_RECONCILIATION_INTERVAL_MS) || 2 * 60 * 1000;
 

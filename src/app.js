@@ -7,6 +7,7 @@ const swaggerUi = require('swagger-ui-express');
 const swaggerSpec = require('@config/swagger');
 const logger = require('@config/logger');
 const { Sentry, isEnabled: sentryEnabled } = require('@config/sentry');
+const CustomError = require('@utils/customError');
 
 // Load environment variables
 require('dotenv').config();
@@ -40,7 +41,14 @@ app.use(
       // Allow same-origin / server-to-server requests with no Origin header
       if (!origin) return callback(null, true);
       if (allowedOrigins.includes(origin)) return callback(null, true);
-      return callback(new Error('Not allowed by CORS'));
+      // Pattern 17 (API abuse/validation audit): a plain `new Error(...)`
+      // here isn't a CustomError, so errorHandler.js's default statusCode
+      // (500) applied — confirmed live (a disallowed Origin got "Something
+      // went wrong" / 500). Not a security gap (no CORS headers are set
+      // either way, so a browser still blocks the disallowed origin's JS
+      // from reading the response), but the wrong status code for what is
+      // ordinary, expected rejection of an unrecognized origin.
+      return callback(new CustomError('Not allowed by CORS', 403));
     },
   })
 );

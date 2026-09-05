@@ -32,7 +32,7 @@ jest.mock('razorpay', () =>
 jest.mock('../../src/services/external/DelhiveryClient', () => ({
   checkServiceability: jest
     .fn()
-    .mockResolvedValue({ serviceable: true, recognized: true, codAvailable: true }),
+    .mockResolvedValue({ serviceable: true, recognized: true, codAvailable: true, prepaidAvailable: true }),
   createShipment: jest.fn(),
   trackShipment: jest.fn(),
   cancelShipment: jest.fn(),
@@ -108,8 +108,19 @@ const mockPrisma = {
     }),
     deleteMany: jest.fn(async ({ where }) => {
       const before = db.carts.length;
-      db.carts = db.carts.filter((c) => c.userId !== where.userId);
+      if (where.id?.in) {
+        const idsToDelete = new Set(where.id.in);
+        db.carts = db.carts.filter((c) => !idsToDelete.has(c.id));
+      } else {
+        db.carts = db.carts.filter((c) => c.userId !== where.userId);
+      }
       return { count: before - db.carts.length };
+    }),
+    update: jest.fn(async ({ where, data }) => {
+      const row = db.carts.find((c) => c.id === where.id);
+      if (!row) throw new Error('Cart row not found');
+      if (typeof data.quantity === 'number') row.quantity = data.quantity;
+      return row;
     }),
     createMany: jest.fn(async ({ data }) => {
       data.forEach((d) => db.carts.push({ id: genId(), ...d }));
@@ -305,6 +316,15 @@ const mockRedis = {
     const existed = redisLockStore.delete(key);
     return existed ? 1 : 0;
   }),
+  // paymentCreateOrderRateLimiter (rateLimiter.js, applied to
+  // POST /api/payment/create-orderid — Pattern 17) calls incr/expire on
+  // every request through this file's real checkout flow. Always resolving
+  // to 1 keeps every attempt well under the limiter's threshold, so this
+  // suite exercises the real checkout pipeline rather than the rate
+  // limiter's own behavior (that's rateLimiter.test.js/payment.routes.test.js's
+  // job).
+  incr: jest.fn(async () => 1),
+  expire: jest.fn(async () => 1),
 };
 jest.mock('@config/redis', () => mockRedis);
 

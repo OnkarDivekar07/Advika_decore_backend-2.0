@@ -9,6 +9,14 @@ jest.mock('@middlewares/authenticate', () =>
   })
 );
 
+// payment.routes.js now applies paymentCreateOrderRateLimiter to
+// POST /create-orderid (Pattern 17) — that pulls in @middlewares/rateLimiter,
+// which requires @config/redis. Mocked the same way otp.routes.test.js
+// mocks it for its own rate limiters, so this suite never opens a real
+// Redis connection.
+const mockRedis = { incr: jest.fn(), expire: jest.fn() };
+jest.mock('@config/redis', () => mockRedis);
+
 // Explicit factory (rather than automock) so requiring this test file never
 // pulls in the real payment.service.js — and with it, real Razorpay/Redis/
 // BullMQ client construction that would otherwise try to open connections.
@@ -78,6 +86,15 @@ const buildApp = () => {
 };
 
 const app = buildApp();
+
+beforeEach(() => {
+  // Default: every rate-limited route sees itself as the first attempt in
+  // its window, so no test anywhere in this file trips
+  // paymentCreateOrderRateLimiter by accident. The dedicated rate-limit
+  // tests below override this per-call.
+  mockRedis.incr.mockReset().mockResolvedValue(1);
+  mockRedis.expire.mockReset().mockResolvedValue(1);
+});
 
 describe('POST /api/payment/verify', () => {
   it('422s when required fields are missing', async () => {
@@ -449,6 +466,21 @@ describe('POST /api/payment/create-orderid', () => {
     const res = await request(app).post('/api/payment/create-orderid').send();
 
     expect(res.status).toBe(401);
+    expect(paymentService.createRazorpayOrder).not.toHaveBeenCalled();
+  });
+
+  // Pattern 17 (API abuse/validation audit): this was the only sensitive,
+  // auth-gated endpoint with zero rate limiting before — see
+  // rateLimiter.js's paymentCreateOrderRateLimiter comment for why (a real
+  // GET to Razorpay's API on every repeated call, even once
+  // reuse-or-reconcile avoids minting a fresh order).
+  it('429s once the per-user rate limit is exceeded, before ever touching the draft order', async () => {
+    mockRedis.incr.mockResolvedValue(11); // limiter maxAttempts is 10
+
+    const res = await request(app).post('/api/payment/create-orderid').send();
+
+    expect(res.status).toBe(429);
+    expect(mockDraftOrder.findFirst).not.toHaveBeenCalled();
     expect(paymentService.createRazorpayOrder).not.toHaveBeenCalled();
   });
 

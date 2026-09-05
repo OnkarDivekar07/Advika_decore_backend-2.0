@@ -50,6 +50,7 @@ const emptyAlerts = {
   pendingOrders: { count: 0, items: [] },
   paymentExceptions: { count: 0, items: [] },
   shipmentExceptions: { count: 0, items: [] },
+  fulfillmentExceptions: { count: 0, items: [] },
   generatedAt: '2026-08-19T00:00:00.000Z',
 };
 

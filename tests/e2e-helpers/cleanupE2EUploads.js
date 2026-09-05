@@ -27,15 +27,11 @@
 const {
   S3Client,
   DeleteObjectsCommand,
+  HeadObjectCommand,
 } = require('@aws-sdk/client-s3');
 
-async function deleteE2EUploads(bucketName, keys) {
-  const safeKeys = keys.filter(
-    (key) => typeof key === 'string' && key.includes('e2e-fixture-')
-  );
-  if (safeKeys.length === 0) return { deleted: 0, skipped: keys.length };
-
-  const client = new S3Client({
+function buildClient() {
+  return new S3Client({
     region: 'auto',
     endpoint: process.env.R2_ENDPOINT,
     credentials: {
@@ -44,6 +40,32 @@ async function deleteE2EUploads(bucketName, keys) {
     },
     forcePathStyle: true,
   });
+}
+
+// Pattern 14: direct proof (not an inference from an HTTP 200) that a given
+// R2 object does or doesn't exist — used to verify deleteSupersededImages
+// (imageWorker.js) actually removed the old object from the real bucket,
+// and not just that the app "said" it did.
+async function objectExistsInR2(bucketName, key) {
+  const client = buildClient();
+  try {
+    await client.send(new HeadObjectCommand({ Bucket: bucketName, Key: key }));
+    return true;
+  } catch (err) {
+    if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
+      return false;
+    }
+    throw err;
+  }
+}
+
+async function deleteE2EUploads(bucketName, keys) {
+  const safeKeys = keys.filter(
+    (key) => typeof key === 'string' && key.includes('e2e-fixture-')
+  );
+  if (safeKeys.length === 0) return { deleted: 0, skipped: keys.length };
+
+  const client = buildClient();
 
   await client.send(
     new DeleteObjectsCommand({
@@ -55,7 +77,7 @@ async function deleteE2EUploads(bucketName, keys) {
   return { deleted: safeKeys.length, skipped: keys.length - safeKeys.length };
 }
 
-module.exports = { deleteE2EUploads };
+module.exports = { deleteE2EUploads, objectExistsInR2 };
 
 if (require.main === module) {
   require('dotenv').config({ path: `${__dirname}/../../.env.e2e` });

@@ -181,6 +181,30 @@ describe('DELETE /api/homepage/banners/:id (admin only)', () => {
     );
     expect(homepageService.deleteBannerById).toHaveBeenCalledWith('b1');
   });
+
+  // Pattern 15 (R2/S3 migration audit): keyFromPublicUrl returns null when
+  // imageUrl matches neither the R2 nor the legacy S3 URL shape (e.g.
+  // R2_PUBLIC_URL was reconfigured after this banner was saved, or the row
+  // was imported from elsewhere). deleteFromS3(null) throws a real,
+  // unrecoverable client-side SDK error (confirmed live against R2: "No
+  // value provided for input HTTP label: Key") — before this fix, that
+  // meant the banner could never be deleted through this endpoint at all.
+  it('skips the storage delete (does not 500) and still removes the DB row when the key cannot be resolved', async () => {
+    homepageService.getBannerById.mockResolvedValue({
+      id: 'b1',
+      imageUrl: 'https://unrelated.example/foo.jpg',
+    });
+    homepageService.deleteBannerById.mockResolvedValue({ id: 'b1' });
+    awsService.keyFromPublicUrl.mockReturnValue(null);
+
+    const res = await request(app)
+      .delete('/api/homepage/banners/b1')
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(awsService.deleteFromS3).not.toHaveBeenCalled();
+    expect(homepageService.deleteBannerById).toHaveBeenCalledWith('b1');
+  });
 });
 
 describe('PATCH /api/homepage/new-arrivals/:id (admin only)', () => {

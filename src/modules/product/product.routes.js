@@ -16,6 +16,7 @@ const authenticate = require('@middlewares/authenticate');
 const authorizeAdminOnly = require('@middlewares/authorizeAdminOnly');
 const upload = require('@config/multer');
 const validateRequest = require('@middlewares/validateRequest');
+const validateMongoIdParam = require('@middlewares/validateMongoIdParam');
 
 const {
   validateCreateProduct,
@@ -53,14 +54,19 @@ router.get(
  * @desc    Get product by ID
  * @access  Public
  */
-router.get('/:id', getProductById);
+router.get('/:id', validateMongoIdParam('id'), validateRequest, getProductById);
 
 /**
  * @route   GET /api/products/:id/related
  * @desc    Get related products
  * @access  Public
  */
-router.get('/:id/related', getRelatedProducts);
+router.get(
+  '/:id/related',
+  validateMongoIdParam('id'),
+  validateRequest,
+  getRelatedProducts
+);
 
 // Admin-only Routes
 router.use(authenticate, authorizeAdminOnly);
@@ -97,6 +103,7 @@ router.post(
  */
 router.patch(
   '/:id',
+  validateMongoIdParam('id'),
   upload.array('images', 5),
   upload.handleUploadError,
   validateUpdateProduct,
@@ -109,6 +116,6 @@ router.patch(
  * @desc    Delete a product
  * @access  Admin
  */
-router.delete('/:id', deleteProduct);
+router.delete('/:id', validateMongoIdParam('id'), validateRequest, deleteProduct);
 
 module.exports = router;

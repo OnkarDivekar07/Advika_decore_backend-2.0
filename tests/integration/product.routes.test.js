@@ -109,6 +109,20 @@ describe('GET /api/products (public)', () => {
 });
 
 describe('GET /api/products/:id (public)', () => {
+  // Pattern 17 (API abuse/validation audit): before this, a malformed id
+  // reached prisma.product.findUnique unvalidated — Prisma's MongoDB
+  // connector throws on a non-ObjectId string, and since that's not a
+  // CustomError, errorHandler.js's default statusCode applied: a raw 500
+  // for ordinary bad client input, confirmed live (GET
+  // /api/products/not-a-valid-id). Now caught by validateMongoIdParam
+  // before the service layer is ever reached.
+  it('422s a malformed id instead of a raw 500, and never reaches the service', async () => {
+    const res = await request(app).get('/api/products/not-a-valid-id');
+
+    expect(res.status).toBe(422);
+    expect(productService.getProductById).not.toHaveBeenCalled();
+  });
+
   it('404s when the product does not exist', async () => {
     productService.getProductById.mockRejectedValue(
       new CustomError('Product not found', 404)
@@ -189,6 +203,13 @@ describe('GET /api/products/batch (public)', () => {
 });
 
 describe('GET /api/products/:id/related (public)', () => {
+  it('422s a malformed id instead of a raw 500', async () => {
+    const res = await request(app).get('/api/products/not-a-valid-id/related');
+
+    expect(res.status).toBe(422);
+    expect(productService.getRelatedProducts).not.toHaveBeenCalled();
+  });
+
   it('404s when the base product is missing or has no category', async () => {
     productService.getRelatedProducts.mockRejectedValue(
       new CustomError('Product not found or category missing', 404)
@@ -258,6 +279,15 @@ describe('POST /api/products (admin only)', () => {
 });
 
 describe('PATCH /api/products/:id (admin only)', () => {
+  it('422s a malformed id instead of a raw 500', async () => {
+    const res = await request(app)
+      .patch('/api/products/not-a-valid-id')
+      .field({ price: '1999' });
+
+    expect(res.status).toBe(422);
+    expect(productService.queueProductUpdate).not.toHaveBeenCalled();
+  });
+
   it('403s for a non-admin user', async () => {
     const res = await request(app)
       .patch(`/api/products/${VALID_PRODUCT_ID}`)
@@ -367,6 +397,13 @@ describe('GET /api/products/jobs/:jobId (admin only)', () => {
 });
 
 describe('DELETE /api/products/:id (admin only)', () => {
+  it('422s a malformed id instead of a raw 500', async () => {
+    const res = await request(app).delete('/api/products/not-a-valid-id');
+
+    expect(res.status).toBe(422);
+    expect(productService.deleteProduct).not.toHaveBeenCalled();
+  });
+
   it('403s for a non-admin user', async () => {
     const res = await request(app)
       .delete(`/api/products/${VALID_PRODUCT_ID}`)

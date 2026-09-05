@@ -34,6 +34,31 @@ const invalidateProductCaches = async () => {
   }
 };
 
+// Pattern 14 (product CRUD/media audit): before this, an update that
+// replaced a product's images never cleaned up the ones it superseded —
+// deleteFromS3/keyFromPublicUrl already existed and are used for banners,
+// but nothing on the product path ever called them, so every replaced
+// image became a permanently orphaned R2 object with no logging, no
+// tracking, and unbounded storage-cost growth over time. Best-effort and
+// swallows its own failure (same reasoning as invalidateProductCaches
+// just above) — the product update has already committed by the time this
+// runs, and an R2 cleanup failure must never retry the whole job and risk
+// re-running Prisma.product.update / re-uploading images.
+const deleteSupersededImages = async (oldImageUrls) => {
+  await Promise.all(
+    (oldImageUrls || []).map(async (url) => {
+      try {
+        const key = awsService.keyFromPublicUrl(url);
+        if (key) await awsService.deleteFromS3(key);
+      } catch (err) {
+        logger.error(
+          `Failed to delete superseded product image from R2 (${url}): ${err.message}`
+        );
+      }
+    })
+  );
+};
+
 const imageWorker = new Worker(
   'image-processing-queue',
   async (job) => {
@@ -91,7 +116,16 @@ const imageWorker = new Worker(
         uploadedUrls.push(s3Url);
       }
 
+      // Read the about-to-be-superseded images BEFORE overwriting, so
+      // there's something to clean up afterward — only relevant when new
+      // images are actually replacing old ones.
+      let previousImages = [];
       if (uploadedUrls.length) {
+        const existing = await Prisma.product.findUnique({
+          where: { id: productId },
+          select: { images: true },
+        });
+        previousImages = existing?.images || [];
         updateData.images = uploadedUrls;
       }
 
@@ -101,6 +135,10 @@ const imageWorker = new Worker(
       });
 
       await invalidateProductCaches();
+
+      if (previousImages.length) {
+        await deleteSupersededImages(previousImages);
+      }
 
       return { id: productId, images: uploadedUrls };
     }

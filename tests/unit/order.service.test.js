@@ -635,13 +635,14 @@ describe('detectAddressConflict', () => {
   beforeEach(() => {
     mockAddress.findUnique.mockReset();
     shippingService.checkDeliveryEligibility.mockReset();
-    // Default: address's pincode is deliverable and COD-eligible, so tests
-    // that aren't specifically about delivery eligibility don't need to
-    // set this up themselves.
+    // Default: address's pincode is deliverable and both COD/prepaid
+    // eligible, so tests that aren't specifically about delivery
+    // eligibility don't need to set this up themselves.
     shippingService.checkDeliveryEligibility.mockResolvedValue({
       serviceable: true,
       reason: null,
       codAvailable: true,
+      prepaidAvailable: true,
       skippedCheck: false,
     });
   });
@@ -831,12 +832,67 @@ describe('detectAddressConflict', () => {
       serviceable: true,
       reason: null,
       codAvailable: false,
+      prepaidAvailable: true,
       skippedCheck: false,
     });
 
     const conflicts = await orderService.detectAddressConflict(
       'addr_1',
       'user_1'
+    );
+
+    expect(conflicts).toEqual([]);
+  });
+
+  it('flags a prepaid_unavailable conflict for a prepaid order when the pincode only supports COD (mirror of cod_unavailable)', async () => {
+    mockAddress.findUnique.mockResolvedValue({
+      id: 'addr_1',
+      userId: 'user_1',
+      pincode: '400001',
+    });
+    shippingService.checkDeliveryEligibility.mockResolvedValue({
+      serviceable: true,
+      reason: null,
+      codAvailable: true,
+      prepaidAvailable: false,
+      skippedCheck: false,
+    });
+
+    const conflicts = await orderService.detectAddressConflict(
+      'addr_1',
+      'user_1',
+      undefined,
+      'PREPAID'
+    );
+
+    expect(conflicts).toEqual([
+      {
+        type: 'prepaid_unavailable',
+        message:
+          'Online payment is not available for this address. Please choose Cash on Delivery or a different address.',
+      },
+    ]);
+  });
+
+  it('does not flag prepaid_unavailable for a COD order even when the pincode has no prepaid coverage', async () => {
+    mockAddress.findUnique.mockResolvedValue({
+      id: 'addr_1',
+      userId: 'user_1',
+      pincode: '400001',
+    });
+    shippingService.checkDeliveryEligibility.mockResolvedValue({
+      serviceable: true,
+      reason: null,
+      codAvailable: true,
+      prepaidAvailable: false,
+      skippedCheck: false,
+    });
+
+    const conflicts = await orderService.detectAddressConflict(
+      'addr_1',
+      'user_1',
+      undefined,
+      'COD'
     );
 
     expect(conflicts).toEqual([]);

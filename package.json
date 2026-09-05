@@ -18,7 +18,10 @@
     "e2e:seed": "node scripts/run-with-e2e-env.js node prisma/seed.js",
     "e2e:seed:content": "node scripts/run-with-e2e-env.js node prisma/seed.js --only=content",
     "e2e:setup": "npm run e2e:db:push && npm run e2e:reset-db && npm run e2e:seed",
-    "e2e:server": "node scripts/run-with-e2e-env.js node server.js"
+    "e2e:server": "node scripts/run-with-e2e-env.js node server.js",
+    "e2e:load-test": "node scripts/run-with-e2e-env.js node tests/e2e-helpers/loadTestConcurrency.js",
+    "e2e:load-test:peak": "node scripts/run-with-e2e-env.js node tests/e2e-helpers/loadTestPeakHour.js",
+    "e2e:test:fulfillment-sweep": "node scripts/run-with-e2e-env.js node tests/e2e-helpers/fulfillmentSweepRecovery.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.839.0",

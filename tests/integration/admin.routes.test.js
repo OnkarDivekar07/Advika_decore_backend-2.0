@@ -14,6 +14,7 @@ jest.mock('@modules/admin/admin.service', () => ({
   getAdminStats: jest.fn(),
   getAllUsersWithStats: jest.fn(),
   getUserDetailById: jest.fn(),
+  getCurrentAdmin: jest.fn(),
   login: jest.fn(),
 }));
 
@@ -158,6 +159,15 @@ describe('admin-only routes require auth', () => {
     expect(res.status).toBe(401);
   });
 
+  it('403s GET /users for a non-admin token', async () => {
+    const res = await request(app)
+      .get('/api/admin/users')
+      .set('Authorization', `Bearer ${customerToken}`);
+
+    expect(res.status).toBe(403);
+    expect(adminService.getAllUsersWithStats).not.toHaveBeenCalled();
+  });
+
   it('422s GET /users with an out-of-range limit, even with a valid admin token', async () => {
     const res = await request(app)
       .get('/api/admin/users?limit=500')
@@ -202,6 +212,65 @@ describe('admin-only routes require auth', () => {
 
     expect(res.status).toBe(200);
     expect(adminService.getAllUsersWithStats).toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/admin/me', () => {
+  it('401s with no token', async () => {
+    const res = await request(app).get('/api/admin/me');
+    expect(res.status).toBe(401);
+    expect(adminService.getCurrentAdmin).not.toHaveBeenCalled();
+  });
+
+  it('403s for a non-admin token', async () => {
+    const res = await request(app)
+      .get('/api/admin/me')
+      .set('Authorization', `Bearer ${customerToken}`);
+
+    expect(res.status).toBe(403);
+    expect(adminService.getCurrentAdmin).not.toHaveBeenCalled();
+  });
+
+  it('200s and returns the current admin for a valid admin token', async () => {
+    adminService.getCurrentAdmin.mockResolvedValue({
+      id: 'admin1',
+      name: 'Admin One',
+      email: 'admin@advika.com',
+      role: 'admin',
+    });
+
+    const res = await request(app)
+      .get('/api/admin/me')
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({
+      id: 'admin1',
+      name: 'Admin One',
+      email: 'admin@advika.com',
+      role: 'admin',
+    });
+    expect(adminService.getCurrentAdmin).toHaveBeenCalledWith('admin1');
+  });
+
+  // The real re-verify-against-DB behavior (admin.service.js's actual
+  // getCurrentAdmin) — this route exists specifically so a token that was
+  // valid at login time but whose admin was since deleted/demoted is
+  // caught on the next app load, not just trusted from the JWT claim.
+  // The 401 here is what src/api/session.js's interceptor on the admin
+  // panel treats as an expired-session signal.
+  it('401s when the token is structurally valid but the account is no longer a real admin', async () => {
+    const CustomError = require('@utils/customError');
+    adminService.getCurrentAdmin.mockRejectedValue(
+      new CustomError('Admin session is no longer valid', 401)
+    );
+
+    const res = await request(app)
+      .get('/api/admin/me')
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(401);
+    expect(res.body.message).toBe('Admin session is no longer valid');
   });
 });
 

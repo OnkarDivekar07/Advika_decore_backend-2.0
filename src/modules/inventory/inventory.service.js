@@ -1,6 +1,24 @@
 // inventory service
 const prisma = require('@config/prisma');
 const CustomError = require('@utils/customError');
+const invalidateCacheByPrefix = require('@utils/invalidateCacheByPrefix');
+
+// Same prefixes product.service.js's invalidateProductCaches busts after a
+// create/update/delete — adjustStock is the admin-facing manual
+// stock-correction endpoint (PATCH /api/inventory/:productId) and writes
+// Product.stock directly, entirely outside that module, so without this it
+// was the one admin-facing product write that never invalidated
+// GET /api/products' cache: a restock or correction could sit invisible to
+// customers (stale stock/availability on cached listing pages) for up to
+// that cache's own TTL. Not wired into decrementStockForOrder/
+// restoreStockForOrder below — those run inside checkout transactions
+// (withTransactionRetry), and busting the cache before such a transaction
+// actually commits would just let it get repopulated with the still-old
+// data, so doing this safely for the checkout path needs the invalidation
+// to happen at the post-commit call sites instead, not in here.
+const PRODUCT_CACHE_PREFIXES = ['allProducts', 'newArrivalProducts'];
+const invalidateProductCaches = () =>
+  Promise.all(PRODUCT_CACHE_PREFIXES.map((prefix) => invalidateCacheByPrefix(prefix)));
 
 /**
  * Atomically decrements stock for every item in an order.
@@ -148,10 +166,12 @@ exports.adjustStock = async (productId, action, quantity, expectedStock) => {
   switch (action) {
     case 'set': {
       if (expectedStock === undefined) {
-        return prisma.product.update({
+        const updated = await prisma.product.update({
           where: { id: productId },
           data: { stock: quantity },
         });
+        await invalidateProductCaches();
+        return updated;
       }
 
       // Conditional update: only applies if stock still equals what the
@@ -180,14 +200,18 @@ exports.adjustStock = async (productId, action, quantity, expectedStock) => {
         );
       }
 
+      await invalidateProductCaches();
       return prisma.product.findUnique({ where: { id: productId } });
     }
 
-    case 'increment':
-      return prisma.product.update({
+    case 'increment': {
+      const updated = await prisma.product.update({
         where: { id: productId },
         data: { stock: { increment: quantity } },
       });
+      await invalidateProductCaches();
+      return updated;
+    }
 
     case 'decrement':
       // Same atomic conditional update used by the order/payment flow —
@@ -195,6 +219,7 @@ exports.adjustStock = async (productId, action, quantity, expectedStock) => {
       await exports.decrementStockForOrder([{ productId, quantity }], prisma, {
         throwOnInsufficientStock: true,
       });
+      await invalidateProductCaches();
       return prisma.product.findUnique({ where: { id: productId } });
 
     default:

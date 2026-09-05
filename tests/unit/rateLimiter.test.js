@@ -8,6 +8,7 @@ jest.mock('@config/redis', () => mockRedis);
 const {
   createRateLimiter,
   adminLoginRateLimiter,
+  paymentCreateOrderRateLimiter,
 } = require('@middlewares/rateLimiter');
 
 const buildReqRes = (phone) => ({
@@ -114,6 +115,59 @@ describe('rateLimiter.createRateLimiter', () => {
     expect(mockRedis.expire).not.toHaveBeenCalled();
   });
 
+  // Pattern 18 (error handling/resilience audit): confirmed live that a
+  // genuinely unreachable Redis (not just slow) previously made requests
+  // hang forever with no response at all — @config/redis.js's shared
+  // client is configured with `maxRetriesPerRequest: null` (correct for
+  // BullMQ, wrong for a direct command an HTTP request is waiting on).
+  describe('Redis unavailable', () => {
+    it('503s (fails closed, not open) rather than hanging when redis.incr never resolves', async () => {
+      mockRedis.incr.mockImplementationOnce(() => new Promise(() => {}));
+
+      const { req, res, next } = buildReqRes('+919999999999');
+      const start = Date.now();
+      await limiter(req, res, next);
+      const elapsedMs = Date.now() - start;
+
+      expect(next).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Service temporarily unavailable. Please try again in a moment.',
+          statusCode: 503,
+        })
+      );
+      // Bounded by REDIS_CHECK_TIMEOUT_MS (2s), not left hanging.
+      expect(elapsedMs).toBeLessThan(10000);
+    });
+
+    it('503s when redis.incr rejects outright (e.g. connection refused)', async () => {
+      mockRedis.incr.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+
+      const { req, res, next } = buildReqRes('+919999999999');
+      await limiter(req, res, next);
+
+      expect(next).toHaveBeenCalledWith(
+        expect.objectContaining({ statusCode: 503 })
+      );
+    });
+
+    it('503s when redis.expire fails on the first request in a window, rather than leaving a TTL-less key that would rate-limit this number forever', async () => {
+      mockRedis.incr.mockResolvedValueOnce(1);
+      // ...Once: this file relies on Jest's `clearMocks` (clears call
+      // records between tests, not implementations — see jest.config.js),
+      // so a non-Once mockRejectedValue here would otherwise leak into
+      // every later test that hits the count===1/expire branch without
+      // itself configuring mockRedis.expire.
+      mockRedis.expire.mockRejectedValueOnce(new Error('connection lost'));
+
+      const { req, res, next } = buildReqRes('+919999999999');
+      await limiter(req, res, next);
+
+      expect(next).toHaveBeenCalledWith(
+        expect.objectContaining({ statusCode: 503 })
+      );
+    });
+  });
+
   describe('keyBy option', () => {
     it('keys on whatever keyBy(req) returns instead of req.body.phone', async () => {
       mockRedis.incr.mockResolvedValue(1);
@@ -171,6 +225,41 @@ describe('rateLimiter.createRateLimiter', () => {
       expect(next).toHaveBeenCalledWith(
         expect.objectContaining({
           message: 'Too many login attempts. Please try again later.',
+          statusCode: 429,
+        })
+      );
+    });
+  });
+
+  // Pattern 17 (API abuse/validation audit): POST /api/payment/create-orderid
+  // was the only sensitive, auth-gated endpoint with zero rate limiting —
+  // see rateLimiter.js's own comment on why (a real GET to Razorpay's API
+  // on every repeated call, even once reuse-or-reconcile avoids minting a
+  // fresh order).
+  describe('paymentCreateOrderRateLimiter', () => {
+    it('keys on req.user.userId, not phone/email', async () => {
+      mockRedis.incr.mockResolvedValue(1);
+      const req = { user: { userId: 'user_123' } };
+      const next = jest.fn();
+
+      await paymentCreateOrderRateLimiter(req, {}, next);
+
+      expect(mockRedis.incr).toHaveBeenCalledWith(
+        'payment-create-order-limit:user_123'
+      );
+      expect(next).toHaveBeenCalledWith();
+    });
+
+    it('429s once the per-user attempt cap is exceeded', async () => {
+      mockRedis.incr.mockResolvedValue(11); // maxAttempts is 10
+      const req = { user: { userId: 'user_123' } };
+      const next = jest.fn();
+
+      await paymentCreateOrderRateLimiter(req, {}, next);
+
+      expect(next).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Too many payment requests. Please try again in a few minutes.',
           statusCode: 429,
         })
       );

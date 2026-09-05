@@ -52,6 +52,30 @@ const assertProductAvailable = async (productId, quantity) => {
 // DELETE for it either). The cleanup is best-effort and never allowed to
 // fail the read — a user's cart should still load even if the sweep
 // itself has a problem.
+//
+// The same staleness problem exists one level short of full deletion: a
+// product's stock can drop *below* (but not to zero) what's already
+// sitting in someone's cart — another customer bought some of it, or an
+// admin corrected the count — with no deletion involved at all. Before
+// this, that row rode through unchanged — the client saw (and
+// summarizeCart below priced) a quantity that was no longer actually
+// purchasable, only ever catching up at checkout time (order.service.js's
+// own, separate stock re-check). This clamps the row's *returned*
+// quantity down to current stock so what the customer sees and is quoted
+// is always truthful, and opportunistically persists the clamp back to
+// the DB — same best-effort, never-fail-the-read shape as the orphan
+// sweep above.
+//
+// Deliberately NOT extended to stock hitting exactly 0: that's the
+// ordinary shape of a lost stock race (see the
+// 'checkout flow — simultaneous purchase of the last item' test in
+// checkout.e2e.test.js) — the loser's cart is expected to still show
+// their line item exactly as they left it after their checkout attempt
+// is correctly rejected, precisely to prove the failed checkout didn't
+// silently mutate their cart. Dropping the row here (however
+// well-intentioned) would contradict that already-established,
+// deliberately-tested invariant, so a fully-zeroed-out product is left
+// completely untouched rather than clamped or swept.
 const getCart = async (userId) => {
   const rows = await prisma.cart.findMany({
     where: { userId },
@@ -60,23 +84,39 @@ const getCart = async (userId) => {
 
   const valid = [];
   const orphanedIds = [];
+  const clamped = [];
   for (const row of rows) {
-    if (row.product && !row.product.isDeleted) {
-      valid.push(row);
-    } else {
+    if (!row.product || row.product.isDeleted) {
       orphanedIds.push(row.id);
+      continue;
+    }
+    if (row.product.stock > 0 && row.quantity > row.product.stock) {
+      clamped.push({ id: row.id, quantity: row.product.stock });
+      valid.push({ ...row, quantity: row.product.stock });
+    } else {
+      valid.push(row);
     }
   }
 
+  // Wrapped in an async closure (not just Promise.resolve(call())) so this
+  // is safe even against a test double (or any future implementation)
+  // that throws synchronously rather than rejecting a promise — either
+  // shape is caught the same way, and the read is never taken down by it.
+  const fireAndForget = (fn, onError) => {
+    (async () => fn())().catch((err) => onError(err));
+  };
+
   if (orphanedIds.length > 0) {
-    // Wrapped in Promise.resolve() so this is safe even against a test
-    // double (or any future implementation) that doesn't itself return a
-    // promise — the sweep must never be able to throw synchronously and
-    // take the read down with it.
-    Promise.resolve(
-      prisma.cart.deleteMany({ where: { id: { in: orphanedIds } } })
-    ).catch((err) =>
-      logger.warn('Failed to sweep orphaned cart rows', { err: err.message })
+    fireAndForget(
+      () => prisma.cart.deleteMany({ where: { id: { in: orphanedIds } } }),
+      (err) => logger.warn('Failed to sweep orphaned cart rows', { err: err.message })
+    );
+  }
+
+  for (const item of clamped) {
+    fireAndForget(
+      () => prisma.cart.update({ where: { id: item.id }, data: { quantity: item.quantity } }),
+      (err) => logger.warn('Failed to persist a stock-clamped cart quantity', { err: err.message })
     );
   }
 

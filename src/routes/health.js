@@ -9,6 +9,7 @@ const router = express.Router();
 const prisma = require('@config/prisma');
 const redis = require('@config/redis');
 const logger = require('@config/logger');
+const withTimeout = require('@utils/withTimeout');
 
 // How long this endpoint waits for the database before giving up and
 // reporting unhealthy. Prisma's MongoDB connector defaults to a 30s
@@ -20,17 +21,6 @@ const logger = require('@config/logger');
 // running in the background. Racing against a short local timeout makes
 // "database is down" fail fast and observable instead.
 const DB_PING_TIMEOUT_MS = 4000;
-
-function withTimeout(promise, ms) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
-    // Don't let this timer alone keep the process (or a test runner) alive
-    // if it's still pending when everything else has settled/exited.
-    timer.unref();
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
 
 router.get('/', async (req, res) => {
   const checks = {};

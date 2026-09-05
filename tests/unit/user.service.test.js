@@ -89,6 +89,33 @@ describe('user.service', () => {
         data: { isDefault: false },
       });
     });
+
+    // Pattern 17 (API abuse/validation audit): the controller used to spread
+    // the raw request body straight into this Prisma create call. Prisma
+    // rejects any field it doesn't recognize on a model outright (confirmed
+    // live — no privilege-escalation risk), but that meant ordinary
+    // unexpected input 500'd instead of just being ignored. Now only the
+    // known, already-validated Address fields ever reach Prisma.
+    it('drops unknown/unexpected fields rather than passing them to Prisma', async () => {
+      mockPrisma.address.count.mockResolvedValue(0);
+      mockPrisma.address.create.mockResolvedValue({ id: 'addr1' });
+
+      await userService.createAddress({
+        houseArea: '221B Baker St',
+        user: { connect: { id: 'user1' } },
+        userId: 'someone-elses-id',
+        role: 'admin',
+        isDeleted: true,
+      });
+
+      expect(mockPrisma.address.create).toHaveBeenCalledWith({
+        data: {
+          houseArea: '221B Baker St',
+          user: { connect: { id: 'user1' } },
+          isDefault: true,
+        },
+      });
+    });
   });
 
   describe('getAddressesByUserId', () => {
@@ -180,6 +207,28 @@ describe('user.service', () => {
       expect(mockPrisma.address.updateMany).toHaveBeenCalledWith({
         where: { userId: 'user1', isDefault: true, id: { not: 'addr1' } },
         data: { isDefault: false },
+      });
+    });
+
+    // Pattern 17 (API abuse/validation audit): same fix as createAddress's
+    // own test above — see that test's comment.
+    it('drops unknown/unexpected fields rather than passing them to Prisma', async () => {
+      mockPrisma.address.findFirst.mockResolvedValue({
+        id: 'addr1',
+        userId: 'user1',
+      });
+      mockPrisma.address.update.mockResolvedValue({ id: 'addr1' });
+
+      await userService.updateAddressById('addr1', 'user1', {
+        city: 'Pune',
+        userId: 'someone-elses-id',
+        role: 'admin',
+        isDeleted: true,
+      });
+
+      expect(mockPrisma.address.update).toHaveBeenCalledWith({
+        where: { id: 'addr1' },
+        data: { city: 'Pune' },
       });
     });
   });
@@ -375,6 +424,54 @@ describe('user.service', () => {
         },
       });
       expect(result).toEqual(profile);
+    });
+  });
+
+  // Pattern 2 (authorization/IDOR audit): PUT /api/user/address/:id has no
+  // ObjectId-format validator at all (unlike DELETE/PATCH default, which
+  // only check notEmpty()), so a malformed id reaches this service layer
+  // unfiltered. The security property that actually matters — that a
+  // malformed or otherwise-invalid id can never resolve to a DIFFERENT
+  // user's address — holds structurally here because every one of these
+  // three functions scopes its lookup to BOTH id AND the caller's own
+  // userId in the same findFirst call, never id alone. These tests pin
+  // that compound-where-clause shape down explicitly so it can't silently
+  // regress to an id-only lookup later.
+  describe('address ownership functions never query by id alone', () => {
+    it('updateAddressById always scopes the lookup to (id, userId) together, even for a garbage id', async () => {
+      mockPrisma.address.findFirst.mockResolvedValue(null);
+
+      await expect(
+        userService.updateAddressById('not-a-real-object-id', 'user1', { city: 'Pune' })
+      ).rejects.toMatchObject({ statusCode: 403 });
+
+      expect(mockPrisma.address.findFirst).toHaveBeenCalledWith({
+        where: { id: 'not-a-real-object-id', userId: 'user1' },
+      });
+    });
+
+    it('deleteAddressById always scopes the lookup to (id, userId) together, even for a garbage id', async () => {
+      mockPrisma.address.findFirst.mockResolvedValue(null);
+
+      await expect(
+        userService.deleteAddressById('not-a-real-object-id', 'user1')
+      ).rejects.toMatchObject({ statusCode: 401 });
+
+      expect(mockPrisma.address.findFirst).toHaveBeenCalledWith({
+        where: { id: 'not-a-real-object-id', userId: 'user1' },
+      });
+    });
+
+    it('setDefaultAddressById always scopes the lookup to (id, userId) together, even for a garbage id', async () => {
+      mockPrisma.address.findFirst.mockResolvedValue(null);
+
+      await expect(
+        userService.setDefaultAddressById('not-a-real-object-id', 'user1')
+      ).rejects.toMatchObject({ statusCode: 403 });
+
+      expect(mockPrisma.address.findFirst).toHaveBeenCalledWith({
+        where: { id: 'not-a-real-object-id', userId: 'user1' },
+      });
     });
   });
 });

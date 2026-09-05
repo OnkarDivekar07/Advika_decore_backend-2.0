@@ -24,6 +24,14 @@ jest.mock('@config/prisma', () => ({
   shipment: mockShipment,
 }));
 
+// inventory.service is a real cross-module dependency (cancelOrderShipment
+// restores stock through it) — mocked at the service level rather than
+// reaching into a Prisma `product` double here, same convention other test
+// files use for this module (e.g. order.service.test.js mocking
+// shippingService).
+const mockInventoryService = { restoreStockForOrder: jest.fn() };
+jest.mock('@modules/inventory/inventory.service', () => mockInventoryService);
+
 const delhiveryClient = require('../../src/services/external/DelhiveryClient');
 const shippingService = require('@modules/shipping/shipping.service');
 const logger = require('@config/logger');
@@ -94,6 +102,28 @@ describe('checkServiceability', () => {
       estimatedDays: null,
       estimatedDeliveryDate: null,
       codAvailable: true,
+    });
+  });
+
+  it('forwards prepaidAvailable independently of codAvailable, for a pincode Delhivery serves COD-only', async () => {
+    delhiveryClient.checkServiceability.mockResolvedValue({
+      serviceable: true,
+      recognized: true,
+      codAvailable: true,
+      prepaidAvailable: false,
+    });
+
+    const result = await shippingService.checkServiceability({
+      destinationPincode: '400001',
+    });
+
+    expect(result).toEqual({
+      serviceable: true,
+      reason: null,
+      estimatedDays: null,
+      estimatedDeliveryDate: null,
+      codAvailable: true,
+      prepaidAvailable: false,
     });
   });
 
@@ -189,6 +219,7 @@ describe('checkDeliveryEligibility', () => {
       estimatedDays: null,
       estimatedDeliveryDate: null,
       codAvailable: true,
+      prepaidAvailable: true,
       skippedCheck: true,
     });
     expect(warnSpy).toHaveBeenCalled();
@@ -264,6 +295,7 @@ describe('checkDeliveryEligibility — SHIPPING_SERVICEABILITY_FALLBACK_POLICY=f
       estimatedDays: null,
       estimatedDeliveryDate: null,
       codAvailable: false,
+      prepaidAvailable: false,
       skippedCheck: true,
     });
     expect(warnSpy).toHaveBeenCalled();
@@ -434,6 +466,26 @@ describe('createShipmentForOrder', () => {
     expect(mockShipment.create).not.toHaveBeenCalled();
   });
 
+  // Pattern 11 (order/shipment lifecycle audit): the existingShipment
+  // pre-check (above) only closes the ordinary case — under a genuine
+  // race (two requests both passing that check before either writes),
+  // Shipment.orderId's @unique constraint rejects the loser's insert with
+  // P2002. This must resolve the same graceful way the ordinary
+  // already-processed case does, not surface as a raw crash.
+  it('resolves a raced duplicate-insert (P2002 on Shipment.orderId) the same graceful way as the ordinary already-processed case', async () => {
+    mockOrder.findUnique.mockResolvedValue(baseOrder);
+    mockShipment.findUnique
+      .mockResolvedValueOnce(null) // pre-check: no shipment yet, race is on
+      .mockResolvedValueOnce({ id: 'shipment_1', orderId: 'order_1' }); // re-fetch after losing the race
+    delhiveryClient.createShipment.mockResolvedValue(createdPackage());
+    mockShipment.create.mockRejectedValue({ code: 'P2002' });
+
+    const result = await shippingService.createShipmentForOrder('order_1');
+
+    expect(result.alreadyProcessed).toBe(true);
+    expect(result.shipment).toEqual({ id: 'shipment_1', orderId: 'order_1' });
+  });
+
   it('creates a shipment with Delhivery, persists it, and marks the order shipped', async () => {
     mockOrder.findUnique.mockResolvedValue(baseOrder);
     mockShipment.findUnique.mockResolvedValue(null);
@@ -507,6 +559,25 @@ describe('createShipmentForOrder', () => {
       statusCode: 422,
     });
     expect(mockShipment.create).not.toHaveBeenCalled();
+  });
+
+  // Pattern 12 (carrier failure-mode audit): success:true + status:'Success'
+  // with no waybill was slipping past the validation and persisting a
+  // Shipment with no tracking id, permanently marking the order 'shipped'
+  // with nothing anyone could ever track.
+  it('surfaces a clean 422 (not a silently-broken shipment) when Delhivery reports success with no waybill assigned', async () => {
+    mockOrder.findUnique.mockResolvedValue(baseOrder);
+    mockShipment.findUnique.mockResolvedValue(null);
+    delhiveryClient.createShipment.mockResolvedValue({
+      success: true,
+      packages: [{ status: 'Success', remarks: ['no waybill in response'] }],
+    });
+
+    await expect(
+      shippingService.createShipmentForOrder('order_1')
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(mockShipment.create).not.toHaveBeenCalled();
+    expect(mockOrder.update).not.toHaveBeenCalled();
   });
 
   it('surfaces a clean 422 (not a raw Delhivery error) if the pincode has fallen out of coverage since the order was confirmed', async () => {
@@ -586,6 +657,33 @@ describe('trackOrderShipment', () => {
     );
 
     expect(result.status).toBe('IN_TRANSIT');
+  });
+
+  // Pattern 12 (carrier failure-mode audit): a poll that comes back with no
+  // Status at all (an incomplete/glitchy 200) must not regress an
+  // already-progressed shipment's status back to the CREATED default —
+  // same "keep the previous value when this poll told us nothing new"
+  // reasoning already applied to lastLocation/estimatedDeliveryDate.
+  it('keeps the previously stored status when a tracking poll comes back with no Status at all', async () => {
+    mockOrder.findUnique.mockResolvedValue(baseOrder);
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      trackingId: 'AWB123',
+      status: 'IN_TRANSIT',
+      lastLocation: 'Mumbai Hub',
+    });
+    delhiveryClient.trackShipment.mockResolvedValue({ ShipmentData: [] }); // incomplete/malformed response
+    mockShipment.update.mockImplementation(({ data }) => Promise.resolve({ orderId: 'order_1', ...data }));
+
+    const result = await shippingService.trackOrderShipment(
+      'order_1',
+      requestingOwner
+    );
+
+    expect(result.status).toBe('IN_TRANSIT');
+    expect(mockShipment.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'IN_TRANSIT' }) })
+    );
   });
 
   it('throws a 404 if no shipment exists yet for the order', async () => {
@@ -820,6 +918,32 @@ describe('cancelOrderShipment', () => {
       data: { status: 'cancelled' },
     });
     expect(result.status).toBe('CANCELLED');
+    // Pattern 11 (order/shipment lifecycle audit): every order reaching
+    // this function was already 'confirmed' (stock decremented) by the
+    // time it had a shipment — cancelling that shipment must give the
+    // stock back, same as order.service.js's cancelOrderByCustomer does
+    // for a pre-shipment cancellation.
+    expect(mockInventoryService.restoreStockForOrder).toHaveBeenCalledWith(
+      baseOrder.orderItems
+    );
+  });
+
+  it('does not restore stock when Delhivery declines the cancellation (shipment stays active, not actually cancelled)', async () => {
+    mockOrder.findUnique.mockResolvedValue(baseOrder);
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      trackingId: 'AWB123',
+      status: 'CREATED',
+    });
+    delhiveryClient.cancelShipment.mockResolvedValue({
+      status: false,
+      remark: 'Already out for delivery.',
+    });
+
+    await expect(
+      shippingService.cancelOrderShipment('order_1', requestingOwner, 'Changed my mind')
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(mockInventoryService.restoreStockForOrder).not.toHaveBeenCalled();
   });
 
   it('throws a 422 (and never marks CANCELLED) when Delhivery declines the cancellation', async () => {
@@ -898,6 +1022,26 @@ describe('handleDelhiveryWebhookEvent', () => {
 
     expect(mockShipment.update).not.toHaveBeenCalled();
     expect(mockOrder.update).not.toHaveBeenCalled();
+  });
+
+  // Pattern 12: mirror of trackOrderShipment's own regression test — a
+  // webhook payload with no Status at all must not stomp an
+  // already-progressed shipment's status back to the CREATED default.
+  it('keeps the previously stored status when the webhook payload carries no Status at all', async () => {
+    mockShipment.findUnique.mockResolvedValue({
+      orderId: 'order_1',
+      trackingId: 'AWB123',
+      status: 'IN_TRANSIT',
+    });
+    mockShipment.update.mockImplementation(({ data }) =>
+      Promise.resolve({ orderId: 'order_1', ...data })
+    );
+
+    await shippingService.handleDelhiveryWebhookEvent({ AWB: 'AWB123' });
+
+    expect(mockShipment.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'IN_TRANSIT' }) })
+    );
   });
 
   it('updates the shipment and syncs the order on a recognized delivery event', async () => {

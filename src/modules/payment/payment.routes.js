@@ -17,6 +17,7 @@ const {
 } = require('./payment.validation');
 
 const validateRequest = require('@middlewares/validateRequest');
+const { paymentCreateOrderRateLimiter } = require('@middlewares/rateLimiter');
 
 /**
  * @route   POST /api/payment/webhook
@@ -35,7 +36,7 @@ router.use(authenticate);
  * @desc    Create a Razorpay Order ID
  * @access  Authenticated Users
  */
-router.post('/create-orderid', createOrderid);
+router.post('/create-orderid', paymentCreateOrderRateLimiter, createOrderid);
 
 /**
  * @route   POST /api/payment/verify

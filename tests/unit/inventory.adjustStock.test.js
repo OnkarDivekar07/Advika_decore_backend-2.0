@@ -66,6 +66,9 @@ const mockProduct = {
 
 jest.mock('@config/prisma', () => ({ product: mockProduct }));
 
+const mockInvalidateCacheByPrefix = jest.fn().mockResolvedValue(undefined);
+jest.mock('@utils/invalidateCacheByPrefix', () => mockInvalidateCacheByPrefix);
+
 const inventoryService = require('@modules/inventory/inventory.service');
 const CustomError = require('@utils/customError');
 
@@ -73,6 +76,7 @@ beforeEach(() => {
   mockProduct.findUnique.mockClear();
   mockProduct.update.mockClear();
   mockProduct.updateMany.mockClear();
+  mockInvalidateCacheByPrefix.mockClear();
 });
 
 describe('inventoryService.adjustStock', () => {
@@ -95,6 +99,12 @@ describe('inventoryService.adjustStock', () => {
 
       expect(result.stock).toBe(20);
       expect(productStore.prod_1.stock).toBe(20);
+      // Pattern 3 (catalog/stale-data audit): every successful admin stock
+      // write must invalidate GET /api/products' cache — otherwise a
+      // cached listing page can keep showing the pre-correction stock for
+      // up to that cache's own TTL.
+      expect(mockInvalidateCacheByPrefix).toHaveBeenCalledWith('allProducts');
+      expect(mockInvalidateCacheByPrefix).toHaveBeenCalledWith('newArrivalProducts');
     });
 
     it('applies the set when expectedStock matches current stock', async () => {
@@ -117,6 +127,9 @@ describe('inventoryService.adjustStock', () => {
 
       // Stock is untouched — the stale write never applied.
       expect(productStore.prod_1.stock).toBe(8);
+      // ...and since nothing actually changed, the cache must not be
+      // busted for a write that was rejected.
+      expect(mockInvalidateCacheByPrefix).not.toHaveBeenCalled();
     });
 
     it('rejects with a CustomError instance on a stale expectedStock', async () => {
@@ -139,6 +152,7 @@ describe('inventoryService.adjustStock', () => {
       );
 
       expect(result.stock).toBe(20);
+      expect(mockInvalidateCacheByPrefix).toHaveBeenCalledWith('allProducts');
     });
   });
 
@@ -153,6 +167,7 @@ describe('inventoryService.adjustStock', () => {
       );
 
       expect(result.stock).toBe(3);
+      expect(mockInvalidateCacheByPrefix).toHaveBeenCalledWith('allProducts');
     });
 
     it('throws 409 without mutating stock when the decrement exceeds availability', async () => {
@@ -163,6 +178,7 @@ describe('inventoryService.adjustStock', () => {
       ).rejects.toMatchObject({ statusCode: 409 });
 
       expect(productStore.prod_1.stock).toBe(3);
+      expect(mockInvalidateCacheByPrefix).not.toHaveBeenCalled();
     });
   });
 

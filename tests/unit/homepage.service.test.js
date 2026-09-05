@@ -91,5 +91,28 @@ describe('homepage.service', () => {
         100
       );
     });
+
+    // Pattern 3 (catalog/stale-data audit): GET /api/products?isNewArrival=true
+    // is cached under the 'allProducts' prefix too (product.service.js's
+    // getAllProducts includes isNewArrival in its cache key), so this flip
+    // must bust that prefix as well — otherwise a cached filtered listing
+    // page could keep showing a product for up to its own TTL after an
+    // admin turns its "new arrival" flag off.
+    it('also invalidates the allProducts cache, since a filtered ?isNewArrival=true listing is cached under that prefix too', async () => {
+      mockPrisma.product.update.mockResolvedValue({
+        id: 'p1',
+        isNewArrival: false,
+      });
+
+      await homepageService.softDeleteNewArrivalService('p1');
+
+      expect(mockRedis.scan).toHaveBeenCalledWith(
+        '0',
+        'MATCH',
+        'allProducts:*',
+        'COUNT',
+        100
+      );
+    });
   });
 });

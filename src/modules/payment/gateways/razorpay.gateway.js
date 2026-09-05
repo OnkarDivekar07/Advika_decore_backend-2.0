@@ -6,6 +6,30 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
+// Pattern 18 (error handling/resilience audit): confirmed by reading
+// node_modules/razorpay/dist/api.js directly — the SDK builds its internal
+// axios instance from only `baseURL`/`headers`/`auth`; `_createConfig`
+// never reads or forwards a timeout, so axios's own default (0 = no
+// timeout, wait forever) applies. Razorpay sits on the hardest part of the
+// checkout path (create-orderid, verify, refund) — a hung/slow Razorpay
+// would hang those requests indefinitely, the same failure shape already
+// found and fixed for Redis (rateLimiter.js/paginateWithCache.js) and
+// already correctly bounded for Delhivery (DelhiveryClient.js's own
+// AbortController). There's no constructor option for this — mutating the
+// SDK's own already-constructed axios instance is the least invasive way
+// to close the same gap here; every request made through this `razorpay`
+// object (orders/payments/refunds) shares that one instance.
+const RAZORPAY_REQUEST_TIMEOUT_MS =
+  Number(process.env.RAZORPAY_REQUEST_TIMEOUT_MS) || 10000;
+// Optional-chained rather than a direct assignment: the real SDK always has
+// this shape (confirmed above), but several existing test suites mock the
+// `razorpay` package itself with a minimal `{ orders, payments }` stand-in
+// that has no `.api` at all — this must stay a no-op there rather than
+// throw at module-load time and break every one of those suites.
+if (razorpay?.api?.rq?.defaults) {
+  razorpay.api.rq.defaults.timeout = RAZORPAY_REQUEST_TIMEOUT_MS;
+}
+
 function constantTimeEquals(a, b) {
   // Constant-time comparison so response timing can't leak how many
   // leading characters of a signature matched (defense-in-depth on a

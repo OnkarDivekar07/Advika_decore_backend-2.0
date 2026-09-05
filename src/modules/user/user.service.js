@@ -21,8 +21,42 @@ const clearOtherDefaults = async (tx, userId, keepId) => {
   });
 };
 
+// Pattern 17 (API abuse/validation audit): createAddress/updateAddressById
+// used to spread the caller's raw body straight into the Prisma write
+// (`{ ...data, ... }`). Every field here is already validated by
+// user.validation.js's createAddressValidator/updateAddressValidator, but
+// express-validator only *validates* named fields — it never strips
+// whatever else is in the body. Prisma itself rejects any field it doesn't
+// recognize on a model (confirmed live: an extra `userId` in the request
+// body 500'd with "Unknown argument `userId`. Did you mean `user`?",
+// instead of the extra field just being ignored) — no privilege-escalation
+// risk (Prisma refuses the whole write rather than silently applying an
+// unknown field), but ordinary client noise shouldn't ever reach Prisma
+// raw and become an unhandled 500. `isDefault` is deliberately excluded
+// here — both callers already read it directly off the untouched `data`
+// argument via their own dedicated shouldBeDefault/makingDefault logic.
+const ADDRESS_WRITABLE_FIELDS = [
+  'name',
+  'phone',
+  'pincode',
+  'city',
+  'state',
+  'houseArea',
+  'area',
+  'landmark',
+  'deliveryInstructions',
+];
+const pickAddressFields = (data) => {
+  const picked = {};
+  for (const field of ADDRESS_WRITABLE_FIELDS) {
+    if (data[field] !== undefined) picked[field] = data[field];
+  }
+  return picked;
+};
+
 exports.createAddress = async (data) => {
   const userId = data?.user?.connect?.id;
+  const fields = pickAddressFields(data);
 
   return withTransactionRetry(async (tx) => {
     // The very first address a user saves is always their default — there
@@ -34,7 +68,7 @@ exports.createAddress = async (data) => {
     const shouldBeDefault = existingCount === 0 || data.isDefault === true;
 
     const address = await tx.address.create({
-      data: { ...data, isDefault: shouldBeDefault },
+      data: { ...fields, user: data.user, isDefault: shouldBeDefault },
     });
 
     // Only worth clearing anything if there was a prior address that could
@@ -71,8 +105,8 @@ exports.updateAddressById = async (id, userId, data) => {
   // another address with isDefault: true), which always leaves exactly
   // one default behind. This keeps "no default at all" unreachable.
   const makingDefault = data.isDefault === true;
-  const { isDefault, ...rest } = data;
-  const updateData = makingDefault ? { ...rest, isDefault: true } : rest;
+  const fields = pickAddressFields(data);
+  const updateData = makingDefault ? { ...fields, isDefault: true } : fields;
 
   return withTransactionRetry(async (tx) => {
     const updated = await tx.address.update({

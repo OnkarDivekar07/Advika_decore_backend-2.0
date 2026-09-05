@@ -2,6 +2,7 @@ const prisma = require('@config/prisma');
 const logger = require('@config/logger');
 const CustomError = require('@utils/customError');
 const delhiveryClient = require('../../services/external/DelhiveryClient');
+const inventoryService = require('@modules/inventory/inventory.service');
 const {
   FREE_DELIVERY_THRESHOLD,
   DELIVERY_CHARGE,
@@ -277,6 +278,16 @@ exports.checkServiceability = async ({ destinationPincode, subtotal }) => {
       estimatedDays: null,
       estimatedDeliveryDate: null,
       codAvailable: response.codAvailable,
+      // Delhivery reports COD and prepaid availability as independent
+      // flags for a pincode (a real, not just theoretical, combination —
+      // some serviceable pincodes only support one payment mode). This was
+      // computed by the Delhivery client but silently dropped here until
+      // now, which meant checkDeliveryEligibility/detectAddressConflict
+      // below had no way to block a PREPAID order for a pincode Delhivery
+      // can only deliver COD to — see detectAddressConflict's
+      // prepaid_unavailable branch, the mirror of its existing
+      // cod_unavailable one.
+      prepaidAvailable: response.prepaidAvailable,
     },
     subtotal
   );
@@ -347,6 +358,7 @@ exports.checkDeliveryEligibility = async ({
         estimatedDays: null,
         estimatedDeliveryDate: null,
         codAvailable: false,
+        prepaidAvailable: false,
         skippedCheck: true,
       };
     }
@@ -363,6 +375,7 @@ exports.checkDeliveryEligibility = async ({
       estimatedDays: null,
       estimatedDeliveryDate: null,
       codAvailable: true,
+      prepaidAvailable: true,
       skippedCheck: true,
     };
   }
@@ -472,34 +485,69 @@ exports.createShipmentForOrder = async (orderId) => {
   }
 
   const createdPackage = delhiveryResponse?.packages?.[0];
-  if (!delhiveryResponse?.success || createdPackage?.status !== 'Success') {
+  // Pattern 12 (carrier failure-mode audit): `success:true` +
+  // `packages[0].status:'Success'` with no `waybill` was slipping through
+  // this guard — Delhivery's own contract is that a genuine success always
+  // includes the assigned waybill, so treat a missing one as just as
+  // invalid as an unsuccessful status, rather than proceeding to persist a
+  // Shipment with no tracking id and marking the order permanently
+  // 'shipped' with nothing to ever track.
+  if (
+    !delhiveryResponse?.success ||
+    createdPackage?.status !== 'Success' ||
+    !createdPackage?.waybill
+  ) {
     throw new CustomError(
       `Could not create shipment with Delhivery: ${createdPackage?.remarks?.join?.(', ') || 'unknown error'}`,
       422
     );
   }
 
-  const shipment = await prisma.shipment.create({
-    data: {
-      orderId: order.id,
-      trackingId: createdPackage.waybill,
-      awbNumber: createdPackage.waybill,
-      // Set explicitly rather than relying on the Prisma schema's
-      // @default("Delhivery") — confirmed live that the schema default
-      // alone silently doesn't take effect until `prisma generate` is
-      // re-run (a plain `prisma db push --skip-generate`, as this app's
-      // own e2e:db:push script uses, does NOT regenerate the client), so
-      // a real shipment was created with courierPartner still reading
-      // "Ekart" despite the schema already saying "Delhivery".
-      courierPartner: 'Delhivery',
-      status: 'CREATED',
-      paymentMode,
-      codAmount,
-      pickupLocationCode: DELHIVERY_PICKUP_LOCATION_NAME,
-      estimatedDeliveryDate: null,
-      raw: delhiveryResponse,
-    },
-  });
+  let shipment;
+  try {
+    shipment = await prisma.shipment.create({
+      data: {
+        orderId: order.id,
+        trackingId: createdPackage.waybill,
+        awbNumber: createdPackage.waybill,
+        // Set explicitly rather than relying on the Prisma schema's
+        // @default("Delhivery") — confirmed live that the schema default
+        // alone silently doesn't take effect until `prisma generate` is
+        // re-run (a plain `prisma db push --skip-generate`, as this app's
+        // own e2e:db:push script uses, does NOT regenerate the client), so
+        // a real shipment was created with courierPartner still reading
+        // "Ekart" despite the schema already saying "Delhivery".
+        courierPartner: 'Delhivery',
+        status: 'CREATED',
+        paymentMode,
+        codAmount,
+        pickupLocationCode: DELHIVERY_PICKUP_LOCATION_NAME,
+        estimatedDeliveryDate: null,
+        raw: delhiveryResponse,
+      },
+    });
+  } catch (error) {
+    // Pattern 11 (order/shipment lifecycle audit): the existingShipment
+    // check above closes the ordinary case, but under a genuine race (an
+    // admin double-clicking "Ship Order," or two tabs) both requests can
+    // pass that check before either writes — Shipment.orderId's @unique
+    // constraint then rejects the loser's insert with P2002 here rather
+    // than earlier. Note this only prevents a second DB row, not a second
+    // real shipment being created at Delhivery in that same narrow race
+    // window (the API call above already happened by this point for both
+    // requests) — closing that fully would need a lock around the whole
+    // function, which is a concurrency-hardening change out of scope for
+    // this pass; this fix's job is just to stop the loser's DB write from
+    // surfacing as a raw, uncaught 500 instead of the same graceful
+    // already-processed response the ordinary case already gives.
+    if (error.code === 'P2002') {
+      const raced = await prisma.shipment.findUnique({ where: { orderId } });
+      if (raced) {
+        return { shipment: raced, alreadyProcessed: true };
+      }
+    }
+    throw error;
+  }
 
   // Reflect progress on the order itself too, so existing order views that
   // don't know about the Shipment model still show something meaningful.
@@ -549,7 +597,17 @@ exports.trackOrderShipment = async (orderId, requestingUser) => {
   // ShipmentData[0].Shipment — see DelhiveryClient.trackShipment /
   // mapDelhiveryStatus's own header note on confidence level.
   const trackedShipment = tracking?.ShipmentData?.[0]?.Shipment;
-  const status = mapDelhiveryStatus(trackedShipment?.Status?.Status);
+  // Pattern 12 (carrier failure-mode audit): mapDelhiveryStatus's own
+  // "unrecognized -> CREATED" fallback is fine for a genuinely unexpected
+  // status string, but a poll that came back with NO status at all
+  // (ShipmentData missing/empty — an incomplete/glitchy 200) was hitting
+  // that same fallback and visibly regressing an already-progressed
+  // shipment (e.g. IN_TRANSIT) back to CREATED. Same "only overwrite when
+  // this poll actually told us something" reasoning already applied to
+  // lastLocation/estimatedDeliveryDate just below — keep the previously
+  // stored status when the raw status is genuinely absent.
+  const rawStatus = trackedShipment?.Status?.Status;
+  const status = rawStatus ? mapDelhiveryStatus(rawStatus) : shipment.status;
   // A later poll can carry a revised ETA (e.g. after a delay in transit) —
   // only overwrite the stored estimate when this poll actually gave us
   // something to update it with, so a tracking payload that's silent on
@@ -579,7 +637,10 @@ exports.trackOrderShipment = async (orderId, requestingUser) => {
  * order's owner or an admin, same as tracking.
  */
 exports.cancelOrderShipment = async (orderId, requestingUser, reason) => {
-  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { orderItems: true },
+  });
   if (!order) {
     throw new CustomError('Order not found', 404);
   }
@@ -634,6 +695,16 @@ exports.cancelOrderShipment = async (orderId, requestingUser, reason) => {
     where: { id: order.id },
     data: { status: 'cancelled' },
   });
+  // Pattern 11 (order/shipment lifecycle audit): every order this function
+  // can reach was already 'confirmed' (and, for COD, 'shipped') by the
+  // time it had a shipment created for it at all — same reasoning as
+  // order.service.js's cancelOrderByCustomer, which restores stock
+  // unconditionally for exactly this reason. Without this, cancelling a
+  // shipment (the shipment never actually went out, confirmed by
+  // Delhivery accepting the cancellation above) permanently lost that
+  // unit from the stock count — it was decremented at confirmation and
+  // never given back.
+  await inventoryService.restoreStockForOrder(order.orderItems);
 
   return updated;
 };
@@ -676,7 +747,13 @@ exports.handleDelhiveryWebhookEvent = async (payload) => {
     return;
   }
 
-  const status = mapDelhiveryStatus(trackedShipment?.Status?.Status);
+  // Same "don't regress on an absent status" reasoning as trackOrderShipment
+  // above — this module's own header comment already acknowledges Delhivery
+  // webhook payload shape isn't fully verified/standardized, so a payload
+  // that doesn't actually carry a status shouldn't be allowed to stomp a
+  // real, already-progressed shipment status back to the CREATED default.
+  const rawStatus = trackedShipment?.Status?.Status;
+  const status = rawStatus ? mapDelhiveryStatus(rawStatus) : shipment.status;
   const updatedEstimate = extractEstimatedDeliveryDate(trackedShipment);
 
   await prisma.shipment.update({

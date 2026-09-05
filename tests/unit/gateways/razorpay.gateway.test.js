@@ -4,6 +4,11 @@ jest.mock('razorpay', () =>
   jest.fn().mockImplementation(() => ({
     orders: { create: jest.fn(), fetch: jest.fn(), fetchPayments: jest.fn() },
     payments: { fetch: jest.fn() },
+    // Mirrors the real SDK's shape closely enough to prove
+    // razorpay.gateway.js actually sets a request timeout on it (Pattern
+    // 18) — see that file's own comment: the real SDK builds an axios
+    // instance at `.api.rq` with no timeout of its own.
+    api: { rq: { defaults: {} } },
   }))
 );
 
@@ -18,6 +23,15 @@ describe('razorpay.gateway', () => {
     expect(razorpayGateway.publicConfig).toEqual({
       key_id: process.env.RAZORPAY_KEY_ID,
     });
+  });
+
+  // Pattern 18 (error handling/resilience audit): the SDK's own axios
+  // instance has no timeout by default (confirmed by reading
+  // node_modules/razorpay/dist/api.js — _createConfig never reads/forwards
+  // one), so a hung Razorpay would hang create-orderid/verify/refund
+  // forever. Confirms the fix actually lands where axios reads it from.
+  it('sets a request timeout on the SDK\'s underlying axios instance', () => {
+    expect(razorpayInstance.api.rq.defaults.timeout).toBe(10000);
   });
 
   describe('createOrder', () => {

@@ -16,6 +16,7 @@ const mockCart = {
   deleteMany: jest.fn(),
   createMany: jest.fn(),
   upsert: jest.fn(),
+  update: jest.fn(),
 };
 const mockProduct = {
   findUnique: jest.fn(),
@@ -171,6 +172,102 @@ describe('GET /api/cart', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([]);
+  });
+
+  // Pattern 4 (cart correctness audit): stock dropping below what's
+  // already in the cart is the same staleness problem as a deleted
+  // product, one step short of it — before this, the row rode through
+  // unchanged (a stale, no-longer-purchasable quantity, silently priced
+  // into the cart's own subtotal) until checkout's separate stock
+  // re-check finally caught it.
+  it('clamps a returned quantity down to current stock when stock has dropped below what was carted', async () => {
+    mockCart.findMany.mockResolvedValue([
+      {
+        id: 'cart_1',
+        userId: 'user_1',
+        productId: 'prod_1',
+        quantity: 5,
+        product: inStockProduct({ stock: 2 }),
+      },
+    ]);
+    mockCart.update.mockResolvedValue({});
+
+    const res = await request(app).get('/api/cart');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].quantity).toBe(2);
+
+    // Persisted back opportunistically, same fire-and-forget shape as the
+    // orphan sweep above.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockCart.update).toHaveBeenCalledWith({
+      where: { id: 'cart_1' },
+      data: { quantity: 2 },
+    });
+  });
+
+  // Deliberately NOT clamped/swept when stock has hit exactly 0 — this is
+  // the ordinary shape of a lost stock race (see
+  // checkout.e2e.test.js's 'simultaneous purchase of the last item' test),
+  // where the loser's cart must still show their line item completely
+  // untouched after their checkout attempt is correctly rejected, to
+  // prove the failed checkout didn't silently mutate their cart.
+  it('leaves the row completely untouched when stock has dropped to exactly 0 (does not clamp or sweep it)', async () => {
+    mockCart.findMany.mockResolvedValue([
+      {
+        id: 'cart_1',
+        userId: 'user_1',
+        productId: 'prod_1',
+        quantity: 3,
+        product: inStockProduct({ stock: 0 }),
+      },
+    ]);
+
+    const res = await request(app).get('/api/cart');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].quantity).toBe(3);
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockCart.deleteMany).not.toHaveBeenCalled();
+    expect(mockCart.update).not.toHaveBeenCalled();
+  });
+
+  it('never fails the read if persisting a stock clamp itself errors', async () => {
+    mockCart.findMany.mockResolvedValue([
+      {
+        id: 'cart_1',
+        userId: 'user_1',
+        productId: 'prod_1',
+        quantity: 5,
+        product: inStockProduct({ stock: 2 }),
+      },
+    ]);
+    mockCart.update.mockRejectedValue(new Error('write failed'));
+
+    const res = await request(app).get('/api/cart');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data[0].quantity).toBe(2);
+  });
+
+  it('leaves quantity untouched when it is within current stock', async () => {
+    mockCart.findMany.mockResolvedValue([
+      {
+        id: 'cart_1',
+        userId: 'user_1',
+        productId: 'prod_1',
+        quantity: 2,
+        product: inStockProduct({ stock: 10 }),
+      },
+    ]);
+
+    const res = await request(app).get('/api/cart');
+
+    expect(res.body.data[0].quantity).toBe(2);
+    expect(mockCart.update).not.toHaveBeenCalled();
   });
 });
 
@@ -563,6 +660,32 @@ describe('GET /api/cart — summary meta', () => {
     const res = await request(app).get('/api/cart');
 
     expect(res.status).toBe(200);
+    expect(res.body.meta.summary).toEqual({
+      subtotal: 398,
+      deliveryCharge: 49,
+      total: 447,
+    });
+  });
+
+  // Pattern 4: the summary must price the CLAMPED quantity, not the stale
+  // one — otherwise a customer would be quoted a subtotal for units that
+  // are no longer actually available, even though the line item itself
+  // now correctly shows the clamped number.
+  it('prices the clamped quantity, not the stale pre-clamp one, when stock has dropped below what was carted', async () => {
+    mockCart.findMany.mockResolvedValue([
+      {
+        id: 'cart_1',
+        userId: 'user_1',
+        productId: 'prod_1',
+        quantity: 5,
+        product: inStockProduct({ price: 199, stock: 2 }), // clamped to 2 -> 398 subtotal, not 995
+      },
+    ]);
+    mockCart.update.mockResolvedValue({});
+
+    const res = await request(app).get('/api/cart');
+
+    expect(res.body.data[0].quantity).toBe(2);
     expect(res.body.meta.summary).toEqual({
       subtotal: 398,
       deliveryCharge: 49,

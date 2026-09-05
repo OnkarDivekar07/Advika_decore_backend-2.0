@@ -121,6 +121,59 @@ describe('paginateWithCache', () => {
     expect(model.findMany.mock.calls[1][0].take).toBe(10);
   });
 
+  // Pattern 18 (error handling/resilience audit): confirmed live that a
+  // genuinely unreachable Redis (not just slow) previously made every
+  // cached listing endpoint hang indefinitely instead of just serving the
+  // real, correct data straight from the database — caching is a pure
+  // optimization here, not a safety property, so degrading to a live query
+  // is the right behavior, not a masked infrastructure error.
+  describe('Redis unavailable', () => {
+    it('falls back to a live query (does not hang) when redis.get never resolves', async () => {
+      mockRedis.get.mockImplementationOnce(() => new Promise(() => {}));
+      const model = buildModel([{ id: 'p1' }], 1);
+
+      const start = Date.now();
+      const result = await paginateWithCache({
+        model,
+        req: { query: {} },
+        cachePrefix: 'allProducts',
+      });
+      const elapsedMs = Date.now() - start;
+
+      expect(result.data).toEqual([{ id: 'p1' }]);
+      expect(model.findMany).toHaveBeenCalled();
+      // Bounded by REDIS_CACHE_TIMEOUT_MS (1.5s), not left hanging.
+      expect(elapsedMs).toBeLessThan(10000);
+    });
+
+    it('falls back to a live query when redis.get rejects', async () => {
+      mockRedis.get.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+      const model = buildModel([{ id: 'p1' }], 1);
+
+      const result = await paginateWithCache({
+        model,
+        req: { query: {} },
+        cachePrefix: 'allProducts',
+      });
+
+      expect(result.data).toEqual([{ id: 'p1' }]);
+      expect(model.findMany).toHaveBeenCalled();
+    });
+
+    it('still returns the correct (already-computed) result even when the cache write fails', async () => {
+      mockRedis.set.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+      const model = buildModel([{ id: 'p1' }], 1);
+
+      await expect(
+        paginateWithCache({
+          model,
+          req: { query: {} },
+          cachePrefix: 'allProducts',
+        })
+      ).resolves.toMatchObject({ data: [{ id: 'p1' }] });
+    });
+  });
+
   it('falls back to page 1 for a non-positive or non-numeric page', async () => {
     const model = buildModel([], 0);
 

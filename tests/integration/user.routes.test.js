@@ -78,6 +78,28 @@ describe('POST /api/user/address', () => {
     expect(res.status).toBe(422);
   });
 
+  // Pattern 6 (address/serviceability audit): shipping.validation.js's
+  // pincode field trims before matching (its own comment calls this field
+  // "shared" with this one) — this one didn't, so a value this route
+  // would reject could have passed the serviceability check after
+  // trimming. Now consistent.
+  it('accepts a pincode with incidental leading/trailing whitespace, same as the serviceability-check route', async () => {
+    userService.createAddress.mockResolvedValue({
+      id: 'addr1',
+      ...validAddress,
+      isDefault: true,
+    });
+
+    const res = await request(app)
+      .post('/api/user/address')
+      .send({ ...validAddress, pincode: ' 411001 ' });
+
+    expect(res.status).toBe(200);
+    expect(userService.createAddress).toHaveBeenCalledWith(
+      expect.objectContaining({ pincode: '411001' })
+    );
+  });
+
   it('422s on a phone number missing the +91 country code', async () => {
     const res = await request(app)
       .post('/api/user/address')

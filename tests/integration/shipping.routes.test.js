@@ -320,6 +320,18 @@ describe('POST /api/shipping/:orderId/cancel', () => {
 
     expect(res.status).toBe(400);
   });
+
+  it("propagates a 403 from the service when it's not the owner (mirrors the track route's own test)", async () => {
+    shippingService.cancelOrderShipment.mockRejectedValue(
+      new CustomError('Not authorized to cancel this shipment', 403)
+    );
+
+    const res = await request(app)
+      .post(`/api/shipping/${VALID_ORDER_ID}/cancel`)
+      .send({ reason: 'Changed my mind' });
+
+    expect(res.status).toBe(403);
+  });
 });
 
 describe('POST /api/shipping/webhook', () => {

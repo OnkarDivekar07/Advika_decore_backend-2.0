@@ -51,6 +51,7 @@ describe('admin.service.getOperationalAlerts', () => {
     expect(result.pendingOrders).toEqual({ count: 0, items: [] });
     expect(result.paymentExceptions).toEqual({ count: 0, items: [] });
     expect(result.shipmentExceptions).toEqual({ count: 0, items: [] });
+    expect(result.fulfillmentExceptions).toEqual({ count: 0, items: [] });
     expect(typeof result.generatedAt).toBe('string');
   });
 
@@ -184,6 +185,7 @@ describe('admin.service.getOperationalAlerts', () => {
     mockPrisma.order.findMany
       .mockResolvedValueOnce([]) // pending
       .mockResolvedValueOnce([]) // payment exceptions
+      .mockResolvedValueOnce([]) // fulfillment exceptions
       .mockResolvedValueOnce([
         { id: 'o3', total: 900, user: { name: 'Priya', email: 'priya@x.com' } },
       ]); // related-orders batch join
@@ -214,10 +216,10 @@ describe('admin.service.getOperationalAlerts', () => {
 
     await adminService.getOperationalAlerts();
 
-    // Only the pending-orders and payment-exceptions findMany calls should
-    // have run — no third order.findMany for a batch join that has
-    // nothing to join.
-    expect(mockPrisma.order.findMany).toHaveBeenCalledTimes(2);
+    // Only the pending-orders, payment-exceptions and fulfillment-exceptions
+    // findMany calls should have run — no extra order.findMany for a batch
+    // join that has nothing to join.
+    expect(mockPrisma.order.findMany).toHaveBeenCalledTimes(3);
   });
 
   it('reports total: null and user: null for a shipment exception whose order could not be found', async () => {
@@ -235,11 +237,81 @@ describe('admin.service.getOperationalAlerts', () => {
     mockPrisma.order.findMany
       .mockResolvedValueOnce([]) // pending
       .mockResolvedValueOnce([]) // payment exceptions
+      .mockResolvedValueOnce([]) // fulfillment exceptions
       .mockResolvedValueOnce([]); // related-orders batch join finds nothing
 
     const result = await adminService.getOperationalAlerts();
 
     expect(result.shipmentExceptions.items[0].total).toBeNull();
     expect(result.shipmentExceptions.items[0].user).toBeNull();
+  });
+
+  // Pattern 16 (Redis/BullMQ/background-job resilience audit): closes the
+  // gap payment.service.js's runFulfillment docstring already documented as
+  // unimplemented — a 'failed' fulfillment (paid but oversold, or a
+  // stock-decrement/cart-clear/notification step that errored) previously
+  // had no way to surface here at all.
+  it('queries fulfillment exceptions as fulfillmentStatus: failed, most-recently-updated first', async () => {
+    stubEmpty();
+    mockPrisma.order.count.mockResolvedValue(1);
+    mockPrisma.order.findMany
+      .mockResolvedValueOnce([]) // pending
+      .mockResolvedValueOnce([]) // payment exceptions
+      .mockResolvedValueOnce([
+        {
+          id: 'o4',
+          total: 550,
+          fulfillmentError: 'Paid but oversold — insufficient stock for one or more items in this order.',
+          fulfillmentAttempts: 5,
+          oversold: true,
+          updatedAt: new Date('2026-04-01'),
+          user: { name: 'Ravi', email: 'ravi@x.com' },
+        },
+      ]); // fulfillment exceptions
+
+    const result = await adminService.getOperationalAlerts();
+
+    const findManyCall = mockPrisma.order.findMany.mock.calls.find(
+      (call) => call[0].where.fulfillmentStatus
+    );
+    expect(findManyCall[0].where.fulfillmentStatus).toBe('failed');
+    expect(findManyCall[0].orderBy).toEqual({ updatedAt: 'desc' });
+    expect(result.fulfillmentExceptions.count).toBe(1);
+    expect(result.fulfillmentExceptions.items).toEqual([
+      {
+        id: 'o4',
+        total: 550,
+        fulfillmentError: 'Paid but oversold — insufficient stock for one or more items in this order.',
+        fulfillmentAttempts: 5,
+        oversold: true,
+        updatedAt: new Date('2026-04-01'),
+        user: { name: 'Ravi', email: 'ravi@x.com' },
+      },
+    ]);
+  });
+
+  it('falls back to N/A / null when a fulfillment exception has no joined user', async () => {
+    stubEmpty();
+    mockPrisma.order.findMany
+      .mockResolvedValueOnce([]) // pending
+      .mockResolvedValueOnce([]) // payment exceptions
+      .mockResolvedValueOnce([
+        {
+          id: 'o4',
+          total: 550,
+          fulfillmentError: 'Some error',
+          fulfillmentAttempts: 1,
+          oversold: false,
+          updatedAt: new Date('2026-04-01'),
+          user: null,
+        },
+      ]); // fulfillment exceptions
+
+    const result = await adminService.getOperationalAlerts();
+
+    expect(result.fulfillmentExceptions.items[0].user).toEqual({
+      name: 'N/A',
+      email: null,
+    });
   });
 });

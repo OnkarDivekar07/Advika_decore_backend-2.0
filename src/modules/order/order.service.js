@@ -33,11 +33,13 @@ function sanitizeOrder(order) {
 // constraint the DB enforces. Without this, two concurrent requests for the
 // same user (a double-tapped checkout button, two open tabs) can both pass
 // the "no draft order exists yet" read before either has written one, and
-// both create a draft order. This short-lived per-user lock — same
-// redis.set/NX primitive rateLimiter.js uses for OTP throttling — serializes
-// the two: the loser gets a clear 409 instead of silently duplicating the
-// draft order. 10s is generous for what's a single fast transaction, not an
-// expected hold time.
+// both create a draft order. This short-lived per-user lock — a plain
+// redis.set(..., 'NX') mutual-exclusion lock, the one call site in this
+// codebase that uses that primitive (rateLimiter.js's OTP/login throttles
+// are a different scheme — redis.incr + expire, a counter, not a lock) —
+// serializes the two: the loser gets a clear 409 instead of silently
+// duplicating the draft order. 10s is generous for what's a single fast
+// transaction, not an expected hold time.
 const DRAFT_ORDER_LOCK_TTL_MS = 10000;
 
 /**
@@ -222,6 +224,22 @@ exports.detectAddressConflict = async (
         type: 'cod_unavailable',
         message:
           'Cash on Delivery is not available for this address. Please choose a different payment method or address.',
+      },
+    ];
+  }
+
+  // Mirror of the COD check above — Delhivery reports COD/prepaid
+  // availability as independent flags per pincode, so a pincode can be
+  // COD-only just as easily as prepaid-only. Without this, a Razorpay
+  // payment could be captured for an address Delhivery can only actually
+  // deliver COD to, only surfacing as a real problem later at manual
+  // shipment creation, with money already moved.
+  if (paymentMode === 'PREPAID' && !eligibility.prepaidAvailable) {
+    return [
+      {
+        type: 'prepaid_unavailable',
+        message:
+          'Online payment is not available for this address. Please choose Cash on Delivery or a different address.',
       },
     ];
   }

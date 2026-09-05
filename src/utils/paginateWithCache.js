@@ -1,4 +1,19 @@
 const redis = require('@config/redis');
+const withTimeout = require('@utils/withTimeout');
+const logger = require('@config/logger');
+
+// Pattern 18 (error handling/resilience audit): same root cause as
+// rateLimiter.js's REDIS_CHECK_TIMEOUT_MS — @config/redis.js's shared
+// client queues commands forever while Redis is unreachable rather than
+// rejecting. Confirmed live: a genuinely down Redis made every cached
+// listing endpoint (products, admin users, banners, new arrivals — every
+// caller of this function) hang indefinitely instead of just serving the
+// real, correct data straight from the database. Unlike the rate
+// limiter, caching is a pure optimization with no safety property to fail
+// closed over — skipping it and querying live is strictly the right
+// degradation, not a masked infrastructure error, since the response
+// returned is still genuinely correct.
+const REDIS_CACHE_TIMEOUT_MS = 1500;
 
 // A caller-supplied `limit` was previously passed straight to Prisma's
 // `take` with no upper bound — `?limit=100000` on any paginated admin/
@@ -83,8 +98,18 @@ const paginateWithCache = async ({
   })}`;
 
   if (cache) {
-    const cachedData = await redis.get(cacheKey);
-    if (cachedData) return JSON.parse(cachedData);
+    try {
+      const cachedData = await withTimeout(
+        redis.get(cacheKey),
+        REDIS_CACHE_TIMEOUT_MS,
+        `cache read (${cachePrefix})`
+      );
+      if (cachedData) return JSON.parse(cachedData);
+    } catch (err) {
+      logger.warn(
+        `Cache read failed for ${cacheKey}, falling back to a live query: ${err.message}`
+      );
+    }
   }
 
   const skip = (page - 1) * limit;
@@ -115,7 +140,19 @@ const paginateWithCache = async ({
   };
 
   if (cache) {
-    await redis.set(cacheKey, JSON.stringify(result), 'EX', cacheExpiry);
+    // Deliberately not awaited: `result` is already correct and ready to
+    // return regardless of whether the cache write succeeds — making the
+    // caller wait on a write-behind cache populate (and, worse, wait out
+    // REDIS_CACHE_TIMEOUT_MS if Redis is down) would only add latency to
+    // an otherwise-successful response for zero benefit. Still bounded and
+    // caught so a slow/broken Redis can't leave an unhandled rejection.
+    withTimeout(
+      redis.set(cacheKey, JSON.stringify(result), 'EX', cacheExpiry),
+      REDIS_CACHE_TIMEOUT_MS,
+      `cache write (${cachePrefix})`
+    ).catch((err) => {
+      logger.warn(`Cache write failed for ${cacheKey}: ${err.message}`);
+    });
   }
 
   return result;
