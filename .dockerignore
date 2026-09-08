@@ -9,4 +9,5 @@ Dockerfile
 docker-compose.yml
 .dockerignore
 *.md
-tests
+tests/*
+!tests/e2e-mocks
