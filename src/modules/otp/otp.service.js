@@ -2,6 +2,7 @@ const prisma = require('@config/prisma');
 const generateToken = require('@utils/generateToken');
 const CustomError = require('@utils/customError');
 const formatNumber = require('@utils/formatNumber');
+const logger = require('@config/logger');
 
 // Env-overridable (defaulting to the real MSG91 endpoints, so production
 // and every existing test/dev setup are unaffected) purely so the
@@ -52,6 +53,11 @@ exports.sendOtpService = async (phone) => {
   url.searchParams.set('template_id', templateId);
   url.searchParams.set('mobile', mobile);
   url.searchParams.set('authkey', authKey);
+  // The MSG91 account's own default OTP length (configurable per-account in
+  // its dashboard) doesn't necessarily match what this app validates against
+  // (otp.validation.js requires exactly 6 digits) — pin it explicitly here
+  // rather than relying on whatever the account happens to default to.
+  url.searchParams.set('otp_length', '6');
 
   let response;
   try {
@@ -69,7 +75,18 @@ exports.sendOtpService = async (phone) => {
     );
   }
 
-  const { data } = await parseMsg91Response(response);
+  const { data, text } = await parseMsg91Response(response);
+
+  // Temporary diagnostic logging (Pattern: staging OTP-delivery debugging) —
+  // the app-level success/fail check below only looks at `data.type`, which
+  // has repeatedly come back "success" while MSG91's own Reports/Logs show
+  // zero trace of the request ever being processed. Logging the full raw
+  // response (minus the auth key, which never appears in the response body
+  // anyway) surfaces whatever MSG91 actually said, in case there's a field
+  // (balance, route, DLT status) the simplified check ignores.
+  logger.info(
+    `MSG91 sendOtp raw response for ${mobile}: status=${response.status} body=${text}`
+  );
 
   if (!response.ok || data.type !== 'success') {
     const message = data.message || data.error || 'MSG91 failed to send OTP';
@@ -108,8 +125,14 @@ const verifyOtpWithProvider = async (phone, otp) => {
     );
   }
 
-  const { data } = await parseMsg91Response(response);
+  const { data, text } = await parseMsg91Response(response);
   const verified = response.ok && data.type === 'success';
+
+  // Same temporary diagnostic logging as sendOtpService, for the same
+  // reason — see that function's comment.
+  logger.info(
+    `MSG91 verifyOtp raw response for ${mobile}: status=${response.status} body=${text}`
+  );
 
   if (!verified) {
     const message = data.message || data.error || 'Invalid OTP';
