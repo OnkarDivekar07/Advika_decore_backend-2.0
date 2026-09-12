@@ -81,6 +81,12 @@ app.use('/health', healthRoute);
 // Routes
 app.use('/api', routes);
 
+// Temporary — verifying Sentry actually captures a real unhandled error on
+// staging. Remove this route once confirmed in Sentry's Issues page.
+app.get('/debug-sentry-test', () => {
+  throw new Error('Sentry verification test error — safe to ignore/delete');
+});
+
 // Sentry must be wired in after all routes and before our own error handler:
 // it records the exception then calls next(err) so errorHandler below still
 // runs and shapes the HTTP response as before. No-op when SENTRY_DSN isn't set.
