@@ -79,17 +79,32 @@ const runFulfillment = async (order, { decrementStock = true } = {}) => {
     // this function safe. Always false for a COD order — its own stock
     // reservation already happened transactionally in handleCODOrder.
     if (decrementStock && !order.stockDecremented) {
-      // Wrapped in its own transaction purely so a genuine infra error
-      // partway through the per-item loop (not an "insufficient stock"
-      // result, which decrementStockForOrder itself never throws for) can't
-      // leave some items decremented and others not — it either all
-      // commits together or all rolls back together, so `stockDecremented`
-      // can safely mean "this ran," not "this ran, maybe partially."
-      const insufficient = await withTransactionRetry((tx) =>
-        inventoryService.decrementStockForOrder(order.orderItems, tx, {
+      // The decrement itself AND the `stockDecremented` marker that guards
+      // against re-running it must commit together in one transaction —
+      // previously the marker was written in a separate, non-transactional
+      // `prisma.order.update` after this transaction committed. If the
+      // process crashed (or that second write itself failed) in the gap
+      // between the two, stock was already decremented but
+      // `stockDecremented` stayed false in the DB, so
+      // reconcileFailedFulfillments would re-fetch that same order and
+      // call this again — silently decrementing the same order's stock a
+      // second time. Writing the marker via `tx.order.update` inside the
+      // same callback that decrements stock means either both commit or
+      // neither does, so `stockDecremented` can never be false in the DB
+      // while the decrement it guards has actually happened.
+      const insufficient = await withTransactionRetry(async (tx) => {
+        const result = await inventoryService.decrementStockForOrder(order.orderItems, tx, {
           throwOnInsufficientStock: false,
-        })
-      );
+        });
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            stockDecremented: true,
+            ...(result.length > 0 ? { oversold: true } : {}),
+          },
+        });
+        return result;
+      });
 
       if (insufficient.length > 0) {
         logger.warn(`Order ${order.id} was paid but oversold`, {
@@ -99,13 +114,6 @@ const runFulfillment = async (order, { decrementStock = true } = {}) => {
       }
 
       order = { ...order, stockDecremented: true, oversold: order.oversold || insufficient.length > 0 };
-      await prisma.order.update({
-        where: { id: order.id },
-        data: {
-          stockDecremented: true,
-          ...(insufficient.length > 0 ? { oversold: true } : {}),
-        },
-      });
     }
 
     // The cart is only cleared once the order is actually confirmed — this
