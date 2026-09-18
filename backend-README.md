@@ -124,6 +124,10 @@ SHIPPING_SERVICEABILITY_FALLBACK_POLICY=fail_open
 
 > `PORT` and `DATABASE_URL` are strictly required — the app throws an error on boot if either is missing (see `src/config/env.js`). All other variables are required only for the features that use them (OTP, payments, image upload).
 
+### ⚠️ Rotate previously hardcoded secrets
+
+The MongoDB Atlas connection string (including its password) was, at one point, hardcoded directly in `frontend-improved/e2e-real/support/dbCleanup.cjs` and committed to that repo's git history across multiple commits. It has since been removed from the source (the file now loads `DATABASE_URL` from `backend 2.0/.env.e2e` instead), but **the old credential still exists in that repo's git history** and must be treated as compromised — rotate the MongoDB Atlas database user's password immediately, update `DATABASE_URL` in every `.env`/`.env.e2e` file with the new password, and consider purging it from git history (e.g. `git filter-repo`) if the repo is or will be shared/public.
+
 ---
 
 ## 5. Installation & Running Locally

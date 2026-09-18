@@ -81,6 +81,11 @@ Thumbs.db
 test-results/
 playwright-report/
 
+# Load-test run artifacts contain live signed JWTs captured from the run
+# (e.g. an admin bearer token) — never commit these even though they
+# expire quickly, since a rerun produces a new, briefly-valid one.
+tests/load/results/
+
 # ===========================
 # Uploads
 # ===========================
