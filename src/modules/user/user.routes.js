@@ -9,6 +9,7 @@ const {
   setDefaultAddress,
   getUserProfile,
   updateProfile,
+  deleteAccount,
   sendPhoneChangeOtp,
   verifyPhoneChangeOtp,
 } = require('./user.controller');
@@ -105,6 +106,13 @@ router.patch(
   validateRequest,
   updateProfile
 );
+
+/**
+ * @route   DELETE /api/user/account
+ * @desc    Delete (anonymize) the logged-in user's account and personal data
+ * @access  User
+ */
+router.delete('/account', deleteAccount);
 
 /**
  * @route   POST /api/user/phone/send-otp

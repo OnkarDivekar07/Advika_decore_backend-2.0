@@ -32,6 +32,23 @@ const getMsg91Config = () => {
 
 const toIndianE164 = (phone) => `91${formatNumber(phone)}`;
 
+// Masks a phone number down to its last 4 digits for logging (e.g.
+// "919999999999" -> "********9999") — keeps enough to spot-check against a
+// support ticket without writing the full number to logs. Also used to
+// scrub the same digits out of a raw provider response body, in case MSG91
+// ever echoes the phone number back in `text`.
+const maskPhone = (phone) => {
+  const digits = String(phone || '');
+  if (digits.length <= 4) return '*'.repeat(digits.length);
+  return '*'.repeat(digits.length - 4) + digits.slice(-4);
+};
+
+const redactPhoneFromText = (text, phone) => {
+  const digits = String(phone || '');
+  if (!digits) return text;
+  return String(text || '').split(digits).join(maskPhone(digits));
+};
+
 const parseMsg91Response = async (response) => {
   const text = await response.text();
   let data;
@@ -85,7 +102,7 @@ exports.sendOtpService = async (phone) => {
   // anyway) surfaces whatever MSG91 actually said, in case there's a field
   // (balance, route, DLT status) the simplified check ignores.
   logger.info(
-    `MSG91 sendOtp raw response for ${mobile}: status=${response.status} body=${text}`
+    `MSG91 sendOtp raw response for ${maskPhone(mobile)}: status=${response.status} body=${redactPhoneFromText(text, mobile)}`
   );
 
   if (!response.ok || data.type !== 'success') {
@@ -131,7 +148,7 @@ const verifyOtpWithProvider = async (phone, otp) => {
   // Same temporary diagnostic logging as sendOtpService, for the same
   // reason — see that function's comment.
   logger.info(
-    `MSG91 verifyOtp raw response for ${mobile}: status=${response.status} body=${text}`
+    `MSG91 verifyOtp raw response for ${maskPhone(mobile)}: status=${response.status} body=${redactPhoneFromText(text, mobile)}`
   );
 
   if (!verified) {

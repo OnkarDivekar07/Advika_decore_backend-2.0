@@ -110,6 +110,13 @@ model User {
   vehicle     String?
   dateOfBirth DateTime?
 
+  // Set by user.service.js's deleteAccount (DELETE /api/user/account) —
+  // the row itself is kept (Order.userId is a required reference and past
+  // orders/invoices must stay resolvable) but every identifying field
+  // above is overwritten with a non-reversible placeholder at that point.
+  // Null for every account that hasn't requested deletion.
+  deletedAt DateTime?
+
   // Relations
   orders         Order[]
   carts          Cart[]

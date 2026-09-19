@@ -45,6 +45,12 @@ const SENSITIVE_HEADER_NAMES = new Set([
 // Matches by substring so this also catches variants like `otpCode`,
 // `newPassword`, `cardNumber`, `accessToken`, `refreshToken`, etc.,
 // without having to enumerate every field name used across every module.
+// Deliberately does NOT filter `email` — see tests/unit/sentry.scrub.test.js
+// ("redacts top-level fields whose name looks like a secret"), which
+// pins email as intentionally passed through so an admin correlating a
+// Sentry event with a support ticket has something to search by; only
+// credential/token/OTP-shaped fields are treated as unconditionally
+// sensitive here.
 const SENSITIVE_KEY_PATTERN =
   /token|password|secret|authorization|otp|cvv|card|pin\b/i;
 

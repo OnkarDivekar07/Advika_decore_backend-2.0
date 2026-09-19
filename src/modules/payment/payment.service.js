@@ -22,6 +22,39 @@ const {
 // this per-deploy.
 const MAX_FULFILLMENT_ATTEMPTS = 5;
 
+// WebhookEvent.payload keeps the raw gateway delivery as an audit trail
+// (see that model's own comment in schema.prisma) and is retained
+// indefinitely — but Razorpay's payment/refund entity carries the
+// customer's email, phone (`contact`), and UPI VPA directly in that JSON.
+// None of that is needed for what this ledger actually exists to do
+// (dedupe retried deliveries, show what Razorpay reported for a
+// reconciliation investigation) — the order/payment ids already link back
+// to the customer's actual record. Redacted here, once, right before every
+// write, rather than trusting every future write site to remember.
+const PAYLOAD_PII_KEYS = new Set(['email', 'contact', 'vpa']);
+
+const redactWebhookPayload = (event) => {
+  const clone = JSON.parse(JSON.stringify(event ?? {}));
+
+  const redact = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(redact);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const [key, val] of Object.entries(value)) {
+      if (PAYLOAD_PII_KEYS.has(key) && typeof val === 'string' && val) {
+        value[key] = '[REDACTED]';
+      } else {
+        redact(val);
+      }
+    }
+  };
+
+  redact(clone);
+  return clone;
+};
+
 /**
  * Runs the fulfillment side-effects for an order that is now durably
  * confirmed — either a captured online payment (stock decrement, cart
@@ -397,7 +430,7 @@ exports.handleRazorpayWebhookEvent = async (event, eventId) => {
               eventType,
               orderId: null,
               paymentId: refund.payment_id,
-              payload: event,
+              payload: redactWebhookPayload(event),
             },
           });
         } catch (err) {
@@ -529,7 +562,7 @@ exports.handleRazorpayWebhookEvent = async (event, eventId) => {
             eventType: eventType ?? 'unknown',
             orderId: payment?.order_id ?? null,
             paymentId: payment?.id ?? null,
-            payload: event,
+            payload: redactWebhookPayload(event),
           },
         });
       } catch (err) {

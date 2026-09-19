@@ -83,9 +83,15 @@ const createRateLimiter = ({
       // login, payment-order creation). The honest answer when the safety
       // control itself can't be evaluated is "try again shortly," not
       // "sure, go ahead."
+      // Deliberately omits `key`/`rawKey` from this log — for otp-send-limit,
+      // otp-verify-limit, and admin-login-limit, that value is a customer's
+      // phone number or an admin's email address, and a Redis outage affects
+      // every key under `prefix` identically, so which specific phone/email
+      // hit it adds nothing an on-call engineer needs to diagnose "Redis is
+      // unreachable."
       logger.error(
         `Rate limiter (${prefix}) could not reach Redis: ${err.message}`,
-        { prefix, key }
+        { prefix }
       );
       return next(
         new CustomError(

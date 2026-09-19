@@ -129,6 +129,22 @@ exports.updateProfile = async (req, res, next) => {
   }
 };
 
+// @desc    Delete (anonymize) the logged-in user's account and personal data
+// @route   DELETE /api/user/account
+// @access  User
+exports.deleteAccount = async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    await userService.deleteAccount(userId);
+
+    res.sendResponse({
+      message: 'Account deleted successfully',
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // @desc    Send an OTP to a new mobile number, as the first step of
 //          changing the logged-in user's phone
 // @route   POST /api/user/phone/send-otp

@@ -249,6 +249,75 @@ exports.updateUserProfile = async (userId, data) => {
   return user;
 };
 
+// --- Account deletion -------------------------------------------------
+// DELETE /api/user/account — self-service data-deletion request. The User
+// row can't be hard-deleted: Order.userId/Order.addressId are required
+// references, and past orders (financial/fulfillment records) must stay
+// resolvable for both the customer's own order history during this
+// session and any legal/accounting retention need — deleting them out
+// from under existing orders would break order-detail lookups and
+// discard records the business needs to keep. Anonymization instead:
+// every directly-identifying field is overwritten with a non-reversible
+// placeholder, deletedAt is stamped, and everything that exists purely
+// for the account's own convenience (cart, wishlist) is actually deleted
+// since nothing else references it.
+//
+// Note: the JWT issued at login stays valid for the rest of its 1-hour
+// lifetime after this runs (see generateToken.js/authenticate.js — auth
+// here is a stateless signature check with no server-side revocation
+// list), so the client-side caller is responsible for clearing its
+// stored token immediately after a successful call, same as a normal
+// logout.
+exports.deleteAccount = async (userId) => {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    throw new customError('User not found', 404);
+  }
+
+  const placeholder = `deleted-${userId}`;
+
+  return withTransactionRetry(async (tx) => {
+    await tx.user.update({
+      where: { id: userId },
+      data: {
+        name: 'Deleted User',
+        email: `${placeholder}@advika.fake`,
+        phone: placeholder,
+        vehicle: null,
+        dateOfBirth: null,
+        deletedAt: new Date(),
+      },
+    });
+
+    // Addresses can't be deleted outright for the same reason
+    // deleteAddressById won't delete one linked to a past order
+    // (Order.addressId would stop resolving) — scrubbed in place instead.
+    await tx.address.updateMany({
+      where: { userId },
+      data: {
+        name: 'Deleted User',
+        phone: placeholder,
+        houseArea: 'Deleted',
+        area: null,
+        landmark: null,
+        deliveryInstructions: null,
+      },
+    });
+
+    // Contact-form submissions store their own copy of name/email rather
+    // than reading it live off the user relation — scrub that copy too.
+    await tx.contactQuery.updateMany({
+      where: { userId },
+      data: { name: 'Deleted User', email: `${placeholder}@advika.fake` },
+    });
+
+    // Pure convenience state with nothing else referencing it — safe to
+    // actually delete rather than anonymize.
+    await tx.cart.deleteMany({ where: { userId } });
+    await tx.wishlist.deleteMany({ where: { userId } });
+  });
+};
+
 // --- Change mobile number -------------------------------------------------
 // Two-step, OTP-verified flow (mirrors login's send/verify shape) but
 // deliberately NOT built on top of otpService.sendOtpService /
