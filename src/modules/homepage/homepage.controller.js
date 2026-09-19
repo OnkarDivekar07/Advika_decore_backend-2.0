@@ -29,13 +29,20 @@ const createBanner = async (req, res, next) => {
     const { linkUrl } = req.body;
     const image = req.file;
 
-    validateImage(image);
+    // Verifies the upload is genuinely a decodable JPEG/PNG/WebP (not just
+    // a file whose client-supplied Content-Type claims to be one) and
+    // returns the real, sharp-detected MIME type — see bannerHelpers.js's
+    // own comment on why this can't be `image.mimetype`.
+    const realMimeType = await validateImage(image);
 
-    const filename = generateUniqueBannerFilename(image.originalname);
+    const filename = generateUniqueBannerFilename(
+      image.originalname,
+      realMimeType
+    );
     const imageUrl = await awsService.uploadToS3(
       image.buffer,
       filename,
-      image.mimetype
+      realMimeType
     );
 
     const banner = await homepageService.createNewBanner(imageUrl, linkUrl);

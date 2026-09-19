@@ -32,6 +32,19 @@ const buildApp = () => {
 
 const app = buildApp();
 
+// A genuine, minimal (1x1 transparent) PNG — banner uploads now go through
+// bannerHelpers.js's validateImage, which decodes the buffer with sharp to
+// verify it's really an image before accepting it (see that file's own
+// comment on why a client-claimed Content-Type/filename alone isn't
+// trusted any more). Plain placeholder bytes like `Buffer.from('fake...')`
+// are exactly what that check exists to reject, so real bytes are needed
+// here even though the test only cares about the routing/auth/validation
+// wiring, not image content itself.
+const REAL_PNG_BYTES = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64'
+);
+
 const adminToken = jwt.sign(
   { userId: 'admin1', role: 'admin' },
   process.env.JWT_SECRET
@@ -95,7 +108,7 @@ describe('POST /api/homepage/banners (admin only)', () => {
       .post('/api/homepage/banners')
       .set('Authorization', `Bearer ${adminToken}`)
       .field('linkUrl', 'not-a-url')
-      .attach('image', Buffer.from('fake-image-bytes'), 'banner.jpg');
+      .attach('image', REAL_PNG_BYTES, 'banner.jpg');
 
     expect(res.status).toBe(422);
     expect(homepageService.createNewBanner).not.toHaveBeenCalled();
@@ -126,7 +139,7 @@ describe('POST /api/homepage/banners (admin only)', () => {
       .post('/api/homepage/banners')
       .set('Authorization', `Bearer ${adminToken}`)
       .field('linkUrl', 'https://advika.com/sale')
-      .attach('image', Buffer.from('fake-image-bytes'), 'banner.jpg');
+      .attach('image', REAL_PNG_BYTES, 'banner.jpg');
 
     expect(res.status).toBe(201);
     expect(awsService.uploadToS3).toHaveBeenCalledTimes(1);
@@ -135,6 +148,30 @@ describe('POST /api/homepage/banners (admin only)', () => {
       'https://advika.com/sale'
     );
     expect(res.body.data.id).toBe('banner_1');
+  });
+
+  // Regression test for the real-content validation added to
+  // bannerHelpers.js's validateImage: multer's fileFilter only checks the
+  // multipart part's client-supplied Content-Type, which costs an
+  // attacker nothing to fake. Naming this file `evil.jpg` makes supertest
+  // send `Content-Type: image/jpeg` (passing multer's filter) while the
+  // actual bytes are HTML — exactly the spoof this endpoint must reject
+  // rather than storing on the public media CDN with a claimed image
+  // Content-Type.
+  it('rejects a file whose real content is not an image, even with a spoofed image Content-Type/filename', async () => {
+    const res = await request(app)
+      .post('/api/homepage/banners')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .field('linkUrl', 'https://advika.com/sale')
+      .attach(
+        'image',
+        Buffer.from('<html><script>alert(document.cookie)</script></html>'),
+        'evil.jpg'
+      );
+
+    expect(res.status).toBe(400);
+    expect(awsService.uploadToS3).not.toHaveBeenCalled();
+    expect(homepageService.createNewBanner).not.toHaveBeenCalled();
   });
 });
 
