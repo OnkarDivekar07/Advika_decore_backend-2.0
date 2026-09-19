@@ -5,7 +5,7 @@ const { sendOtp, verifyOtp } = require('./otp.controller');
 const { validateSendOtp, validateVerifyOtp } = require('./otp.validation');
 const validateRequest = require('@middlewares/validateRequest');
 const otpRateLimiter = require('@middlewares/rateLimiter');
-const { otpVerifyRateLimiter } = otpRateLimiter;
+const { otpVerifyRateLimiter, otpSendIpRateLimiter } = otpRateLimiter;
 
 /**
  * @route   POST /api/otp/send-otp
@@ -15,6 +15,7 @@ const { otpVerifyRateLimiter } = otpRateLimiter;
 router.post(
   '/send-otp',
   otpRateLimiter,
+  otpSendIpRateLimiter,
   validateSendOtp,
   validateRequest,
   sendOtp

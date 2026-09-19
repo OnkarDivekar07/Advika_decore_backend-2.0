@@ -13,7 +13,10 @@ const {
 } = require('./admin.controller');
 const authenticate = require('@middlewares/authenticate');
 const authorizeAdminOnly = require('@middlewares/authorizeAdminOnly');
-const { adminLoginRateLimiter } = require('@middlewares/rateLimiter');
+const {
+  adminLoginRateLimiter,
+  adminLoginIpRateLimiter,
+} = require('@middlewares/rateLimiter');
 const {
   validateAdminQueries,
   validateAdminLogin,
@@ -32,6 +35,7 @@ const validateRequest = require('@middlewares/validateRequest');
 router.post(
   '/login',
   adminLoginRateLimiter,
+  adminLoginIpRateLimiter,
   validateAdminLogin,
   validateRequest,
   loginAdmin

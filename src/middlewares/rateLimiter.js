@@ -128,6 +128,33 @@ const adminLoginRateLimiter = createRateLimiter({
       .toLowerCase(),
 });
 
+// Pre-launch production-readiness audit: every existing limiter above keys
+// on the *target* being attacked (one email, one phone) — correct for
+// stopping a brute force against a single known account, but nothing
+// stopped a single IP from spreading attempts across many different
+// emails/phone numbers with no cap of its own (a credential-stuffing sweep
+// of many admin emails, or an OTP-send abuse run against many different
+// phone numbers to run up the MSG91 bill). Applied ALONGSIDE the existing
+// per-target limiters below, never replacing them — an admin genuinely
+// retrying their own login a few times still only ever counts against the
+// per-email bucket. Requires `app.set('trust proxy', ...)` (see app.js) so
+// `req.ip` reflects the real client, not a load balancer's own address.
+const adminLoginIpRateLimiter = createRateLimiter({
+  prefix: 'admin-login-ip-limit',
+  maxAttempts: 5,
+  windowSeconds: 60,
+  message: 'Too many login attempts from this network. Please try again later.',
+  keyBy: (req) => req.ip,
+});
+
+const otpSendIpRateLimiter = createRateLimiter({
+  prefix: 'otp-send-ip-limit',
+  maxAttempts: 5,
+  windowSeconds: 60,
+  message: 'Too many OTP requests from this network. Please try again later.',
+  keyBy: (req) => req.ip,
+});
+
 // Existing default export kept for backwards compatibility — used for
 // throttling OTP *send* requests (prevents SMS spam / cost abuse).
 const otpRateLimiter = createRateLimiter({
@@ -173,5 +200,7 @@ module.exports = otpRateLimiter;
 module.exports.createRateLimiter = createRateLimiter;
 module.exports.otpRateLimiter = otpRateLimiter;
 module.exports.otpVerifyRateLimiter = otpVerifyRateLimiter;
+module.exports.otpSendIpRateLimiter = otpSendIpRateLimiter;
 module.exports.adminLoginRateLimiter = adminLoginRateLimiter;
+module.exports.adminLoginIpRateLimiter = adminLoginIpRateLimiter;
 module.exports.paymentCreateOrderRateLimiter = paymentCreateOrderRateLimiter;

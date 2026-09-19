@@ -35,6 +35,7 @@ const errorHandler = (err, req, res, next) => {
     statusCode,
     path: req.originalUrl,
     method: req.method,
+    requestId: req.id,
   };
   if (statusCode >= 500) {
     logger.error(err.message, { ...logPayload, stack: err.stack });
@@ -46,6 +47,10 @@ const errorHandler = (err, req, res, next) => {
     success: false,
     message,
     errors: errors,
+    // Lets a client-reported error be matched back to the exact
+    // server-side log line above without the response itself ever
+    // carrying a stack trace, file path, or query detail.
+    correlationId: req.id,
     ...(isDev && { stack: err.stack }), // optional debug info
   });
 };

@@ -28,6 +28,20 @@ const requiredEnv = [
   'R2_ENDPOINT',
   'R2_BUCKET_NAME',
   'R2_PUBLIC_URL',
+  // Delhivery (src/services/external/DelhiveryClient.js,
+  // src/modules/shipping/shipping.service.js) — none of these three had a
+  // startup check before, only a bare `process.env.X` read with no
+  // fallback. Missing DELHIVERY_API_TOKEN doesn't fail loudly: every
+  // serviceability check just starts failing, which
+  // SHIPPING_SERVICEABILITY_FALLBACK_POLICY's 'fail_open' default then
+  // quietly lets checkout proceed through anyway — so a deploy that forgot
+  // this var wouldn't be caught until real, already-paid orders turned out
+  // to be unshippable. Missing PICKUP_LOCATION_NAME/SELLER_NAME breaks
+  // shipment creation the same silent way. DELHIVERY_PICKUP_PINCODE is
+  // intentionally NOT here — grepped src/ and nothing reads it.
+  'DELHIVERY_API_TOKEN',
+  'DELHIVERY_PICKUP_LOCATION_NAME',
+  'DELHIVERY_SELLER_NAME',
 ];
 
 const missing = requiredEnv.filter((name) => !process.env[name]);
