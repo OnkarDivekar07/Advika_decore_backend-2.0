@@ -196,6 +196,23 @@ const paymentCreateOrderRateLimiter = createRateLimiter({
   keyBy: (req) => req.user?.userId,
 });
 
+// Attacker-mindset audit: image-upload routes (POST/PATCH /api/product,
+// POST /api/homepage/banners) had no rate limit at all — each request can
+// carry up to 5 files × 5MB, and nothing capped how often one admin
+// account could hit them. Admin-only already (authorizeAdminOnly), so
+// this isn't reachable by an anonymous attacker, but a phished/compromised
+// admin session could otherwise script a tight loop to run up real R2
+// storage/egress cost with no ceiling. 20/minute is generous for genuine
+// catalog/banner management (bulk-editing a handful of products in one
+// sitting) while making a sustained abuse loop impractical.
+const adminUploadRateLimiter = createRateLimiter({
+  prefix: 'admin-upload-limit',
+  maxAttempts: 20,
+  windowSeconds: 60,
+  message: 'Too many upload requests. Please try again in a minute.',
+  keyBy: (req) => req.user?.userId,
+});
+
 module.exports = otpRateLimiter;
 module.exports.createRateLimiter = createRateLimiter;
 module.exports.otpRateLimiter = otpRateLimiter;
@@ -204,3 +221,4 @@ module.exports.otpSendIpRateLimiter = otpSendIpRateLimiter;
 module.exports.adminLoginRateLimiter = adminLoginRateLimiter;
 module.exports.adminLoginIpRateLimiter = adminLoginIpRateLimiter;
 module.exports.paymentCreateOrderRateLimiter = paymentCreateOrderRateLimiter;
+module.exports.adminUploadRateLimiter = adminUploadRateLimiter;

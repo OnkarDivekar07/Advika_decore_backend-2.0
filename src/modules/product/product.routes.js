@@ -14,6 +14,7 @@ const {
 
 const authenticate = require('@middlewares/authenticate');
 const authorizeAdminOnly = require('@middlewares/authorizeAdminOnly');
+const { adminUploadRateLimiter } = require('@middlewares/rateLimiter');
 const upload = require('@config/multer');
 const validateRequest = require('@middlewares/validateRequest');
 const validateMongoIdParam = require('@middlewares/validateMongoIdParam');
@@ -89,6 +90,7 @@ router.get('/jobs/:jobId', getProductJobStatus);
 //  */
 router.post(
   '/',
+  adminUploadRateLimiter,
   upload.array('images', 5),
   upload.handleUploadError,
   validateCreateProduct,
@@ -103,6 +105,7 @@ router.post(
  */
 router.patch(
   '/:id',
+  adminUploadRateLimiter,
   validateMongoIdParam('id'),
   upload.array('images', 5),
   upload.handleUploadError,

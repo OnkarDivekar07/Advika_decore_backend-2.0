@@ -18,6 +18,7 @@ const {
 const validateRequest = require('@middlewares/validateRequest');
 const authenticate = require('@middlewares/authenticate');
 const authorizeAdminOnly = require('@middlewares/authorizeAdminOnly');
+const { adminUploadRateLimiter } = require('@middlewares/rateLimiter');
 
 // PUBLIC ROUTES
 /**
@@ -49,6 +50,7 @@ router.use(authenticate, authorizeAdminOnly);
  */
 router.post(
   '/banners',
+  adminUploadRateLimiter,
   upload.single('image'),
   upload.handleUploadError,
   createBannerValidator,

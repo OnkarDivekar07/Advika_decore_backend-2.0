@@ -13,6 +13,15 @@ jest.mock('@middlewares/authenticate', () =>
   })
 );
 
+// product.routes.js now runs the create/update routes through
+// adminUploadRateLimiter, which talks to @config/redis directly — same
+// mock pattern as admin.routes.test.js/otp.routes.test.js, so this suite
+// doesn't depend on a real Redis connection (and can't ever accidentally
+// trip the real limit itself across this file's several create/update
+// test cases sharing the same mocked admin userId).
+const mockRedis = { incr: jest.fn(), expire: jest.fn() };
+jest.mock('@config/redis', () => mockRedis);
+
 // Explicit factory (rather than automock) so requiring this test file never
 // pulls in the real product.service.js — and with it, real Prisma/Redis/
 // BullMQ client construction that would otherwise try to open connections.
@@ -48,6 +57,8 @@ const VALID_PRODUCT_ID = '507f1f77bcf86cd799439011';
 
 beforeEach(() => {
   Object.values(productService).forEach((fn) => fn.mockReset());
+  mockRedis.incr.mockReset().mockResolvedValue(1);
+  mockRedis.expire.mockReset().mockResolvedValue(1);
 });
 
 describe('GET /api/products (public)', () => {

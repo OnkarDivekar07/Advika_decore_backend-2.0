@@ -15,6 +15,12 @@ jest.mock('@modules/homepage/homepage.service', () => ({
 }));
 jest.mock('../../src/services/external/AWSUploads');
 
+// homepage.routes.js now runs POST /banners through adminUploadRateLimiter,
+// which talks to @config/redis directly — same mock pattern as
+// admin.routes.test.js/otp.routes.test.js/product.routes.test.js.
+const mockRedis = { incr: jest.fn(), expire: jest.fn() };
+jest.mock('@config/redis', () => mockRedis);
+
 const homepageService = require('@modules/homepage/homepage.service');
 const awsService = require('../../src/services/external/AWSUploads');
 const homepageRoutes = require('@modules/homepage/homepage.routes');
@@ -31,6 +37,11 @@ const buildApp = () => {
 };
 
 const app = buildApp();
+
+beforeEach(() => {
+  mockRedis.incr.mockReset().mockResolvedValue(1);
+  mockRedis.expire.mockReset().mockResolvedValue(1);
+});
 
 // A genuine, minimal (1x1 transparent) PNG — banner uploads now go through
 // bannerHelpers.js's validateImage, which decodes the buffer with sharp to
